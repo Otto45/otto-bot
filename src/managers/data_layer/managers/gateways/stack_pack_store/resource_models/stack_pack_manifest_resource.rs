@@ -17,9 +17,18 @@ pub struct CheckResource {
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
+pub struct ProjectMapResource {
+    pub language: Option<String>,
+    pub sources: Option<Vec<String>>,
+    pub query: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
 pub struct StackPackManifestResource {
     pub name: Option<String>,
     pub rules: Option<String>,
     pub detect: Option<DetectResource>,
     pub checks: Option<Vec<CheckResource>>,
+    pub project_map: Option<ProjectMapResource>,
 }

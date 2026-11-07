@@ -1,6 +1,6 @@
 use crate::managers::common::validators::validator_string::ValidatorString;
 use crate::managers::data_layer::managers::gateways::stack_pack_store::resource_models::stack_pack_manifest_resource::{
-    CheckResource, DetectResource, StackPackManifestResource,
+    CheckResource, DetectResource, ProjectMapResource, StackPackManifestResource,
 };
 use crate::managers::exceptions::application_base_exception::{ApplicationBaseException, ApplicationResult};
 use crate::managers::exceptions::contextual_data::ContextualData;
@@ -32,6 +32,12 @@ impl ValidatorStackPackManifestResource {
             Some(_) => {}
         }
 
+        if let Some(project_map) = manifest.project_map.as_ref() {
+            errors.extend(ValidatorStackPackManifestResource::validate_project_map_resource(
+                project_map,
+            ));
+        }
+
         for (index, check) in manifest.checks.iter().flatten().enumerate() {
             errors.extend(ValidatorStackPackManifestResource::validate_check_resource(
                 check, index,
@@ -48,6 +54,24 @@ impl ValidatorStackPackManifestResource {
             ));
         }
         Ok(())
+    }
+
+    fn validate_project_map_resource(project_map: &ProjectMapResource) -> Vec<String> {
+        let mut errors: Vec<String> = [
+            ("project_map.language", project_map.language.as_deref()),
+            ("project_map.query", project_map.query.as_deref()),
+        ]
+        .into_iter()
+        .filter_map(|(property_name, property_value): (&str, Option<&str>)| {
+            ValidatorString::validate(property_name, property_value)
+        })
+        .collect();
+        match project_map.sources.as_ref() {
+            None => errors.push("project_map.sources is missing".to_string()),
+            Some(sources) if sources.is_empty() => errors.push("project_map.sources is empty".to_string()),
+            Some(_) => {}
+        }
+        errors
     }
 
     fn validate_check_resource(check: &CheckResource, index: usize) -> Vec<String> {

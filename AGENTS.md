@@ -135,6 +135,9 @@ docs/DESIGN.md                  otto-bot's design
 - what the agent reads, and what checks print, goes to the model only through the `ToolProcessor`, which takes recognizable secrets out (`SecretRedactor`)
 - an exception a tool call runs into (a missing file, a patch that doesn't apply, a check that can't start) is told to the model as that call's output, so it can do something else; `AgentRunEngine::is_told_to_model` decides which, naming every family; any other exception ends the run
 - every role gets the same tools in the same order: a role is restricted by which tools it may call, never by removing tools, so the cached prompt prefix is shared
+- every request opens with the `PromptProcessor`'s layers, each a content block ending in an explicit cache breakpoint, ordered from what the most requests share to what the fewest do: the stack's layer (instructions and the pack's rules; it names no workspace, so every project on the stack shares it; 12 hours), then the workspace's (its path and project map; 30 minutes); implicit mode caches the conversation after them
+  - nothing that varies goes in a layer (no time, no id, nothing unsorted), and a layer never changes during a run; something new for the model is appended to the conversation instead
+- the project map is every file of the workspace and, under each source file, its public items with their bodies left out, picked by the stack pack's tree-sitter query (`[project_map]` in pack.toml: a grammar built into otto-bot, source globs, and a query whose `@item` captures are shown and whose `@body` and `@omit` captures inside them are left out); it is built when a run starts
 
 ## Data layer
 - changed for otto-bot: its data is files, not databases, so it has no migrations and no relational gateway; the Postgres rules below apply only if one is ever added

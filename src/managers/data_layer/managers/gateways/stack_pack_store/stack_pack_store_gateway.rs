@@ -2,7 +2,9 @@ use std::path::{Path, PathBuf};
 
 use crate::managers::common::formatters::validation_error_formatter::ValidationErrorFormatter;
 use crate::managers::data_layer::managers::gateways::stack_pack_store::mappers::stack_pack_mapper::StackPackMapper;
-use crate::managers::data_layer::managers::gateways::stack_pack_store::resource_models::stack_pack_manifest_resource::StackPackManifestResource;
+use crate::managers::data_layer::managers::gateways::stack_pack_store::resource_models::stack_pack_manifest_resource::{
+    ProjectMapResource, StackPackManifestResource,
+};
 use crate::managers::data_layer::managers::gateways::stack_pack_store::validators::validator_stack_pack_manifest_resource::ValidatorStackPackManifestResource;
 use crate::managers::exceptions::application_base_exception::{ApplicationBaseException, ApplicationResult};
 use crate::managers::exceptions::contextual_data::ContextualData;
@@ -93,7 +95,30 @@ impl StackPackStoreGateway {
             )
         })?;
         ValidatorStackPackManifestResource::validate_stack_pack_manifest_resource(&manifest, &pack_directory_name)?;
-        Ok(StackPackMapper::to_stack_pack(manifest, pack_directory))
+
+        let project_map_query: Option<String> = match manifest
+            .project_map
+            .as_ref()
+            .and_then(|project_map: &ProjectMapResource| project_map.query.as_ref())
+        {
+            None => None,
+            Some(query_path) => Some(
+                tokio::fs::read_to_string(pack_directory.join(query_path))
+                    .await
+                    .map_err(|exception: std::io::Error| {
+                        StackPackStoreGateway::to_io_exception(
+                            exception,
+                            "reading a stack pack's project map query",
+                            &context,
+                        )
+                    })?,
+            ),
+        };
+        Ok(StackPackMapper::to_stack_pack(
+            manifest,
+            pack_directory,
+            project_map_query,
+        ))
     }
 
     fn to_io_exception(

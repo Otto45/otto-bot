@@ -29,11 +29,12 @@ impl SessionEventMapper {
 
     fn to_summary_line(run_summary: &RunSummary) -> String {
         format!(
-            "[{} {} · {} in ({} cached) · {} out ({} reasoning) · {} tier]",
+            "[{} {} · {} in ({} cached, {} written to cache) · {} out ({} reasoning) · {} tier]",
             run_summary.turns,
             if run_summary.turns == 1 { "turn" } else { "turns" },
             run_summary.usage.input_tokens,
             run_summary.usage.cached_input_tokens,
+            run_summary.usage.cache_write_tokens,
             run_summary.usage.output_tokens,
             run_summary.usage.reasoning_tokens,
             run_summary.service_tier.map_or("unknown", ServiceTier::name)

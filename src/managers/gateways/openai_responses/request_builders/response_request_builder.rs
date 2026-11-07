@@ -3,13 +3,20 @@ use serde_json::{Value, json};
 use crate::managers::exceptions::application_base_exception::{ApplicationBaseException, ApplicationResult};
 use crate::managers::exceptions::contextual_data::ContextualData;
 use crate::managers::exceptions::openai_responses_gateway_exception::OpenAiResponsesGatewayException;
+use crate::managers::models::cache_lifetime::CacheLifetime;
 use crate::managers::models::conversation_item::ConversationItem;
 use crate::managers::models::model_request::ModelRequest;
+use crate::managers::models::prompt_layer::PromptLayer;
 use crate::managers::models::service_tier::ServiceTier;
 use crate::managers::models::tool_definition::ToolDefinition;
 
 // Builds the body of a create-response request. The API keeps nothing (`store=false`), so every request carries the
 // whole conversation, and the encrypted reasoning the model needs to continue from where it was.
+//
+// Caching: the developer message opens the request with the prompt layers, each its own content block ending in an
+// explicit cache breakpoint with its layer's lifetime. Implicit mode keeps a breakpoint at the end of the latest
+// message too, so the conversation is cached as it grows. That is at most three cache writes per request, within the
+// API's four.
 pub struct ResponseRequestBuilder;
 
 impl ResponseRequestBuilder {
@@ -17,7 +24,11 @@ impl ResponseRequestBuilder {
         let mut input: Vec<Value> = Vec::with_capacity(model_request.items.len() + 1);
         input.push(json!({
             "role": "developer",
-            "content": [{ "type": "input_text", "text": model_request.instructions }],
+            "content": model_request
+                .prompt_layers
+                .iter()
+                .map(ResponseRequestBuilder::to_cached_content_block)
+                .collect::<Vec<Value>>(),
         }));
         for conversation_item in &model_request.items {
             input.push(ResponseRequestBuilder::to_input_item(conversation_item)?);
@@ -36,6 +47,7 @@ impl ResponseRequestBuilder {
             "include": ["reasoning.encrypted_content"],
             "service_tier": ResponseRequestBuilder::to_service_tier_name(model_request.service_tier),
             "parallel_tool_calls": true,
+            "prompt_cache_options": { "mode": "implicit" },
             "text": { "verbosity": "low" },
             "tools": tools,
             "input": input,
@@ -74,6 +86,20 @@ impl ResponseRequestBuilder {
                 "status": if *succeeded { "completed" } else { "failed" },
                 "output": output,
             }),
+        })
+    }
+
+    fn to_cached_content_block(prompt_layer: &PromptLayer) -> Value {
+        json!({
+            "type": "input_text",
+            "text": prompt_layer.text,
+            "prompt_cache_breakpoint": {
+                "mode": "explicit",
+                "ttl": match prompt_layer.cache_lifetime {
+                    CacheLifetime::ThirtyMinutes => "30m",
+                    CacheLifetime::TwelveHours => "12h",
+                },
+            },
         })
     }
 

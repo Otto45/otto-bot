@@ -7,6 +7,7 @@ use serde_json::Value;
 #[serde(default)]
 pub struct InputTokensDetailsResource {
     pub cached_tokens: Option<i64>,
+    pub cache_write_tokens: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

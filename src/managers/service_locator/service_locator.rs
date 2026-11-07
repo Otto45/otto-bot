@@ -8,6 +8,7 @@ use crate::managers::data_layer::managers::gateways::session_store::session_stor
 use crate::managers::data_layer::managers::gateways::stack_pack_store::stack_pack_store_gateway::StackPackStoreGateway;
 use crate::managers::engines::agent_run::agent_run_engine::AgentRunEngine;
 use crate::managers::engines::agent_run::processors::patch::patch_processor::PatchProcessor;
+use crate::managers::engines::agent_run::processors::project_map::project_map_processor::ProjectMapProcessor;
 use crate::managers::engines::agent_run::processors::prompt::prompt_processor::PromptProcessor;
 use crate::managers::engines::agent_run::processors::tool::tool_processor::ToolProcessor;
 use crate::managers::exceptions::application_base_exception::{ApplicationBaseException, ApplicationResult};
@@ -40,6 +41,7 @@ pub struct ServiceLocator {
     prompt_processor: Mutex<Option<Arc<PromptProcessor>>>,
     tool_processor: Mutex<Option<Arc<ToolProcessor>>>,
     patch_processor: Mutex<Option<Arc<PatchProcessor>>>,
+    project_map_processor: Mutex<Option<Arc<ProjectMapProcessor>>>,
     agent_run_engine: Mutex<Option<Arc<AgentRunEngine>>>,
     // The close() of every singleton created so far, in creation order.
     close_callbacks: Mutex<Vec<CloseCallback>>,
@@ -70,6 +72,7 @@ impl ServiceLocator {
             prompt_processor: Mutex::new(None),
             tool_processor: Mutex::new(None),
             patch_processor: Mutex::new(None),
+            project_map_processor: Mutex::new(None),
             agent_run_engine: Mutex::new(None),
             close_callbacks: Mutex::new(Vec::new()),
         }
@@ -170,6 +173,10 @@ impl ServiceLocator {
         ServiceLocator::get_or_create(&self.patch_processor, || Ok(Arc::new(PatchProcessor)))
     }
 
+    pub fn get_project_map_processor(&self) -> ApplicationResult<Arc<ProjectMapProcessor>> {
+        ServiceLocator::get_or_create(&self.project_map_processor, || Ok(Arc::new(ProjectMapProcessor)))
+    }
+
     pub fn get_agent_run_engine(&self) -> ApplicationResult<Arc<AgentRunEngine>> {
         ServiceLocator::get_or_create(&self.agent_run_engine, || {
             let configuration_provider: Arc<ConfigurationProvider> = self.get_configuration_provider()?;
@@ -195,6 +202,7 @@ impl ServiceLocator {
                 self.get_prompt_processor()?,
                 self.get_tool_processor()?,
                 self.get_patch_processor()?,
+                self.get_project_map_processor()?,
                 agent_settings.max_turns,
                 check_timeout,
             )))

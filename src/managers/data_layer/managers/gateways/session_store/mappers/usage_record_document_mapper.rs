@@ -18,6 +18,7 @@ impl UsageRecordDocumentMapper {
                 .map(|service_tier: ServiceTier| service_tier.name().to_string()),
             input_tokens: Some(usage_record.usage.input_tokens),
             cached_input_tokens: Some(usage_record.usage.cached_input_tokens),
+            cache_write_tokens: Some(usage_record.usage.cache_write_tokens),
             output_tokens: Some(usage_record.usage.output_tokens),
             reasoning_tokens: Some(usage_record.usage.reasoning_tokens),
             recorded_on: Some(usage_record.recorded_on.to_rfc3339_opts(SecondsFormat::Millis, true)),

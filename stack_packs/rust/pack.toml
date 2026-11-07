@@ -7,6 +7,14 @@ name = "rust"
 template = "template"
 rules = "template/AGENTS.md"
 
+# The project map: every file of the workspace, and the public items of its source files (bodies left out), opening
+# every request so the agent knows the codebase's shape before it reads anything. `language` names a tree-sitter
+# grammar built into otto-bot; the query's @item captures are shown, and a @body or @omit inside one is left out.
+[project_map]
+language = "rust"
+sources = ["src/**/*.rs"]
+query = "queries/project_map.scm"
+
 [detect]
 # A project is a Rust app when its root has all of these.
 files = ["Cargo.toml"]

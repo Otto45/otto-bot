@@ -7,12 +7,14 @@ use tokio::sync::broadcast;
 
 use crate::managers::data_layer::data_facade::DataFacade;
 use crate::managers::engines::agent_run::processors::patch::patch_processor::PatchProcessor;
+use crate::managers::engines::agent_run::processors::project_map::project_map_processor::ProjectMapProcessor;
 use crate::managers::engines::agent_run::processors::prompt::prompt_processor::PromptProcessor;
 use crate::managers::engines::agent_run::processors::tool::tool_processor::ToolProcessor;
 use crate::managers::exceptions::agent_run_engine_exception::AgentRunEngineException;
 use crate::managers::exceptions::application_base_exception::{ApplicationBaseException, ApplicationResult};
 use crate::managers::exceptions::contextual_data::ContextualData;
 use crate::managers::exceptions::exception_kind::ExceptionKind;
+use crate::managers::exceptions::workspace_gateway_exception::WorkspaceGatewayException;
 use crate::managers::gateways::command_runner::command_runner_gateway::CommandRunnerGateway;
 use crate::managers::gateways::openai_responses::openai_responses_gateway::OpenAiResponsesGateway;
 use crate::managers::gateways::workspace::workspace_gateway::WorkspaceGateway;
@@ -30,6 +32,7 @@ use crate::managers::models::run_summary::RunSummary;
 use crate::managers::models::session::Session;
 use crate::managers::models::session_event::SessionEvent;
 use crate::managers::models::stack_pack::StackPack;
+use crate::managers::models::stack_pack_project_map::StackPackProjectMap;
 use crate::managers::models::tool_call::ToolCall;
 use crate::managers::models::tool_request::ToolRequest;
 use crate::managers::models::usage_record::UsageRecord;
@@ -49,6 +52,7 @@ pub struct AgentRunEngine {
     prompt_processor: Arc<PromptProcessor>,
     tool_processor: Arc<ToolProcessor>,
     patch_processor: Arc<PatchProcessor>,
+    project_map_processor: Arc<ProjectMapProcessor>,
     max_turns: i64,
     check_timeout: Duration,
 }
@@ -62,6 +66,7 @@ impl AgentRunEngine {
         prompt_processor: Arc<PromptProcessor>,
         tool_processor: Arc<ToolProcessor>,
         patch_processor: Arc<PatchProcessor>,
+        project_map_processor: Arc<ProjectMapProcessor>,
         max_turns: i64,
         check_timeout: Duration,
     ) -> Self {
@@ -72,6 +77,7 @@ impl AgentRunEngine {
             prompt_processor,
             tool_processor,
             patch_processor,
+            project_map_processor,
             max_turns,
             check_timeout,
         }
@@ -111,7 +117,7 @@ impl AgentRunEngine {
             let model_response: ModelResponse = self
                 .openai_responses_gateway
                 .create_response(&ModelRequest {
-                    instructions: run_context.instructions.clone(),
+                    prompt_layers: run_context.prompt_layers.clone(),
                     items: conversation_items.clone(),
                     tools: run_context.tools.clone(),
                     service_tier: session.service_tier,
@@ -156,7 +162,7 @@ impl AgentRunEngine {
         ))
     }
 
-    // The workspace's stack (the first pack whose files it has), and the instructions and tools every turn sends.
+    // The workspace's stack (the first pack whose files it has), and the prompt layers and tools every turn sends.
     async fn prepare_run(&self, session: &Session, data_facade: &DataFacade) -> ApplicationResult<RunContext> {
         let mut workspace_stack_pack: Option<StackPack> = None;
         for stack_pack in data_facade.get_stack_packs().await? {
@@ -172,16 +178,55 @@ impl AgentRunEngine {
             Some(stack_pack) => Some(data_facade.get_stack_pack_rules(stack_pack).await?),
             None => None,
         };
+        let project_map: Option<String> = match workspace_stack_pack
+            .as_ref()
+            .and_then(|stack_pack: &StackPack| stack_pack.project_map.as_ref())
+        {
+            Some(stack_pack_project_map) => Some(
+                self.build_project_map(&session.workspace_directory, stack_pack_project_map)
+                    .await?,
+            ),
+            None => None,
+        };
 
         Ok(RunContext {
-            instructions: self.prompt_processor.build_instructions(
+            prompt_layers: self.prompt_processor.build_prompt_layers(
                 &session.workspace_directory,
                 workspace_stack_pack.as_ref(),
                 rules.as_deref(),
+                project_map.as_deref(),
             ),
             tools: self.tool_processor.get_tool_definitions(),
             stack_pack: workspace_stack_pack,
         })
+    }
+
+    // Every file of the workspace, and the public items of the files the pack's globs select. A source file that can't
+    // be read as text is listed without its items.
+    async fn build_project_map(
+        &self,
+        workspace_directory: &Path,
+        stack_pack_project_map: &StackPackProjectMap,
+    ) -> ApplicationResult<String> {
+        let paths: Vec<String> = self.workspace_gateway.list_files(workspace_directory, ".").await?;
+        let source_paths: Vec<String> = self
+            .project_map_processor
+            .select_source_paths(&paths, stack_pack_project_map)?;
+
+        let mut source_files: Vec<WorkspaceFile> = Vec::with_capacity(source_paths.len());
+        for source_path in &source_paths {
+            match self.workspace_gateway.read_file(workspace_directory, source_path).await {
+                Ok(source_file) => source_files.push(source_file),
+                Err(exception)
+                    if exception.kind() == ExceptionKind::WorkspaceGateway(WorkspaceGatewayException::NotTextFile) =>
+                {
+                    ApplicationLogger::log_exception(&exception, LogLevel::Warning);
+                }
+                Err(exception) => return Err(exception),
+            }
+        }
+        self.project_map_processor
+            .build_project_map(&paths, &source_files, stack_pack_project_map)
     }
 
     async fn has_files(&self, workspace_directory: &Path, paths: &[String]) -> ApplicationResult<bool> {
@@ -405,7 +450,7 @@ impl AgentRunEngine {
         match exception_kind {
             ExceptionKind::AgentRunEngine(exception) => match exception {
                 AgentRunEngineException::InvalidToolCall | AgentRunEngineException::InvalidPatch => true,
-                AgentRunEngineException::MaxTurnsReached => false,
+                AgentRunEngineException::MaxTurnsReached | AgentRunEngineException::InvalidProjectMap => false,
             },
             ExceptionKind::WorkspaceGateway(_) | ExceptionKind::CommandRunnerGateway(_) => true,
             ExceptionKind::ConfigurationProvider(_)

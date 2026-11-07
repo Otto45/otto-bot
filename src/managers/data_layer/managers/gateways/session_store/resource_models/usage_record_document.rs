@@ -11,6 +11,7 @@ pub struct UsageRecordDocument {
     pub served_service_tier: Option<String>,
     pub input_tokens: Option<i64>,
     pub cached_input_tokens: Option<i64>,
+    pub cache_write_tokens: Option<i64>,
     pub output_tokens: Option<i64>,
     pub reasoning_tokens: Option<i64>,
     pub recorded_on: Option<String>,
