@@ -47,13 +47,21 @@ impl ValidatorStackPackManifestResource {
             errors.extend(ValidatorStackPackManifestResource::validate_lint_resource(lint));
         }
 
-        if let Some(scaffold) = manifest.scaffold.as_ref() {
-            if let Some(error) = ValidatorString::validate("scaffold.kinds", scaffold.kinds.as_deref()) {
-                errors.push(error);
+        if let Some(scaffold) = manifest.scaffold.as_ref()
+            && let Some(error) = ValidatorString::validate("scaffold.kinds", scaffold.kinds.as_deref())
+        {
+            errors.push(error);
+        }
+
+        if let Some(format) = manifest.format.as_ref() {
+            match format.command.as_ref() {
+                Some(command) if !command.is_empty() => {}
+                _ => errors.push("format.command is missing or empty".to_string()),
             }
-            if scaffold.format.is_none() {
-                errors.push("scaffold.format is missing".to_string());
-            }
+            errors.extend(ValidatorStackPackManifestResource::validate_globs(
+                "format.sources",
+                format.sources.as_ref(),
+            ));
         }
 
         if let Some(layout) = manifest.layout.as_ref() {
@@ -65,6 +73,9 @@ impl ValidatorStackPackManifestResource {
                 "layout.workers",
                 layout.workers.as_ref(),
             ));
+            if let Some(error) = ValidatorString::validate("layout.placeholder", layout.placeholder.as_deref()) {
+                errors.push(error);
+            }
         }
 
         for (index, check) in manifest.checks.iter().flatten().enumerate() {

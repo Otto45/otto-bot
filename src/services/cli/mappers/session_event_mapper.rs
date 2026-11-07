@@ -29,6 +29,7 @@ impl SessionEventMapper {
                 ))
             }
             SessionEvent::PlanAccepted { work_plan } => Some(SessionEventMapper::to_plan_output(work_plan)),
+            SessionEvent::SkeletonBuilt => Some("\nskeleton ready: every check passes\n".to_string()),
             SessionEvent::RunCompleted { run_summary } => {
                 Some(format!("\n{}\n\n", SessionEventMapper::to_summary_line(run_summary)))
             }

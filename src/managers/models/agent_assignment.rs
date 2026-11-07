@@ -14,4 +14,7 @@ pub struct AgentAssignment {
     pub workspace_directory: PathBuf,
     /// The only files it may create, change or delete; none for an agent that may change any file.
     pub owned_paths: Option<Vec<String>>,
+    /// Whether it may still plan (`submit_plan`) and scaffold: only the orchestrator, until its plan is accepted. Then
+    /// the harness scaffolds the plan's components, and the orchestrator carries the plan out.
+    pub may_plan: bool,
 }

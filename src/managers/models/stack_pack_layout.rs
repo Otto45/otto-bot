@@ -8,4 +8,7 @@ pub struct StackPackLayout {
     /// Where a worker's files may be (processors, engines, gateways, data gateways, services), unless `orchestrator_globs`
     /// claims them.
     pub worker_globs: Vec<String>,
+    /// How the skeleton writes a function a package is to build (its placeholder body), so that the skeleton passes
+    /// every check before the workers start.
+    pub placeholder: String,
 }

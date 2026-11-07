@@ -23,6 +23,8 @@ pub enum SessionEvent {
     PlanAccepted {
         work_plan: WorkPlan,
     },
+    /// The plan's skeleton (its components, and the contracts the packages build against) passes every check.
+    SkeletonBuilt,
     RunCompleted {
         run_summary: RunSummary,
     },

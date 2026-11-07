@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use crate::managers::models::stack_pack_check::StackPackCheck;
+use crate::managers::models::stack_pack_format::StackPackFormat;
 use crate::managers::models::stack_pack_layout::StackPackLayout;
 use crate::managers::models::stack_pack_lint::StackPackLint;
 use crate::managers::models::stack_pack_project_map::StackPackProjectMap;
@@ -18,6 +19,8 @@ pub struct StackPack {
     /// The architecture's rules for the stack's apps.
     pub rules_path: PathBuf,
     pub checks: Vec<StackPackCheck>,
+    /// None for a pack with no formatter.
+    pub format: Option<StackPackFormat>,
     /// None for a pack that doesn't map its projects.
     pub project_map: Option<StackPackProjectMap>,
     /// None for a pack with no architecture lint.

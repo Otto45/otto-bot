@@ -109,6 +109,13 @@ impl PromptProcessor {
              - When you are done, say in a few lines what you changed and anything you decided on your own.\n"
             .to_string();
 
+        if stack_pack.is_some_and(|stack_pack: &StackPack| stack_pack.format.is_some()) {
+            stack_layer.push_str(
+                "- run_checks runs the stack's formatter before the checks, so don't spend effort on formatting; it \
+                 says which files it reformatted, which you read again before you patch them.\n",
+            );
+        }
+
         if let Some(stack_pack_scaffold) = stack_pack.and_then(|stack_pack: &StackPack| stack_pack.scaffold.as_ref()) {
             stack_layer.push_str(
                 "\nTo add a component of one of these kinds, call scaffold first; it creates the files and wires them \

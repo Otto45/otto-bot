@@ -2,12 +2,13 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::managers::data_layer::managers::gateways::stack_pack_store::resource_models::stack_pack_manifest_resource::{
-    CheckResource, DetectResource, LayoutResource, LintResource, LintRuleResource, ProjectMapResource,
+    CheckResource, DetectResource, FormatResource, LayoutResource, LintResource, LintRuleResource, ProjectMapResource,
     ScaffoldResource, StackPackManifestResource,
 };
 use crate::managers::models::lint_rule::LintRule;
 use crate::managers::models::stack_pack::StackPack;
 use crate::managers::models::stack_pack_check::StackPackCheck;
+use crate::managers::models::stack_pack_format::StackPackFormat;
 use crate::managers::models::stack_pack_layout::StackPackLayout;
 use crate::managers::models::stack_pack_lint::StackPackLint;
 use crate::managers::models::scaffold_kind::ScaffoldKind;
@@ -70,17 +71,21 @@ impl StackPackMapper {
                     .map(|lint_rule: LintRuleResource| StackPackMapper::to_lint_rule(lint_rule, &get_query))
                     .collect(),
             }),
-            scaffold: manifest.scaffold.map(|scaffold: ScaffoldResource| StackPackScaffold {
-                kinds: scaffold_kinds,
-                format_command: scaffold
-                    .format
-                    .expect("validated by ValidatorStackPackManifestResource"),
+            scaffold: manifest
+                .scaffold
+                .map(|_: ScaffoldResource| StackPackScaffold { kinds: scaffold_kinds }),
+            format: manifest.format.map(|format: FormatResource| StackPackFormat {
+                command: format.command.expect("validated by ValidatorStackPackManifestResource"),
+                source_globs: format.sources.expect("validated by ValidatorStackPackManifestResource"),
             }),
             layout: manifest.layout.map(|layout: LayoutResource| StackPackLayout {
                 orchestrator_globs: layout
                     .orchestrator
                     .expect("validated by ValidatorStackPackManifestResource"),
                 worker_globs: layout.workers.expect("validated by ValidatorStackPackManifestResource"),
+                placeholder: layout
+                    .placeholder
+                    .expect("validated by ValidatorStackPackManifestResource"),
             }),
         }
     }

@@ -11,8 +11,9 @@ project map), and goes over a WebSocket connection that sends only what is new. 
 of the stack pack's rules, and new components (processors, engines, models) are scaffolded and wired in without the
 model. Agents run in roles (the orchestrator, workers that own files, a reviewer) on lanes of their own. The
 orchestrator plans a change too big to build alone (`submit_plan`, checked against the stack pack's layout) and does a
-small one itself; carrying a plan out (the skeleton, the workers, integration and review) is being built (step 4), and
-the other stack packs come next.
+small one itself. For a plan, the harness scaffolds its components and the orchestrator writes the contracts, until
+every check passes (the skeleton); the workers, integration and review are being built (step 4), and the other stack
+packs come next.
 
 ## What you need
 

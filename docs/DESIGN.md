@@ -136,11 +136,13 @@ The manager keeps the order: each phase is one call to `AgentRunEngine`, which r
    (the pack's `[layout]`), no file is owned twice, and no worker owns a wiring file (module files, the service locator,
    the facade). A rejected plan is the tool call's error, so the orchestrator fixes it in the same turn loop.
    Ambiguities in the request are decided by the orchestrator and recorded as assumptions in the plan.
-2. **Skeleton.** The harness scaffolds every component of the plan. The orchestrator, on its still-warm lane, writes
-   only the contracts: models, exception variants, and signatures with placeholder bodies. The skeleton must pass every
-   check (the architecture lint catches a contract that breaks a dependency rule); then it is snapshotted and the
-   contracts are frozen.
-3. **Fan out.** One worker per package, each in its own copy of the snapshot, on its own lane
+2. **Skeleton.** The harness scaffolds every component of the plan. The orchestrator, on its still-warm lane (it may
+   no longer plan or scaffold), writes only the contracts: models, exception variants, and signatures with the pack's
+   placeholder bodies (`[layout] placeholder`; in Rust, `todo!()` with underscored parameters, since an unused
+   parameter fails the lint). The harness then runs every check itself (the architecture lint catches a contract that
+   breaks a dependency rule) and sends the orchestrator what fails, for up to three rounds. The workers' copies are
+   made from the skeleton, which freezes the contracts.
+3. **Fan out.** One worker per package, each in its own copy of the skeleton, on its own lane
    (`<session>/<package>`), with one more layer: the full text of the files it owns. A patch to a file it doesn't own
    fails, telling it why. A worker ends with `report` (done, or blocked with the reason). Workers run concurrently,
    at most `OTTO_BOT_MAX_WORKERS` at a time. A worker that needs a contract changed reports itself blocked, and the

@@ -15,6 +15,7 @@ use crate::managers::exceptions::contextual_data::ContextualData;
 use crate::managers::models::agent_role::AgentRole;
 use crate::managers::models::check_result::CheckResult;
 use crate::managers::models::conversation_item::ConversationItem;
+use crate::managers::models::format_result::FormatResult;
 use crate::managers::models::lint_violation::LintViolation;
 use crate::managers::models::planned_component::PlannedComponent;
 use crate::managers::models::search_match::SearchMatch;
@@ -193,9 +194,12 @@ impl ToolProcessor {
 
     /// The tools the role may call, by name; none when it may call every tool. Every role is sent every tool, so the
     /// cached prefix is shared, and restricted to these.
-    pub fn get_allowed_tool_names(&self, agent_role: AgentRole) -> Option<Vec<String>> {
+    pub fn get_allowed_tool_names(&self, agent_role: AgentRole, may_plan: bool) -> Option<Vec<String>> {
         let tool_names: &[&str] = match agent_role {
-            AgentRole::Orchestrator => return None,
+            AgentRole::Orchestrator if may_plan => return None,
+            // Carrying its plan out: the plan's components are scaffolded, and it writes the contracts and the
+            // coordinations.
+            AgentRole::Orchestrator => &[READ_FILES, LIST_FILES, SEARCH, RUN_CHECKS, APPLY_PATCH],
             // A worker's components were scaffolded with the skeleton; it writes their logic.
             AgentRole::Worker => &[READ_FILES, LIST_FILES, SEARCH, RUN_CHECKS, APPLY_PATCH],
             AgentRole::Reviewer => &[READ_FILES, LIST_FILES, SEARCH],
@@ -209,8 +213,8 @@ impl ToolProcessor {
     }
 
     /// Whether the role may call the tool: the model is told which it may, and the harness holds it to that too.
-    pub fn is_tool_allowed(&self, agent_role: AgentRole, tool_name: &str) -> bool {
-        self.get_allowed_tool_names(agent_role)
+    pub fn is_tool_allowed(&self, agent_role: AgentRole, may_plan: bool, tool_name: &str) -> bool {
+        self.get_allowed_tool_names(agent_role, may_plan)
             .is_none_or(|tool_names: Vec<String>| tool_names.iter().any(|allowed: &String| allowed == tool_name))
     }
 
@@ -336,6 +340,40 @@ impl ToolProcessor {
         }
     }
 
+    /// What the orchestrator is told once the harness has scaffolded its plan's components: what they are, as they are,
+    /// and how to write the skeleton. `scaffold_outputs` are what each scaffold reported (its files' contents).
+    pub fn format_skeleton_brief(&self, scaffold_outputs: &[String], placeholder: &str) -> String {
+        let mut brief: String = String::from("The harness scaffolded the plan's components");
+        if scaffold_outputs.is_empty() {
+            brief.push_str(": the plan has none.\n");
+        } else {
+            brief.push_str(", as they are now:\n\n");
+            brief.push_str(&scaffold_outputs.join("\n\n"));
+            brief.push('\n');
+        }
+        brief.push_str(&format!(
+            "\nNow write the skeleton: the contracts every package builds against, and nothing more.\n\
+             - the models (their fields), the exception variants and any settings the plan needs;\n\
+             - in each file a package owns, the public types and signatures it is to build, each function with a \
+             placeholder body: {placeholder};\n\
+             - the wiring the scaffolds didn't write: what is new in the service locator, module declarations, the \
+             facade's and the managers' signatures.\n\
+             Don't write the logic of a package's files, or the managers' coordinations: the workers build the \
+             packages, then you write the coordinations. The workers start when every check passes, so run \
+             run_checks and fix what fails; then say in one line that the skeleton is ready."
+        ));
+        brief
+    }
+
+    /// What the orchestrator is told when the skeleton fails a check after it finished.
+    pub fn format_skeleton_failures(&self, format_result: &FormatResult, check_results: &[CheckResult]) -> String {
+        format!(
+            "The skeleton doesn't pass every check yet, and the workers start only once it does:\n\n{}\n\nFix it, \
+             and run the checks again.",
+            self.format_checks_run(format_result, check_results)
+        )
+    }
+
     /// What the orchestrator is told when its plan is accepted.
     pub fn format_plan_accepted(&self, work_plan: &WorkPlan) -> String {
         format!(
@@ -383,6 +421,19 @@ impl ToolProcessor {
             .join("\n")
     }
 
+    /// A run of the checks: what each check found, then which files the formatter (which ran first) changed, which the
+    /// agent reads again before it patches them.
+    pub fn format_checks_run(&self, format_result: &FormatResult, check_results: &[CheckResult]) -> String {
+        let mut output: String = self.format_check_results(check_results);
+        if !format_result.reformatted_paths.is_empty() {
+            output.push_str(&format!(
+                "\n\nThe formatter ran first and reformatted these files, so read them again before you patch them:\n{}",
+                ToolProcessor::to_bullets(&format_result.reformatted_paths)
+            ));
+        }
+        output
+    }
+
     pub fn format_check_results(&self, check_results: &[CheckResult]) -> String {
         if check_results.is_empty() {
             return "The stack has no checks to run.".to_string();
@@ -419,15 +470,38 @@ impl ToolProcessor {
         &self,
         created_files: &[WorkspaceFile],
         updated_paths: &[String],
-        format_result: &str,
+        format_result: &FormatResult,
     ) -> String {
         let created: String = created_files
             .iter()
             .map(|created_file: &WorkspaceFile| self.format_file(created_file))
             .collect::<Vec<String>>()
             .join("\n\n");
+        // The files it created and wired into are named below; any other the formatter changed is too.
+        let other_reformatted_paths: Vec<String> = format_result
+            .reformatted_paths
+            .iter()
+            .filter(|path: &&String| {
+                !updated_paths.contains(path)
+                    && !created_files
+                        .iter()
+                        .any(|created_file: &WorkspaceFile| &created_file.path == *path)
+            })
+            .cloned()
+            .collect();
+        let mut format_note: String = if format_result.succeeded {
+            "Formatted.".to_string()
+        } else {
+            "The formatter failed on a file that doesn't parse; run_checks says which.".to_string()
+        };
+        if !other_reformatted_paths.is_empty() {
+            format_note.push_str(&format!(
+                " The formatter also reformatted these, so read them again before you patch them:\n{}",
+                ToolProcessor::to_bullets(&other_reformatted_paths)
+            ));
+        }
         format!(
-            "{format_result}\nWired into (module declarations and the service locator; no need to read them for \
+            "{format_note}\nWired into (module declarations and the service locator; no need to read them for \
              that):\n{}\n\nCreated, as they are now: write the component's logic in them.\n\n{created}",
             ToolProcessor::to_bullets(updated_paths)
         )

@@ -13,6 +13,8 @@ pub enum AgentRunEngineException {
     FileNotOwned,
     /// A work plan that fails the harness's checks: told to the model, which fixes the plan and submits it again.
     InvalidWorkPlan,
+    /// The skeleton still failed a check after the orchestrator's last round of fixes: the workers can't start.
+    SkeletonChecksFailed,
     MaxTurnsReached,
 }
 
@@ -25,6 +27,7 @@ impl AgentRunEngineException {
             AgentRunEngineException::ToolNotAllowed => "ToolNotAllowedException",
             AgentRunEngineException::FileNotOwned => "FileNotOwnedException",
             AgentRunEngineException::InvalidWorkPlan => "InvalidWorkPlanException",
+            AgentRunEngineException::SkeletonChecksFailed => "SkeletonChecksFailedException",
             AgentRunEngineException::MaxTurnsReached => "MaxTurnsReachedException",
         }
     }
