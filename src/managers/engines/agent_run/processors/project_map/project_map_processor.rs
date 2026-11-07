@@ -1,55 +1,47 @@
-use globset::{Glob, GlobSet, GlobSetBuilder};
-use tree_sitter::{Language, Query};
+use std::ops::Range;
 
-use crate::managers::engines::agent_run::processors::project_map::signature_extractors::tree_sitter_signature_extractor::TreeSitterSignatureExtractor;
-use crate::managers::exceptions::agent_run_engine_exception::AgentRunEngineException;
+use tree_sitter::{Language, Query, Tree};
+
+use crate::managers::common::tree_sitter::captured_node::CapturedNode;
+use crate::managers::common::tree_sitter::tree_sitter_query_runner::TreeSitterQueryRunner;
 use crate::managers::exceptions::application_base_exception::{ApplicationBaseException, ApplicationResult};
 use crate::managers::exceptions::contextual_data::ContextualData;
+use crate::managers::exceptions::exception_kind::ExceptionKind;
 use crate::managers::models::stack_pack_project_map::StackPackProjectMap;
 use crate::managers::models::workspace_file::WorkspaceFile;
 
 const ITEM_INDENT: &str = "    ";
+const ITEM_CAPTURE: &str = "item";
+// What an item leaves out: its body, and anything else the query marks (e.g. comments).
+const LEFT_OUT_CAPTURES: [&str; 2] = ["body", "omit"];
 // The map is rebuilt once the notes describing its changes would be more than a quarter of it.
 const REBUILD_FRACTION_DENOMINATOR: usize = 4;
 
 // Writes the project map: every file of the workspace, and under each source file its public items with their bodies
-// left out. In a Domain Container app a file holds the one type it is named after, so a file's items need no other
+// left out, one per line, picked by the stack pack's query (its @item captures, without the @body and @omit captures
+// inside them). In a Domain Container app a file holds the one type it is named after, so a file's items need no other
 // label. The map is rendered the same way every time (sorted paths, items in source order), so it caches.
 pub struct ProjectMapProcessor;
 
 impl ProjectMapProcessor {
-    /// The paths the pack's source globs match, in the order given.
-    pub fn select_source_paths(
-        &self,
-        paths: &[String],
-        stack_pack_project_map: &StackPackProjectMap,
-    ) -> ApplicationResult<Vec<String>> {
-        let mut glob_set_builder: GlobSetBuilder = GlobSetBuilder::new();
-        for source_glob in &stack_pack_project_map.source_globs {
-            glob_set_builder.add(Glob::new(source_glob).map_err(|exception: globset::Error| {
-                ProjectMapProcessor::to_invalid_project_map(format!("project_map.sources: {exception}"))
-            })?);
-        }
-        let glob_set: GlobSet = glob_set_builder.build().map_err(|exception: globset::Error| {
-            ProjectMapProcessor::to_invalid_project_map(format!("project_map.sources: {exception}"))
-        })?;
-
-        Ok(paths
-            .iter()
-            .filter(|path: &&String| glob_set.is_match(path.as_str()))
-            .cloned()
-            .collect())
-    }
-
     /// `paths` is every file of the workspace; `source_files` the ones the pack's globs select, read.
     pub fn build_project_map(
         &self,
         paths: &[String],
         source_files: &[WorkspaceFile],
+        language_name: &str,
         stack_pack_project_map: &StackPackProjectMap,
     ) -> ApplicationResult<String> {
-        let language: Language = TreeSitterSignatureExtractor::get_language(&stack_pack_project_map.language)?;
-        let query: Query = TreeSitterSignatureExtractor::compile_query(&language, &stack_pack_project_map.query)?;
+        let language: Language = TreeSitterQueryRunner::get_language(language_name)?;
+        let query: Query =
+            TreeSitterQueryRunner::compile_query(&language, &stack_pack_project_map.query, "project map")?;
+        if query.capture_index_for_name(ITEM_CAPTURE).is_none() {
+            return Err(ApplicationBaseException::new(
+                ExceptionKind::InvalidStackPack,
+                "The stack pack's project map query captures no @item",
+                ContextualData::new(),
+            ));
+        }
 
         let mut sorted_paths: Vec<&String> = paths.iter().collect();
         sorted_paths.sort();
@@ -61,7 +53,7 @@ impl ProjectMapProcessor {
                 .iter()
                 .find(|source_file: &&WorkspaceFile| &source_file.path == path);
             if let Some(source_file) = source_file {
-                for item in TreeSitterSignatureExtractor::extract(&language, &query, &source_file.content)? {
+                for item in ProjectMapProcessor::extract_items(&language, &query, &source_file.content)? {
                     lines.push(format!("{ITEM_INDENT}{item}"));
                 }
             }
@@ -126,11 +118,52 @@ impl ProjectMapProcessor {
         entries
     }
 
-    fn to_invalid_project_map(errors: String) -> ApplicationBaseException {
-        ApplicationBaseException::new(
-            AgentRunEngineException::InvalidProjectMap,
-            "The stack pack's project map is invalid",
-            ContextualData::new().with("errors", errors),
-        )
+    // The file's items, in the order they appear, each on one line.
+    fn extract_items(language: &Language, query: &Query, source: &str) -> ApplicationResult<Vec<String>> {
+        let Some(tree) = TreeSitterQueryRunner::parse(language, source)? else {
+            return Ok(Vec::new());
+        };
+        let tree: &Tree = &tree;
+        let captured_nodes: Vec<CapturedNode> = TreeSitterQueryRunner::capture(query, tree, source);
+
+        let mut items: Vec<Range<usize>> = captured_nodes
+            .iter()
+            .filter(|captured_node: &&CapturedNode| captured_node.capture_name == ITEM_CAPTURE)
+            .map(|captured_node: &CapturedNode| captured_node.byte_range.clone())
+            .collect();
+        items.sort_by_key(|item: &Range<usize>| (item.start, item.end));
+        items.dedup();
+        let mut left_out: Vec<Range<usize>> = captured_nodes
+            .iter()
+            .filter(|captured_node: &&CapturedNode| LEFT_OUT_CAPTURES.contains(&captured_node.capture_name.as_str()))
+            .map(|captured_node: &CapturedNode| captured_node.byte_range.clone())
+            .collect();
+        left_out.sort_by_key(|range: &Range<usize>| (range.start, range.end));
+
+        Ok(items
+            .iter()
+            .map(|item: &Range<usize>| {
+                ProjectMapProcessor::to_one_line(&ProjectMapProcessor::without(source, item, &left_out))
+            })
+            .collect())
+    }
+
+    // The item's text without the left-out ranges inside it (sorted by start; one inside another is skipped).
+    fn without(source: &str, item: &Range<usize>, left_out: &[Range<usize>]) -> String {
+        let mut text: String = String::new();
+        let mut cursor: usize = item.start;
+        for range in left_out {
+            if range.start >= cursor && range.end <= item.end {
+                text.push_str(&source[cursor..range.start]);
+                cursor = range.end;
+            }
+        }
+        text.push_str(&source[cursor..item.end]);
+        text
+    }
+
+    // Runs of whitespace (a multi-line signature, a struct's fields) become one space.
+    fn to_one_line(text: &str) -> String {
+        text.split_whitespace().collect::<Vec<&str>>().join(" ")
     }
 }

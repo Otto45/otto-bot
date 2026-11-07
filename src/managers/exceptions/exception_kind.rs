@@ -23,6 +23,9 @@ pub enum ExceptionKind {
     // Raised for something the client can put right, so its message is written for the person using the app: a
     // service answers with it as it is. What only engineers need goes in the context, which is logged.
     InvalidUserRequest,
+    // The workspace's stack pack can't be used: a grammar otto-bot doesn't have, a query that doesn't compile, a glob
+    // or pattern that isn't valid. Raised by common helpers, so it belongs to no component's family.
+    InvalidStackPack,
 }
 
 impl ExceptionKind {
@@ -38,6 +41,7 @@ impl ExceptionKind {
             ExceptionKind::StackPackStoreGateway(exception) => exception.name(),
             ExceptionKind::WorkspaceGateway(exception) => exception.name(),
             ExceptionKind::InvalidUserRequest => "InvalidUserRequestException",
+            ExceptionKind::InvalidStackPack => "InvalidStackPackException",
         }
     }
 }

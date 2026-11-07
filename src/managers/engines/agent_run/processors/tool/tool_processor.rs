@@ -10,6 +10,7 @@ use crate::managers::exceptions::application_base_exception::{ApplicationBaseExc
 use crate::managers::exceptions::contextual_data::ContextualData;
 use crate::managers::models::check_result::CheckResult;
 use crate::managers::models::conversation_item::ConversationItem;
+use crate::managers::models::lint_violation::LintViolation;
 use crate::managers::models::search_match::SearchMatch;
 use crate::managers::models::tool_call_kind::ToolCallKind;
 use crate::managers::models::tool_call_reference::ToolCallReference;
@@ -232,6 +233,25 @@ impl ToolProcessor {
             .join("\n\n")
     }
 
+    /// The architecture lint's violations, one per line, as a failed check prints them.
+    pub fn format_lint_violations(&self, lint_violations: &[LintViolation]) -> String {
+        lint_violations
+            .iter()
+            .map(|lint_violation: &LintViolation| {
+                let excerpt: String = if lint_violation.excerpt.is_empty() {
+                    String::new()
+                } else {
+                    format!(": `{}`", lint_violation.excerpt)
+                };
+                format!(
+                    "{}:{}: {} ({}){excerpt}",
+                    lint_violation.path, lint_violation.line_number, lint_violation.message, lint_violation.rule_name
+                )
+            })
+            .collect::<Vec<String>>()
+            .join("\n")
+    }
+
     pub fn format_error(&self, message: &str) -> String {
         format!("error: {message}")
     }
@@ -240,16 +260,17 @@ impl ToolProcessor {
         if check_result.passed {
             return format!("{}: passed", check_result.name);
         }
+        // A check the harness runs itself (the architecture lint) has no exit code.
         let how: String = if check_result.timed_out {
-            "timed out".to_string()
+            " (timed out)".to_string()
         } else {
             match check_result.exit_code {
-                Some(exit_code) => format!("exit code {exit_code}"),
-                None => "stopped".to_string(),
+                Some(exit_code) => format!(" (exit code {exit_code})"),
+                None => String::new(),
             }
         };
         let output: String = SecretRedactor::redact(&ToolProcessor::keep_end(&check_result.output));
-        format!("{}: failed ({how})\n{}", check_result.name, output.trim_end())
+        format!("{}: failed{how}\n{}", check_result.name, output.trim_end())
     }
 
     fn keep_end(text: &str) -> String {

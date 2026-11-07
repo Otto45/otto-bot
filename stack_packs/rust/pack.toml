@@ -2,18 +2,126 @@
 # Draft: the harness reads it from step 2 of docs/DESIGN.md on; fields are added as the harness needs them.
 
 name = "rust"
+# The tree-sitter grammar, built into otto-bot, that parses the stack's source files (for the project map and the lint).
+language = "rust"
 
 # The template app (one example of every component kind) and the rules every change to an app follows.
 template = "template"
 rules = "template/AGENTS.md"
 
 # The project map: every file of the workspace, and the public items of its source files (bodies left out), opening
-# every request so the agent knows the codebase's shape before it reads anything. `language` names a tree-sitter
-# grammar built into otto-bot; the query's @item captures are shown, and a @body or @omit inside one is left out.
+# every request so the agent knows the codebase's shape before it reads anything. The query's @item captures are
+# shown, and a @body or @omit inside one is left out.
 [project_map]
-language = "rust"
 sources = ["src/**/*.rs"]
 query = "queries/project_map.scm"
+
+# The architecture lint: the rules of AGENTS.md a machine can check, run as the "architecture" check before the
+# commands below, so the agent learns of a rule it broke as it learns of a compiler error. Rule kinds:
+# - imports: a file whose path matches `files` imports nothing matching `forbid` (regular expressions, on the import as
+#   written). When both have a group named `name`, only an import of another one of the same kind breaks the rule.
+# - query: what the query captures as @violation, except what it also captures as @allowed.
+# - named_after_file: one of the names the query captures as @name is the file's name in PascalCase.
+[lint]
+sources = ["src/**/*.rs"]
+imports_query = "queries/imports.scm"
+
+[[lint.rules]]
+name = "manager-uses-manager"
+kind = "imports"
+message = "managers never call other managers; anything they share goes through the DataFacade, a processor or an engine"
+files = '^src/managers/(?P<name>[a-z0-9_]+)_manager\.rs$'
+forbid = ['crate::managers::(?P<name>[a-z0-9_]+)_manager\b']
+
+[[lint.rules]]
+name = "engine-uses-engine"
+kind = "imports"
+message = "an engine never uses another engine"
+files = '^src/managers/engines/(?P<name>[a-z0-9_]+)/'
+forbid = ['crate::managers::engines::(?P<name>[a-z0-9_]+)\b']
+
+[[lint.rules]]
+name = "engine-uses-manager-parts"
+kind = "imports"
+message = "an engine never uses a manager or a manager's processors; it is handed the DataFacade with each call"
+files = '^src/managers/engines/'
+forbid = ['crate::managers::processors\b', 'crate::managers::[a-z0-9_]+_manager\b']
+
+[[lint.rules]]
+name = "processor-does-io"
+kind = "imports"
+message = "a processor holds domain logic only: no gateways, data layer, engines, managers or service locator"
+files = '^src/managers/processors/'
+forbid = ['crate::managers::(gateways|data_layer|engines|service_locator)\b', 'crate::managers::[a-z0-9_]+_manager\b']
+
+[[lint.rules]]
+name = "engine-processor-does-io"
+kind = "imports"
+message = "an engine's processor holds domain logic only: no gateways, data layer or service locator"
+files = '^src/managers/engines/[a-z0-9_]+/processors/'
+forbid = ['crate::managers::(gateways|data_layer|service_locator)\b']
+
+[[lint.rules]]
+name = "gateway-uses-domain-parts"
+kind = "imports"
+message = "a gateway only talks to its system: no processors, engines, managers, data layer or service locator"
+files = '^src/managers/gateways/'
+forbid = ['crate::managers::(processors|engines|data_layer|service_locator)\b', 'crate::managers::[a-z0-9_]+_manager\b']
+
+[[lint.rules]]
+name = "common-helper-uses-components"
+kind = "imports"
+message = "a common helper is stateless and does no I/O: it uses no component"
+files = '^src/managers/common/'
+forbid = ['crate::managers::(gateways|data_layer|engines|processors|service_locator)\b', 'crate::managers::[a-z0-9_]+_manager\b']
+
+[[lint.rules]]
+name = "model-uses-components"
+kind = "imports"
+message = "a domain model is data: it uses other models only"
+files = '^src/managers/models/'
+forbid = ['crate::managers::(gateways|data_layer|engines|processors|service_locator|configuration_providers|logger)\b', 'crate::managers::[a-z0-9_]+_manager\b']
+
+[[lint.rules]]
+name = "service-bypasses-facade"
+kind = "imports"
+message = "a service calls only the domain facade: it never uses the domain container's components"
+files = '^src/services/'
+forbid = ['crate::managers::(gateways|data_layer|engines|processors|service_locator|configuration_providers|common)\b', 'crate::managers::[a-z0-9_]+_manager\b']
+
+[[lint.rules]]
+name = "untyped-let"
+kind = "query"
+message = "every let binding has its type written out"
+query = "queries/lint/untyped_let.scm"
+# The tracing subscriber stack's type only inference can name.
+exclude = ["src/**/logging_bridges/**"]
+
+[[lint.rules]]
+name = "untyped-closure-parameter"
+kind = "query"
+message = "every closure parameter has its type written out"
+query = "queries/lint/untyped_closure_parameter.scm"
+
+[[lint.rules]]
+name = "unwrap-in-domain"
+kind = "query"
+message = "nothing in the domain container panics on an expected failure: return ApplicationResult, or expect() a fact a validator checked"
+query = "queries/lint/unwrap.scm"
+exclude = ["src/services/**", "src/bin/**", "src/main.rs"]
+
+[[lint.rules]]
+name = "protocol-with-body"
+kind = "query"
+message = "a Protocol trait declares method signatures only: no default bodies, no async fn"
+query = "queries/lint/protocol_body.scm"
+
+[[lint.rules]]
+name = "file-named-after-type"
+kind = "named_after_file"
+message = "a file holds the one struct, enum or trait it is named after"
+query = "queries/lint/type_names.scm"
+exclude = ["**/mod.rs", "src/lib.rs", "**/main.rs", "src/bin/**"]
 
 [detect]
 # A project is a Rust app when its root has all of these.

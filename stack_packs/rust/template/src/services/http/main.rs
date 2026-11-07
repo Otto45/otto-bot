@@ -132,7 +132,7 @@ impl ShutdownSignal {
             }
         };
         #[cfg(not(unix))]
-        let terminate = std::future::pending::<()>();
+        let terminate: std::future::Pending<()> = std::future::pending::<()>();
 
         tokio::select! {
             () = ctrl_c => {},

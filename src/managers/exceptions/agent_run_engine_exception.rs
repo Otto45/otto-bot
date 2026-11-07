@@ -5,9 +5,6 @@ pub enum AgentRunEngineException {
     InvalidToolCall,
     InvalidPatch,
     MaxTurnsReached,
-    /// The workspace's stack pack maps projects in a way the harness can't: an unknown grammar, a query that doesn't
-    /// compile, a glob that isn't valid.
-    InvalidProjectMap,
 }
 
 impl AgentRunEngineException {
@@ -16,7 +13,6 @@ impl AgentRunEngineException {
             AgentRunEngineException::InvalidToolCall => "InvalidToolCallException",
             AgentRunEngineException::InvalidPatch => "InvalidPatchException",
             AgentRunEngineException::MaxTurnsReached => "MaxTurnsReachedException",
-            AgentRunEngineException::InvalidProjectMap => "InvalidProjectMapException",
         }
     }
 }

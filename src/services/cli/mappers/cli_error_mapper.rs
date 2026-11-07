@@ -17,7 +17,8 @@ impl CliErrorMapper {
             | ExceptionKind::CommandRunnerGateway(_)
             | ExceptionKind::OpenAiResponsesGateway(_)
             | ExceptionKind::SessionStoreGateway(_)
-            | ExceptionKind::StackPackStoreGateway(_) => false,
+            | ExceptionKind::StackPackStoreGateway(_)
+            | ExceptionKind::InvalidStackPack => false,
         }
     }
 }

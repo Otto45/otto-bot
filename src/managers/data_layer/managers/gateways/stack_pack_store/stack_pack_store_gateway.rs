@@ -1,9 +1,10 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::managers::common::formatters::validation_error_formatter::ValidationErrorFormatter;
 use crate::managers::data_layer::managers::gateways::stack_pack_store::mappers::stack_pack_mapper::StackPackMapper;
 use crate::managers::data_layer::managers::gateways::stack_pack_store::resource_models::stack_pack_manifest_resource::{
-    ProjectMapResource, StackPackManifestResource,
+    LintRuleResource, ProjectMapResource, StackPackManifestResource,
 };
 use crate::managers::data_layer::managers::gateways::stack_pack_store::validators::validator_stack_pack_manifest_resource::ValidatorStackPackManifestResource;
 use crate::managers::exceptions::application_base_exception::{ApplicationBaseException, ApplicationResult};
@@ -96,29 +97,41 @@ impl StackPackStoreGateway {
         })?;
         ValidatorStackPackManifestResource::validate_stack_pack_manifest_resource(&manifest, &pack_directory_name)?;
 
-        let project_map_query: Option<String> = match manifest
-            .project_map
-            .as_ref()
-            .and_then(|project_map: &ProjectMapResource| project_map.query.as_ref())
-        {
-            None => None,
-            Some(query_path) => Some(
-                tokio::fs::read_to_string(pack_directory.join(query_path))
-                    .await
-                    .map_err(|exception: std::io::Error| {
-                        StackPackStoreGateway::to_io_exception(
-                            exception,
-                            "reading a stack pack's project map query",
-                            &context,
-                        )
-                    })?,
-            ),
-        };
-        Ok(StackPackMapper::to_stack_pack(
-            manifest,
-            pack_directory,
-            project_map_query,
-        ))
+        let mut queries: HashMap<String, String> = HashMap::new();
+        for query_path in StackPackStoreGateway::get_query_paths(&manifest) {
+            let query: String = tokio::fs::read_to_string(pack_directory.join(&query_path))
+                .await
+                .map_err(|exception: std::io::Error| {
+                    StackPackStoreGateway::to_io_exception(
+                        exception,
+                        "reading a stack pack's query",
+                        &context.clone().with("query_path", query_path.as_str()),
+                    )
+                })?;
+            queries.insert(query_path, query);
+        }
+        Ok(StackPackMapper::to_stack_pack(manifest, pack_directory, &queries))
+    }
+
+    // Every query file the manifest names.
+    fn get_query_paths(manifest: &StackPackManifestResource) -> Vec<String> {
+        let mut query_paths: Vec<String> = Vec::new();
+        query_paths.extend(
+            manifest
+                .project_map
+                .as_ref()
+                .and_then(|project_map: &ProjectMapResource| project_map.query.clone()),
+        );
+        if let Some(lint) = manifest.lint.as_ref() {
+            query_paths.extend(lint.imports_query.clone());
+            query_paths.extend(
+                lint.rules
+                    .iter()
+                    .flatten()
+                    .filter_map(|lint_rule: &LintRuleResource| lint_rule.query.clone()),
+            );
+        }
+        query_paths
     }
 
     fn to_io_exception(

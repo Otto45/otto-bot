@@ -5,7 +5,9 @@ use std::time::Duration;
 use chrono::Utc;
 use tokio::sync::broadcast;
 
+use crate::managers::common::matchers::path_glob_matcher::PathGlobMatcher;
 use crate::managers::data_layer::data_facade::DataFacade;
+use crate::managers::engines::agent_run::processors::architecture_lint::architecture_lint_processor::ArchitectureLintProcessor;
 use crate::managers::engines::agent_run::processors::patch::patch_processor::PatchProcessor;
 use crate::managers::engines::agent_run::processors::project_map::project_map_processor::ProjectMapProcessor;
 use crate::managers::engines::agent_run::processors::prompt::prompt_processor::PromptProcessor;
@@ -22,6 +24,7 @@ use crate::managers::logger::application_logger::ApplicationLogger;
 use crate::managers::logger::log_level::LogLevel;
 use crate::managers::models::check_result::CheckResult;
 use crate::managers::models::conversation_item::ConversationItem;
+use crate::managers::models::lint_violation::LintViolation;
 use crate::managers::models::model_request::ModelRequest;
 use crate::managers::models::model_response::ModelResponse;
 use crate::managers::models::model_usage::ModelUsage;
@@ -34,6 +37,7 @@ use crate::managers::models::session::Session;
 use crate::managers::models::session_event::SessionEvent;
 use crate::managers::models::session_project_maps::SessionProjectMaps;
 use crate::managers::models::stack_pack::StackPack;
+use crate::managers::models::stack_pack_lint::StackPackLint;
 use crate::managers::models::stack_pack_project_map::StackPackProjectMap;
 use crate::managers::models::tool_call::ToolCall;
 use crate::managers::models::tool_request::ToolRequest;
@@ -42,6 +46,8 @@ use crate::managers::models::user_request::UserRequest;
 use crate::managers::models::workspace_file::WorkspaceFile;
 
 const APPLY_PATCH: &str = "apply_patch";
+// The check the harness runs itself, before the pack's commands.
+const ARCHITECTURE_CHECK: &str = "architecture";
 
 // Runs one agent on one request, to completion: the only component that talks to the model. Each turn sends the
 // session's whole conversation (the API keeps nothing), does what the model asked (reads, searches, patches, checks)
@@ -55,6 +61,7 @@ pub struct AgentRunEngine {
     tool_processor: Arc<ToolProcessor>,
     patch_processor: Arc<PatchProcessor>,
     project_map_processor: Arc<ProjectMapProcessor>,
+    architecture_lint_processor: Arc<ArchitectureLintProcessor>,
     max_turns: i64,
     check_timeout: Duration,
 }
@@ -69,6 +76,7 @@ impl AgentRunEngine {
         tool_processor: Arc<ToolProcessor>,
         patch_processor: Arc<PatchProcessor>,
         project_map_processor: Arc<ProjectMapProcessor>,
+        architecture_lint_processor: Arc<ArchitectureLintProcessor>,
         max_turns: i64,
         check_timeout: Duration,
     ) -> Self {
@@ -80,6 +88,7 @@ impl AgentRunEngine {
             tool_processor,
             patch_processor,
             project_map_processor,
+            architecture_lint_processor,
             max_turns,
             check_timeout,
         }
@@ -185,11 +194,11 @@ impl AgentRunEngine {
         };
         let (project_map, project_map_note): (Option<String>, Option<ConversationItem>) = match workspace_stack_pack
             .as_ref()
-            .and_then(|stack_pack: &StackPack| stack_pack.project_map.as_ref())
+            .and_then(|stack_pack: &StackPack| stack_pack.language.as_deref().zip(stack_pack.project_map.as_ref()))
         {
-            Some(stack_pack_project_map) => {
+            Some((language_name, stack_pack_project_map)) => {
                 let current_map: String = self
-                    .build_project_map(&session.workspace_directory, stack_pack_project_map)
+                    .build_project_map(&session.workspace_directory, language_name, stack_pack_project_map)
                     .await?;
                 let (layer_map, project_map_note): (String, Option<ConversationItem>) =
                     self.choose_project_map(session, current_map, data_facade).await?;
@@ -245,17 +254,29 @@ impl AgentRunEngine {
         Ok((layer_map, Some(ConversationItem::HarnessNote { text: changes })))
     }
 
-    // Every file of the workspace, and the public items of the files the pack's globs select. A source file that can't
-    // be read as text is listed without its items.
+    // Every file of the workspace, and the public items of the files the pack's globs select.
     async fn build_project_map(
         &self,
         workspace_directory: &Path,
+        language_name: &str,
         stack_pack_project_map: &StackPackProjectMap,
     ) -> ApplicationResult<String> {
+        let (paths, source_files): (Vec<String>, Vec<WorkspaceFile>) = self
+            .read_source_files(workspace_directory, &stack_pack_project_map.source_globs)
+            .await?;
+        self.project_map_processor
+            .build_project_map(&paths, &source_files, language_name, stack_pack_project_map)
+    }
+
+    // Every file of the workspace, and those the globs select, read. A source file that can't be read as text is left
+    // out.
+    async fn read_source_files(
+        &self,
+        workspace_directory: &Path,
+        source_globs: &[String],
+    ) -> ApplicationResult<(Vec<String>, Vec<WorkspaceFile>)> {
         let paths: Vec<String> = self.workspace_gateway.list_files(workspace_directory, ".").await?;
-        let source_paths: Vec<String> = self
-            .project_map_processor
-            .select_source_paths(&paths, stack_pack_project_map)?;
+        let source_paths: Vec<String> = PathGlobMatcher::select(&paths, source_globs)?;
 
         let mut source_files: Vec<WorkspaceFile> = Vec::with_capacity(source_paths.len());
         for source_path in &source_paths {
@@ -269,8 +290,29 @@ impl AgentRunEngine {
                 Err(exception) => return Err(exception),
             }
         }
-        self.project_map_processor
-            .build_project_map(&paths, &source_files, stack_pack_project_map)
+        Ok((paths, source_files))
+    }
+
+    // The architecture lint, as a check: passed when no file breaks a rule.
+    async fn run_architecture_lint(
+        &self,
+        workspace_directory: &Path,
+        language_name: &str,
+        stack_pack_lint: &StackPackLint,
+    ) -> ApplicationResult<CheckResult> {
+        let (_, source_files): (Vec<String>, Vec<WorkspaceFile>) = self
+            .read_source_files(workspace_directory, &stack_pack_lint.source_globs)
+            .await?;
+        let lint_violations: Vec<LintViolation> =
+            self.architecture_lint_processor
+                .lint(&source_files, language_name, stack_pack_lint)?;
+        Ok(CheckResult {
+            name: ARCHITECTURE_CHECK.to_string(),
+            passed: lint_violations.is_empty(),
+            exit_code: None,
+            timed_out: false,
+            output: self.tool_processor.format_lint_violations(&lint_violations),
+        })
     }
 
     async fn has_files(&self, workspace_directory: &Path, paths: &[String]) -> ApplicationResult<bool> {
@@ -407,6 +449,13 @@ impl AgentRunEngine {
         stack_pack: &StackPack,
     ) -> ApplicationResult<Vec<CheckResult>> {
         let mut check_results: Vec<CheckResult> = Vec::new();
+        if let (Some(language_name), Some(stack_pack_lint)) = (stack_pack.language.as_deref(), stack_pack.lint.as_ref())
+        {
+            check_results.push(
+                self.run_architecture_lint(workspace_directory, language_name, stack_pack_lint)
+                    .await?,
+            );
+        }
         for check in &stack_pack.checks {
             if check.command.is_empty() {
                 continue;
@@ -494,7 +543,7 @@ impl AgentRunEngine {
         match exception_kind {
             ExceptionKind::AgentRunEngine(exception) => match exception {
                 AgentRunEngineException::InvalidToolCall | AgentRunEngineException::InvalidPatch => true,
-                AgentRunEngineException::MaxTurnsReached | AgentRunEngineException::InvalidProjectMap => false,
+                AgentRunEngineException::MaxTurnsReached => false,
             },
             ExceptionKind::WorkspaceGateway(_) | ExceptionKind::CommandRunnerGateway(_) => true,
             ExceptionKind::ConfigurationProvider(_)
@@ -502,7 +551,8 @@ impl AgentRunEngine {
             | ExceptionKind::OttoBotManager(_)
             | ExceptionKind::SessionStoreGateway(_)
             | ExceptionKind::StackPackStoreGateway(_)
-            | ExceptionKind::InvalidUserRequest => false,
+            | ExceptionKind::InvalidUserRequest
+            | ExceptionKind::InvalidStackPack => false,
         }
     }
 
