@@ -8,8 +8,8 @@ use crate::managers::models::stack_pack::StackPack;
 // cached on its own:
 // 1. the stack's layer: who the agent is, how it works, and the architecture's rules for the stack. It names no
 //    workspace, so every session of every project on the stack shares it, and it is kept for 12 hours.
-// 2. the workspace's layer: where the workspace is, and its project map; shared by a run's requests, and by the next
-//    run's while no file has changed.
+// 2. the workspace's layer: where the workspace is, and its project map. The session keeps the map from run to run
+//    (what changes is told in notes in the conversation), so every request of the session shares this layer.
 // The conversation follows, cached as it grows. Nothing in a layer changes between requests of a session.
 pub struct PromptProcessor;
 
@@ -40,9 +40,9 @@ impl PromptProcessor {
         );
         if let Some(project_map) = project_map {
             workspace_layer.push_str(&format!(
-                "\nIts project map, as it was when this run started: every file, and under each source file its \
-                 public items with their bodies left out. Use it to choose what to read; read a file before you \
-                 patch it.\n\n<project_map>\n{project_map}\n</project_map>\n"
+                "\nIts project map: every file, and under each source file its public items with their bodies left \
+                 out. Notes in the conversation say what changed since it was built. Use it to choose what to read; \
+                 read a file before you patch it.\n\n<project_map>\n{project_map}\n</project_map>\n"
             ));
         }
         workspace_layer

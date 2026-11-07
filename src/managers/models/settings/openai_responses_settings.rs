@@ -1,11 +1,14 @@
 use std::fmt;
 
+use crate::managers::models::openai_transport::OpenAiTransport;
+
 #[derive(Clone, PartialEq)]
 pub struct OpenAiResponsesSettings {
     pub base_url: String,
     pub api_key: String,
     pub model: String,
     pub timeout_seconds: f64,
+    pub transport: OpenAiTransport,
 }
 
 // Written out rather than derived, so the API key never reaches a log or an error message, however the settings are
@@ -18,6 +21,7 @@ impl fmt::Debug for OpenAiResponsesSettings {
             .field("api_key", &"[REDACTED]")
             .field("model", &self.model)
             .field("timeout_seconds", &self.timeout_seconds)
+            .field("transport", &self.transport)
             .finish()
     }
 }

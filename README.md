@@ -4,9 +4,11 @@ A coding agent harness that builds apps on the Domain Container architecture, in
 itself a Domain Container app, in Rust. The design is [docs/DESIGN.md](docs/DESIGN.md); the rules every change to it
 follows are [AGENTS.md](AGENTS.md).
 
-Status: build step 2 of [docs/DESIGN.md](docs/DESIGN.md). One agent works in a workspace: it reads, lists and
-searches files, edits them with `apply_patch`, and runs the stack pack's checks, remembering the whole session. The
-layered prompt cache, sub-agents and the other stack packs come next.
+Status: build step 3 of [docs/DESIGN.md](docs/DESIGN.md). One agent works in a workspace: it reads, lists and
+searches files, edits them with `apply_patch`, and runs the stack pack's checks, remembering the whole session. Every
+request opens with cached layers (the stack's rules, then the workspace's project map), and goes over a WebSocket
+connection that sends only what is new. The architecture lint, scaffolding, sub-agents and the other stack packs come
+next.
 
 ## What you need
 
@@ -48,6 +50,7 @@ cargo clippy --all-targets -- -D warnings
 | `OTTO_BOT_SERVICE_TIER` | `standard` (`standard`, `fast` or `ultrafast`; `--service-tier` overrides it) |
 | `OTTO_BOT_OPENAI_BASE_URL` | `https://api.openai.com/v1` |
 | `OTTO_BOT_OPENAI_TIMEOUT_SECONDS` | `600` |
+| `OTTO_BOT_OPENAI_TRANSPORT` | `websocket` (a connection per session that sends only what's new each turn; or `http`) |
 | `OTTO_BOT_HOME` | `~/.otto-bot` |
 | `OTTO_BOT_STACK_PACKS_DIRECTORY` | this checkout's `stack_packs/` |
 | `OTTO_BOT_MAX_TURNS` | `60` (model turns one run may take) |

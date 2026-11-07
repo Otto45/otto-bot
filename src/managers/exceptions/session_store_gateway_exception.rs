@@ -3,6 +3,7 @@
 pub enum SessionStoreGatewayException {
     SessionStoreIo,
     InvalidConversationItemDocument,
+    InvalidProjectMapDocument,
 }
 
 impl SessionStoreGatewayException {
@@ -10,6 +11,7 @@ impl SessionStoreGatewayException {
         match self {
             SessionStoreGatewayException::SessionStoreIo => "SessionStoreIoException",
             SessionStoreGatewayException::InvalidConversationItemDocument => "InvalidConversationItemDocumentException",
+            SessionStoreGatewayException::InvalidProjectMapDocument => "InvalidProjectMapDocumentException",
         }
     }
 }

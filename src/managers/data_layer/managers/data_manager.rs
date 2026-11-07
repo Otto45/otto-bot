@@ -4,7 +4,9 @@ use crate::managers::data_layer::managers::gateways::session_store::session_stor
 use crate::managers::data_layer::managers::gateways::stack_pack_store::stack_pack_store_gateway::StackPackStoreGateway;
 use crate::managers::exceptions::application_base_exception::ApplicationResult;
 use crate::managers::models::conversation_item::ConversationItem;
+use crate::managers::models::project_map_role::ProjectMapRole;
 use crate::managers::models::session::Session;
+use crate::managers::models::session_project_maps::SessionProjectMaps;
 use crate::managers::models::stack_pack::StackPack;
 use crate::managers::models::usage_record::UsageRecord;
 use crate::managers::service_locator::service_locator::ServiceLocator;
@@ -42,6 +44,21 @@ impl DataManager {
 
     pub async fn append_usage_record(&self, usage_record: &UsageRecord) -> ApplicationResult<()> {
         self.session_store_gateway.append_usage_record(usage_record).await
+    }
+
+    pub async fn get_session_project_maps(&self, session_id: &str) -> ApplicationResult<SessionProjectMaps> {
+        self.session_store_gateway.get_session_project_maps(session_id).await
+    }
+
+    pub async fn append_project_map(
+        &self,
+        session_id: &str,
+        project_map: &str,
+        project_map_role: ProjectMapRole,
+    ) -> ApplicationResult<()> {
+        self.session_store_gateway
+            .append_project_map(session_id, project_map, project_map_role)
+            .await
     }
 
     pub async fn get_stack_packs(&self) -> ApplicationResult<Vec<StackPack>> {

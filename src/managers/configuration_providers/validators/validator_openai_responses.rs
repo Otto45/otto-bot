@@ -3,6 +3,7 @@ use crate::managers::configuration_providers::config_models::openai_responses_co
 use crate::managers::exceptions::application_base_exception::{ApplicationBaseException, ApplicationResult};
 use crate::managers::exceptions::configuration_provider_exception::ConfigurationProviderException;
 use crate::managers::exceptions::contextual_data::ContextualData;
+use crate::managers::models::openai_transport::OpenAiTransport;
 
 pub struct ValidatorOpenAiResponses;
 
@@ -12,6 +13,7 @@ impl ValidatorOpenAiResponses {
             ("base_url", config.base_url.as_deref()),
             ("api_key (OPENAI_API_KEY)", config.api_key.as_deref()),
             ("model", config.model.as_deref()),
+            ("transport", config.transport.as_deref()),
         ]
         .into_iter()
         .filter_map(|(property_name, property_value): (&str, Option<&str>)| {
@@ -30,6 +32,18 @@ impl ValidatorOpenAiResponses {
                 ContextualData::new()
                     .with("setting_name", "openai_responses")
                     .with("errors", errors.join("; ")),
+            ));
+        }
+
+        if let Some(transport) = config.transport.as_deref()
+            && OpenAiTransport::from_name(transport).is_none()
+        {
+            return Err(ApplicationBaseException::new(
+                ConfigurationProviderException::InvalidConfiguration,
+                "OpenAI configuration is invalid",
+                ContextualData::new()
+                    .with("setting_name", "openai_responses")
+                    .with("errors", "transport is not one of websocket, http"),
             ));
         }
 

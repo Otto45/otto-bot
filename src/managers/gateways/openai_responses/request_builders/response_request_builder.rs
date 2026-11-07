@@ -20,6 +20,7 @@ use crate::managers::models::tool_definition::ToolDefinition;
 pub struct ResponseRequestBuilder;
 
 impl ResponseRequestBuilder {
+    /// The whole request: the prompt layers, then every item of the conversation.
     pub fn build(model: &str, model_request: &ModelRequest) -> ApplicationResult<Value> {
         let mut input: Vec<Value> = Vec::with_capacity(model_request.items.len() + 1);
         input.push(json!({
@@ -33,7 +34,35 @@ impl ResponseRequestBuilder {
         for conversation_item in &model_request.items {
             input.push(ResponseRequestBuilder::to_input_item(conversation_item)?);
         }
+        Ok(ResponseRequestBuilder::build_body(model, model_request, input, None))
+    }
 
+    /// A request that continues `previous_response_id`, which covers the prompt layers and the first
+    /// `covered_count` items: only the items after those are sent (WebSocket transport).
+    pub fn build_continuation(
+        model: &str,
+        model_request: &ModelRequest,
+        previous_response_id: &str,
+        covered_count: usize,
+    ) -> ApplicationResult<Value> {
+        let input: Vec<Value> = model_request.items[covered_count..]
+            .iter()
+            .map(ResponseRequestBuilder::to_input_item)
+            .collect::<ApplicationResult<Vec<Value>>>()?;
+        Ok(ResponseRequestBuilder::build_body(
+            model,
+            model_request,
+            input,
+            Some(previous_response_id),
+        ))
+    }
+
+    fn build_body(
+        model: &str,
+        model_request: &ModelRequest,
+        input: Vec<Value>,
+        previous_response_id: Option<&str>,
+    ) -> Value {
         let mut tools: Vec<Value> = model_request
             .tools
             .iter()
@@ -41,7 +70,7 @@ impl ResponseRequestBuilder {
             .collect();
         tools.push(json!({ "type": "apply_patch" }));
 
-        Ok(json!({
+        let mut body: Value = json!({
             "model": model,
             "store": false,
             "include": ["reasoning.encrypted_content"],
@@ -51,13 +80,21 @@ impl ResponseRequestBuilder {
             "text": { "verbosity": "low" },
             "tools": tools,
             "input": input,
-        }))
+        });
+        if let Some(previous_response_id) = previous_response_id {
+            body["previous_response_id"] = Value::from(previous_response_id);
+        }
+        body
     }
 
     fn to_input_item(conversation_item: &ConversationItem) -> ApplicationResult<Value> {
         Ok(match conversation_item {
             ConversationItem::UserMessage { text } => json!({
                 "role": "user",
+                "content": [{ "type": "input_text", "text": text }],
+            }),
+            ConversationItem::HarnessNote { text } => json!({
+                "role": "developer",
                 "content": [{ "type": "input_text", "text": text }],
             }),
             // Sent back exactly as the API returned it.

@@ -15,6 +15,7 @@ use crate::managers::exceptions::application_base_exception::{ApplicationBaseExc
 use crate::managers::exceptions::configuration_provider_exception::ConfigurationProviderException;
 use crate::managers::exceptions::contextual_data::ContextualData;
 use crate::managers::gateways::command_runner::command_runner_gateway::CommandRunnerGateway;
+use crate::managers::gateways::openai_responses::clients::responses_web_socket_connector::ResponsesWebSocketConnector;
 use crate::managers::gateways::openai_responses::openai_responses_gateway::OpenAiResponsesGateway;
 use crate::managers::gateways::workspace::workspace_gateway::WorkspaceGateway;
 use crate::managers::models::settings::agent_settings::AgentSettings;
@@ -95,14 +96,22 @@ impl ServiceLocator {
                 .seams
                 .create_openai_responses_http_client(openai_responses_settings)?;
 
+            let web_socket_connector: ResponsesWebSocketConnector = self
+                .seams
+                .create_openai_responses_web_socket_connector(openai_responses_settings)?;
+
             let openai_responses_gateway: Arc<OpenAiResponsesGateway> = Arc::new(OpenAiResponsesGateway::new(
                 http_client,
+                web_socket_connector,
+                openai_responses_settings.transport,
                 openai_responses_settings.base_url.clone(),
                 openai_responses_settings.api_key.clone(),
                 openai_responses_settings.model.clone(),
             ));
             let gateway_to_close: Arc<OpenAiResponsesGateway> = openai_responses_gateway.clone();
-            self.register_close(Box::new(move || Box::pin(async move { gateway_to_close.close() })));
+            self.register_close(Box::new(move || {
+                Box::pin(async move { gateway_to_close.close().await })
+            }));
             Ok(openai_responses_gateway)
         })
     }

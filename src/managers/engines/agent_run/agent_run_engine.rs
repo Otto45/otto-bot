@@ -27,10 +27,12 @@ use crate::managers::models::model_response::ModelResponse;
 use crate::managers::models::model_usage::ModelUsage;
 use crate::managers::models::patch_operation::PatchOperation;
 use crate::managers::models::patch_operation_kind::PatchOperationKind;
+use crate::managers::models::project_map_role::ProjectMapRole;
 use crate::managers::models::run_context::RunContext;
 use crate::managers::models::run_summary::RunSummary;
 use crate::managers::models::session::Session;
 use crate::managers::models::session_event::SessionEvent;
+use crate::managers::models::session_project_maps::SessionProjectMaps;
 use crate::managers::models::stack_pack::StackPack;
 use crate::managers::models::stack_pack_project_map::StackPackProjectMap;
 use crate::managers::models::tool_call::ToolCall;
@@ -104,19 +106,22 @@ impl AgentRunEngine {
                 .await?;
             conversation_items.extend(unfinished_tool_call_outputs);
         }
-        let user_message: ConversationItem = ConversationItem::UserMessage {
+        let mut new_items: Vec<ConversationItem> = Vec::with_capacity(2);
+        if let Some(project_map_note) = run_context.project_map_note.as_ref() {
+            new_items.push(project_map_note.clone());
+        }
+        new_items.push(ConversationItem::UserMessage {
             text: user_request.text.clone(),
-        };
-        data_facade
-            .append_conversation_items(&session.id, std::slice::from_ref(&user_message))
-            .await?;
-        conversation_items.push(user_message);
+        });
+        data_facade.append_conversation_items(&session.id, &new_items).await?;
+        conversation_items.extend(new_items);
 
         let mut usage: ModelUsage = ModelUsage::default();
         for turn in 1..=self.max_turns {
             let model_response: ModelResponse = self
                 .openai_responses_gateway
                 .create_response(&ModelRequest {
+                    lane_id: session.id.clone(),
                     prompt_layers: run_context.prompt_layers.clone(),
                     items: conversation_items.clone(),
                     tools: run_context.tools.clone(),
@@ -178,15 +183,19 @@ impl AgentRunEngine {
             Some(stack_pack) => Some(data_facade.get_stack_pack_rules(stack_pack).await?),
             None => None,
         };
-        let project_map: Option<String> = match workspace_stack_pack
+        let (project_map, project_map_note): (Option<String>, Option<ConversationItem>) = match workspace_stack_pack
             .as_ref()
             .and_then(|stack_pack: &StackPack| stack_pack.project_map.as_ref())
         {
-            Some(stack_pack_project_map) => Some(
-                self.build_project_map(&session.workspace_directory, stack_pack_project_map)
-                    .await?,
-            ),
-            None => None,
+            Some(stack_pack_project_map) => {
+                let current_map: String = self
+                    .build_project_map(&session.workspace_directory, stack_pack_project_map)
+                    .await?;
+                let (layer_map, project_map_note): (String, Option<ConversationItem>) =
+                    self.choose_project_map(session, current_map, data_facade).await?;
+                (Some(layer_map), project_map_note)
+            }
+            None => (None, None),
         };
 
         Ok(RunContext {
@@ -198,7 +207,42 @@ impl AgentRunEngine {
             ),
             tools: self.tool_processor.get_tool_definitions(),
             stack_pack: workspace_stack_pack,
+            project_map_note,
         })
+    }
+
+    // The map the requests open with, and a note of what changed since the last run, if anything did. The session
+    // keeps its map from run to run so the requests' prefix (and the lane) carries over; changes are told in notes,
+    // until there are too many and the map is rebuilt.
+    async fn choose_project_map(
+        &self,
+        session: &Session,
+        current_map: String,
+        data_facade: &DataFacade,
+    ) -> ApplicationResult<(String, Option<ConversationItem>)> {
+        let session_project_maps: SessionProjectMaps = data_facade.get_session_project_maps(&session.id).await?;
+        let Some(layer_map) = session_project_maps.layer_map else {
+            data_facade
+                .append_project_map(&session.id, &current_map, ProjectMapRole::Layer)
+                .await?;
+            return Ok((current_map, None));
+        };
+        let latest_map: String = session_project_maps.latest_map.unwrap_or_else(|| layer_map.clone());
+        if latest_map == current_map {
+            return Ok((layer_map, None));
+        }
+        if self.project_map_processor.should_rebuild(&layer_map, &current_map) {
+            data_facade
+                .append_project_map(&session.id, &current_map, ProjectMapRole::Layer)
+                .await?;
+            return Ok((current_map, None));
+        }
+
+        let changes: String = self.project_map_processor.describe_changes(&latest_map, &current_map);
+        data_facade
+            .append_project_map(&session.id, &current_map, ProjectMapRole::Seen)
+            .await?;
+        Ok((layer_map, Some(ConversationItem::HarnessNote { text: changes })))
     }
 
     // Every file of the workspace, and the public items of the files the pack's globs select. A source file that can't

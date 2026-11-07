@@ -29,6 +29,8 @@ uuid = { version = "1", features = ["v4"] }
 tree-sitter = "0.27.2"
 tree-sitter-rust = "0.24.2"
 globset = "0.4.21"
+tokio-tungstenite = { version = "0.28", features = ["rustls-tls-native-roots"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 
 [lints.rust]
 unsafe_code = "forbid"

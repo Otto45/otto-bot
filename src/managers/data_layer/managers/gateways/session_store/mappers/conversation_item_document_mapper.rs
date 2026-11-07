@@ -13,6 +13,11 @@ impl ConversationItemDocumentMapper {
                 text: Some(text.clone()),
                 ..ConversationItemDocument::default()
             },
+            ConversationItem::HarnessNote { text } => ConversationItemDocument {
+                item_type: Some("harness_note".to_string()),
+                text: Some(text.clone()),
+                ..ConversationItemDocument::default()
+            },
             ConversationItem::ModelOutput { item, tool_call } => ConversationItemDocument {
                 item_type: Some("model_output".to_string()),
                 item: Some(item.clone()),
@@ -53,6 +58,9 @@ impl ConversationItemDocumentMapper {
             .expect("validated by ValidatorConversationItemDocument")
         {
             "user_message" => ConversationItem::UserMessage {
+                text: document.text.expect("validated by ValidatorConversationItemDocument"),
+            },
+            "harness_note" => ConversationItem::HarnessNote {
                 text: document.text.expect("validated by ValidatorConversationItemDocument"),
             },
             "model_output" => ConversationItem::ModelOutput {

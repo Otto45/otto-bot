@@ -12,7 +12,7 @@ impl ValidatorConversationItemDocument {
         line_number: i64,
     ) -> ApplicationResult<()> {
         let required: Vec<(&str, bool)> = match document.item_type.as_deref() {
-            Some("user_message") => vec![("text", document.text.is_some())],
+            Some("user_message") | Some("harness_note") => vec![("text", document.text.is_some())],
             Some("model_output") => {
                 if let Some(call_kind) = document.call_kind.as_deref()
                     && ToolCallKind::from_name(call_kind).is_none()

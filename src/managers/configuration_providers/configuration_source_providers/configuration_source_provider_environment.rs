@@ -63,6 +63,10 @@ impl ConfigurationSourceProviderProtocol for ConfigurationSourceProviderEnvironm
                 "OTTO_BOT_OPENAI_TIMEOUT_SECONDS",
                 "600",
             )?),
+            transport: Some(ConfigurationSourceProviderEnvironment::get_string(
+                "OTTO_BOT_OPENAI_TRANSPORT",
+                "websocket",
+            )),
         })
     }
 }

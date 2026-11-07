@@ -6,6 +6,7 @@ pub struct OpenAiResponsesConfig {
     pub api_key: Option<String>,
     pub model: Option<String>,
     pub timeout_seconds: Option<f64>,
+    pub transport: Option<String>,
 }
 
 // Written out rather than derived, so the API key never reaches a log or an error message.
@@ -17,6 +18,7 @@ impl fmt::Debug for OpenAiResponsesConfig {
             .field("api_key", &self.api_key.as_ref().map(|_: &String| "[REDACTED]"))
             .field("model", &self.model)
             .field("timeout_seconds", &self.timeout_seconds)
+            .field("transport", &self.transport)
             .finish()
     }
 }

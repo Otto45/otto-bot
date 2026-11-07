@@ -7,6 +7,10 @@ pub enum OpenAiResponsesGatewayException {
     InvalidOpenAiResponse,
     /// The API answered, but the response did not complete (e.g. it ran out of output tokens).
     IncompleteOpenAiResponse,
+    /// A WebSocket connection could not be opened, or was lost before the response came.
+    OpenAiConnection,
+    /// The response a request continues is no longer held by the connection (evicted, or the connection is new).
+    PreviousResponseNotFound,
 }
 
 impl OpenAiResponsesGatewayException {
@@ -15,6 +19,8 @@ impl OpenAiResponsesGatewayException {
             OpenAiResponsesGatewayException::OpenAiRequest => "OpenAiRequestException",
             OpenAiResponsesGatewayException::InvalidOpenAiResponse => "InvalidOpenAiResponseException",
             OpenAiResponsesGatewayException::IncompleteOpenAiResponse => "IncompleteOpenAiResponseException",
+            OpenAiResponsesGatewayException::OpenAiConnection => "OpenAiConnectionException",
+            OpenAiResponsesGatewayException::PreviousResponseNotFound => "PreviousResponseNotFoundException",
         }
     }
 }

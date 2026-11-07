@@ -9,6 +9,7 @@ use crate::managers::configuration_providers::validators::validator_agent::Valid
 use crate::managers::configuration_providers::validators::validator_openai_responses::ValidatorOpenAiResponses;
 use crate::managers::configuration_providers::validators::validator_storage::ValidatorStorage;
 use crate::managers::exceptions::application_base_exception::ApplicationResult;
+use crate::managers::models::openai_transport::OpenAiTransport;
 use crate::managers::models::service_tier::ServiceTier;
 use crate::managers::models::settings::agent_settings::AgentSettings;
 use crate::managers::models::settings::openai_responses_settings::OpenAiResponsesSettings;
@@ -71,6 +72,8 @@ impl ConfigurationProvider {
             api_key: config.api_key.expect("validated by ValidatorOpenAiResponses"),
             model: config.model.expect("validated by ValidatorOpenAiResponses"),
             timeout_seconds: config.timeout_seconds.expect("validated by ValidatorOpenAiResponses"),
+            transport: OpenAiTransport::from_name(&config.transport.expect("validated by ValidatorOpenAiResponses"))
+                .expect("validated by ValidatorOpenAiResponses"),
         })
     }
 

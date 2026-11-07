@@ -142,7 +142,9 @@ impl ToolProcessor {
             .filter_map(|conversation_item: &ConversationItem| match conversation_item {
                 ConversationItem::FunctionCallOutput { call_id, .. }
                 | ConversationItem::ApplyPatchCallOutput { call_id, .. } => Some(call_id.as_str()),
-                ConversationItem::UserMessage { .. } | ConversationItem::ModelOutput { .. } => None,
+                ConversationItem::UserMessage { .. }
+                | ConversationItem::HarnessNote { .. }
+                | ConversationItem::ModelOutput { .. } => None,
             })
             .collect();
 

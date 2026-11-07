@@ -1,6 +1,7 @@
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
+use chrono::{SecondsFormat, Utc};
 use tokio::io::AsyncWriteExt;
 
 use crate::managers::common::formatters::validation_error_formatter::ValidationErrorFormatter;
@@ -8,17 +9,21 @@ use crate::managers::data_layer::managers::gateways::session_store::mappers::con
 use crate::managers::data_layer::managers::gateways::session_store::mappers::session_document_mapper::SessionDocumentMapper;
 use crate::managers::data_layer::managers::gateways::session_store::mappers::usage_record_document_mapper::UsageRecordDocumentMapper;
 use crate::managers::data_layer::managers::gateways::session_store::resource_models::conversation_item_document::ConversationItemDocument;
+use crate::managers::data_layer::managers::gateways::session_store::resource_models::project_map_document::ProjectMapDocument;
 use crate::managers::data_layer::managers::gateways::session_store::validators::validator_conversation_item_document::ValidatorConversationItemDocument;
 use crate::managers::exceptions::application_base_exception::{ApplicationBaseException, ApplicationResult};
 use crate::managers::exceptions::contextual_data::ContextualData;
 use crate::managers::exceptions::session_store_gateway_exception::SessionStoreGatewayException;
 use crate::managers::models::conversation_item::ConversationItem;
+use crate::managers::models::project_map_role::ProjectMapRole;
 use crate::managers::models::session::Session;
+use crate::managers::models::session_project_maps::SessionProjectMaps;
 use crate::managers::models::usage_record::UsageRecord;
 
 const SESSION_FILE_NAME: &str = "session.json";
 const CONVERSATION_ITEMS_FILE_NAME: &str = "conversation_items.jsonl";
 const USAGE_RECORDS_FILE_NAME: &str = "usage_records.jsonl";
+const PROJECT_MAPS_FILE_NAME: &str = "project_maps.jsonl";
 
 /// Keeps each session in a folder of its own: `session.json`, and two append-only JSON Lines files, its conversation
 /// (every item in the order the model saw it) and its usage ledger (one line per model response). Nothing is ever
@@ -111,6 +116,68 @@ impl SessionStoreGateway {
             &self.get_file_path(&usage_record.session_id, USAGE_RECORDS_FILE_NAME),
             &[line],
             &ContextualData::new().with("session_id", usage_record.session_id.as_str()),
+        )
+        .await
+    }
+
+    /// The project maps the session keeps; none before its first run.
+    pub async fn get_session_project_maps(&self, session_id: &str) -> ApplicationResult<SessionProjectMaps> {
+        let context: ContextualData = ContextualData::new().with("session_id", session_id);
+        let content: String =
+            match tokio::fs::read_to_string(self.get_file_path(session_id, PROJECT_MAPS_FILE_NAME)).await {
+                Ok(content) => content,
+                Err(exception) if exception.kind() == ErrorKind::NotFound => return Ok(SessionProjectMaps::default()),
+                Err(exception) => {
+                    return Err(SessionStoreGateway::to_io_exception(
+                        exception,
+                        "reading a session's project maps",
+                        &context,
+                    ));
+                }
+            };
+
+        let mut session_project_maps: SessionProjectMaps = SessionProjectMaps::default();
+        for line in content.lines().filter(|line: &&str| !line.trim().is_empty()) {
+            let document: ProjectMapDocument = serde_json::from_str(line).map_err(|exception: serde_json::Error| {
+                ApplicationBaseException::new(
+                    SessionStoreGatewayException::InvalidProjectMapDocument,
+                    "A project map in the session store could not be deserialized",
+                    context
+                        .clone()
+                        .with("errors", ValidationErrorFormatter::format_whole(&exception, "document")),
+                )
+            })?;
+            let (Some(project_map), Some(role)) = (document.project_map, document.role) else {
+                return Err(ApplicationBaseException::new(
+                    SessionStoreGatewayException::InvalidProjectMapDocument,
+                    "A project map in the session store is invalid",
+                    context.with("errors", "project_map or role is missing"),
+                ));
+            };
+            if role == ProjectMapRole::Layer.name() {
+                session_project_maps.layer_map = Some(project_map.clone());
+            }
+            session_project_maps.latest_map = Some(project_map);
+        }
+        Ok(session_project_maps)
+    }
+
+    pub async fn append_project_map(
+        &self,
+        session_id: &str,
+        project_map: &str,
+        project_map_role: ProjectMapRole,
+    ) -> ApplicationResult<()> {
+        let line: String = serde_json::to_string(&ProjectMapDocument {
+            project_map: Some(project_map.to_string()),
+            role: Some(project_map_role.name().to_string()),
+            built_on: Some(Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)),
+        })
+        .expect("a project map document serializes to JSON");
+        self.append_lines(
+            &self.get_file_path(session_id, PROJECT_MAPS_FILE_NAME),
+            &[line],
+            &ContextualData::new().with("session_id", session_id),
         )
         .await
     }

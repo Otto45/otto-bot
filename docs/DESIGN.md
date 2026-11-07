@@ -82,7 +82,8 @@ Rules that keep the cache hitting:
 - **Nothing variable above BP3**: no timestamps, ids or unsorted lists. The project map is rendered deterministically
   (sorted paths, canonical formatting).
 - **The project map is never rewritten mid-wave.** Changes are appended as "changes since the map was built"; the
-  map is rebuilt only between waves, as a deliberate cache break.
+  map is rebuilt only between waves, as a deliberate cache break. (Built in step 3: a session keeps its map from run
+  to run and notes the changes as developer messages; it is rebuilt when the notes would exceed a quarter of it.)
 - **Warm, then fan out.** After the skeleton step, one `prewarm` request writes BP2; then all workers start together
   and read it.
 - **Measure.** Every call records `cached_tokens`, `cache_write_tokens` and its details in the usage ledger.
