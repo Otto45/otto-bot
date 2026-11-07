@@ -3,7 +3,8 @@
 otto-bot is a coding agent harness, written in Rust, that builds and changes apps following the Domain Container
 architecture, in Rust, Python and TypeScript. It is itself a Domain Container app.
 
-Status: planned, not yet implemented.
+Status: build steps 1-3 are done (a single agent with the layered cache, WebSocket lanes, the project map, the
+architecture lint and scaffold); step 4, the multi-agent workflow, is under way.
 
 ## Goals
 
@@ -78,14 +79,14 @@ Rules that keep the cache hitting:
 - **One tool list, one model.** Every role gets the same tools in the same order and is restricted with
   `allowed_tools`, never by removing tools. Caches are per model.
 - **Reasoning effort per role** is set by appending a `configuration_update` item, not by changing
-  `reasoning.effort`, which would change the prefix.
+  `reasoning.effort`, which misses the cache (see Verified).
 - **Nothing variable above BP3**: no timestamps, ids or unsorted lists. The project map is rendered deterministically
   (sorted paths, canonical formatting).
 - **The project map is never rewritten mid-wave.** Changes are appended as "changes since the map was built"; the
   map is rebuilt only between waves, as a deliberate cache break. (Built in step 3: a session keeps its map from run
   to run and notes the changes as developer messages; it is rebuilt when the notes would exceed a quarter of it.)
-- **Warm, then fan out.** After the skeleton step, one `prewarm` request writes BP2; then all workers start together
-  and read it.
+- **Fan out together.** After the skeleton step all workers start at once: concurrent requests on a cold prefix
+  share one cache write (see Verified), so no prewarm request is needed.
 - **Measure.** Every call records `cached_tokens`, `cache_write_tokens` and its details in the usage ledger.
 
 Rough cost on `gpt-6.1-sol` ($2 / $10 per million input / output tokens; cached reads 0.05x; 12h writes 2.5x): the
@@ -113,8 +114,9 @@ Output dominates the cost, which is why the speed levers below also cut cost.
   | `apply_patch` | native file edits |
   | `scaffold` | creates a component and its wiring, deterministically |
   | `run_checks` | runs the pack's check commands |
-  | `request_contract_change` | asks the orchestrator to change a frozen interface |
-  | `report` | the agent's structured, terse completion report |
+  | `submit_plan` | the lead's work plan, checked by the harness (a rejected plan is the call's error) |
+  | `report` | a worker's or reviewer's structured, terse completion report |
+  | `request_contract_change` | (later) asks the lead to change a frozen interface mid fan-out |
 
 - **Compaction** (`/responses/compact`, or `context_management`) only at wave boundaries, since it resets cache reuse.
 - **Service tier** comes from the session's options; the ledger records the tier each response actually ran at,
@@ -124,25 +126,34 @@ Output dominates the cost, which is why the speed levers below also cut cost.
 
 ### Implementing a feature
 
-1. **Plan.** One agent at high reasoning effort returns a structured work plan: new or changed models, exception
-   variants, settings and facade operations; new components (kind, name, signatures); migrations and routes; and work
-   packages with the files each owns. The harness checks it without a model: every path is legal for its kind, no
-   file is owned twice, and no dependency rule is broken (manager -> manager, engine -> engine, ...). A rejected plan
-   goes back to the planner. Ambiguities in the request are decided by the planner and recorded as assumptions.
-2. **Skeleton.** The harness scaffolds every new component (files, module wiring, the locator's `get_*`, cache slot
-   and close registration, facade pass-throughs). The planner writes only the contracts: models, exception variants,
-   and signatures with placeholder bodies. The skeleton must pass the checks; it is checkpointed, and the interfaces
-   are frozen.
-3. **Fan out.** One worker per package (a gateway with its resource models, validators and mappers; the data layer
-   with its migration; a processor; an engine; the service's routes and wire models). A worker may only patch files
-   it owns; an interface change goes through `request_contract_change`.
-4. **Integrate.** Manager methods (short coordinations) are written, then the full checks and the architecture lint
-   run. Each error goes to the worker that owns the file, on its still-warm lane.
-5. **Review.** The architecture lint, then a lean reviewer that sees BP1 and the diff only, focused on security.
+The manager keeps the order: each phase is one call to `AgentRunEngine`, which runs one agent (a lane) in a role.
 
-Each worker has its own git worktree, so it compiles against the skeleton plus its own changes only. Build output is
-copied into each worktree with copy-on-write clones (`cp -c` on APFS) so builds start warm. Disjoint ownership makes
-merging conflict-free.
+1. **Lead.** The session's agent, as in steps 1-3, with one more tool: `submit_plan`. A small job it does itself,
+   with no plan, so a small request pays nothing for the workflow. A bigger one it plans: new or changed models,
+   exception variants and settings; the components to scaffold (kind, name, within); and work packages, each with the
+   files it owns and a brief. The `WorkPlanProcessor` checks the plan without a model: every path is legal for its
+   kind (the pack's `[layout]`), no file is owned twice, and no worker owns a wiring file (module files, the service
+   locator, the facade). A rejected plan is the tool call's error, so the lead fixes it in the same turn loop.
+   Ambiguities in the request are decided by the lead and recorded as assumptions in the plan.
+2. **Skeleton.** The harness scaffolds every component of the plan. The lead, on its still-warm lane, writes only
+   the contracts: models, exception variants, and signatures with placeholder bodies. The skeleton must pass every
+   check (the architecture lint catches a contract that breaks a dependency rule); then it is snapshotted and the
+   contracts are frozen.
+3. **Fan out.** One worker per package, each in its own copy of the snapshot, on its own lane
+   (`<session>/<package>`), with one more layer: the full text of the files it owns. A patch to a file it doesn't own
+   fails, telling it why. A worker ends with `report` (done, or blocked with the reason). Workers run concurrently,
+   at most `OTTO_BOT_MAX_WORKERS` at a time. A worker that needs a contract changed reports itself blocked, and the
+   lead settles it in the next phase.
+4. **Integrate.** Each worker's changed files are copied back (ownership is disjoint, so nothing is merged). The lead
+   writes the manager's coordinations and settles blocked packages; then the full checks run, and each error goes to
+   the owner of the file it is in, on its still-warm lane, now in the main workspace.
+5. **Review.** A reviewer lane whose second layer is the diff, not the project map: read-only, focused on security,
+   ending with `report`. High-severity findings go to their owners for one round of fixes; the rest are listed in
+   the run's summary.
+
+Workers' copies are copy-on-write clones of the workspace (`cp -c` on APFS, `--reflink=auto` on Linux), build output
+included, so each worker's builds start warm. They need no git: the workspace needn't be a repository, and nothing is
+committed to its branch. (On a file system without reflinks the build output is copied in full.)
 
 ### Starting a project
 
@@ -199,9 +210,8 @@ src/
             project_bootstrap/      copies, renames and strips a pack's template (no model)
         gateways/
             openai_responses/       WebSocket and HTTP transport, lanes, replay from the session log
-            workspace/              reads many files, applies V4A patches atomically, lists the tree
+            workspace/              reads many files, applies V4A patches, lists the tree; workers' copy-on-write copies
             command_runner/         runs a pack's declared commands
-            git/                    worktrees, checkpoints, diffs
         data_layer/
             data_facade.rs, managers/data_manager.rs
             managers/gateways/
@@ -226,19 +236,35 @@ stack_packs/rust/, stack_packs/python/, stack_packs/typescript/
 1. The harness skeleton from the Rust template; the Rust pack; the facade's session and event API; the CLI service.
 2. A single-agent loop over HTTP, replaying the item list from the session log; the usage ledger; `--service-tier`.
 3. WebSocket lanes with replay; layered breakpoints; the project map; `scaffold`; the architecture lint.
-4. The multi-agent workflow: plan, skeleton, workers in worktrees, integration, review.
+4. The multi-agent workflow, in parts: (1) API probes: `allowed_tools` with `apply_patch`, per-role reasoning effort,
+   prewarm, concurrent lanes; (2) lanes and roles in the engine; (3) the plan; (4) the skeleton; (5) fan out;
+   (6) integrate; (7) review.
 5. The Python pack, then the TypeScript pack, ported by the harness; starting new projects.
 6. Resume, compaction, a second client.
 
 A fixed set of feature tasks on template apps is run against every change to the harness, recording wall time,
 cost, cache hit rate, lint violations and whether the checks pass, so speed and quality trade-offs are measured.
 
-## To verify early
+## Verified
 
-- A `configuration_update` item changes reasoning effort without breaking the cached prefix.
-- Changing the service tier mid-session keeps cache hits.
-- The `12h` cache TTL is available with zero data retention; if not, `30m` with steady reuse.
-- Forking WebSocket lanes, and replay after a lost lane, behave as documented with `store=false`.
+What the design depends on from the API, probed with `gpt-6.1-sol` on a ~6.3k-token prefix (`store=false`):
+
+- **The 12h TTL** works with `store=false`: the stack layer is a cache hit across sessions and workspaces.
+- **`tool_choice: {"type": "allowed_tools", "mode": "auto"|"required", "tools": [...]}`** restricts calls to the
+  listed tools, native `{"type": "apply_patch"}` included, and keeps the cached prefix: `auto` reads everything up to
+  the last message; `required` reads the prompt layers but not the last message.
+- **A `configuration_update` item** (`{"type": "configuration_update", "reasoning": {"effort": "low"}}`), appended
+  to the input, sets the effort of later responses and keeps the cached prefix (low: 0 reasoning tokens, max: about
+  900, on the same question); the response still reports the top-level effort. Changing the top-level
+  `reasoning.effort` misses the cache. The model's efforts are `low`, `medium` (the default), `high`, `xhigh`, `max`.
+- **Service tiers have separate caches**: the first request on another tier writes its own entry, and the first
+  tier's entry is still there when it returns. Every role of a session uses the session's tier.
+- **Concurrent requests share one cache write**: six requests (HTTP, or six WebSocket connections) started together
+  on a cold prefix: one writes it and five read it. `prompt_cache_options.prewarm: true` writes a prefix with no
+  output (about 0.7s), but a fan-out doesn't need it. A request sent right after another's write can still miss.
+- **Six WebSocket connections at once** open in 0.4-0.7s each and continue with `previous_response_id`.
+
+Not yet verified: forking a WebSocket lane (not needed while each lane has its own connection).
 
 ## Open
 
