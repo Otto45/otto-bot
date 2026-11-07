@@ -10,7 +10,14 @@ impl CliErrorMapper {
             ExceptionKind::OttoBotManager(_) | ExceptionKind::InvalidUserRequest => true,
             // The person running the CLI is who sets its configuration (e.g. OPENAI_API_KEY), so they can fix it.
             ExceptionKind::ConfigurationProvider(_) => true,
-            ExceptionKind::OpenAiResponsesGateway(_) => false,
+            // Reaches the CLI only for the workspace it was given (e.g. a --workspace that doesn't exist); the agent's
+            // own workspace errors are told to the model.
+            ExceptionKind::WorkspaceGateway(_) => true,
+            ExceptionKind::AgentRunEngine(_)
+            | ExceptionKind::CommandRunnerGateway(_)
+            | ExceptionKind::OpenAiResponsesGateway(_)
+            | ExceptionKind::SessionStoreGateway(_)
+            | ExceptionKind::StackPackStoreGateway(_) => false,
         }
     }
 }

@@ -1,4 +1,5 @@
 use std::error::Error;
+use std::path::{Path, PathBuf};
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines, Stdin, Stdout};
 use tokio::sync::broadcast;
@@ -12,7 +13,7 @@ use crate::services::cli::mappers::session_event_mapper::SessionEventMapper;
 use crate::services::cli::mappers::session_options_mapper::SessionOptionsMapper;
 use crate::services::cli::wire_models::cli_arguments::CliArguments;
 
-const GREETING: &str = "otto: what should I build? (Ctrl-C cancels a run; Ctrl-D or /exit quits)\n\n";
+const GREETING: &str = "otto: what should I build? (Ctrl-C cancels a run; Ctrl-D or /exit quits)\n";
 const PROMPT: &str = "> ";
 const EXIT_COMMAND: &str = "/exit";
 
@@ -23,12 +24,16 @@ pub struct CliService;
 
 impl CliService {
     /// Creates the Domain Facade, converses until the person quits, then closes it, whether conversing failed or not.
-    pub async fn run(cli_arguments: &CliArguments) -> Result<(), Box<dyn Error + Send + Sync>> {
+    /// `log_path` is where the CLI logs, to say so; None when it logs to the console.
+    pub async fn run(
+        cli_arguments: &CliArguments,
+        log_path: Option<&Path>,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
         // e.g. invalid configuration, which fails while the facade is created
         let otto_bot_facade: OttoBotFacade = OttoBotFacade::new()?;
 
         let conversed: Result<(), Box<dyn Error + Send + Sync>> =
-            CliService::converse(&otto_bot_facade, cli_arguments).await;
+            CliService::converse(&otto_bot_facade, cli_arguments, log_path).await;
         otto_bot_facade.close().await;
         conversed
     }
@@ -36,15 +41,27 @@ impl CliService {
     async fn converse(
         otto_bot_facade: &OttoBotFacade,
         cli_arguments: &CliArguments,
+        log_path: Option<&Path>,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
-        let session_id: String =
-            otto_bot_facade.start_session(&SessionOptionsMapper::to_session_options(cli_arguments));
+        let current_directory: PathBuf = std::env::current_dir()?;
+        let session_id: String = otto_bot_facade
+            .start_session(&SessionOptionsMapper::to_session_options(
+                cli_arguments,
+                current_directory.clone(),
+            ))
+            .await?;
+        let workspace_directory: PathBuf = cli_arguments.workspace.clone().unwrap_or(current_directory);
         // Subscribed before anything is submitted, so no event is missed.
         let mut events: broadcast::Receiver<SessionEvent> = otto_bot_facade.subscribe(&session_id)?;
         let mut lines: Lines<BufReader<Stdin>> = BufReader::new(tokio::io::stdin()).lines();
         let mut stdout: Stdout = tokio::io::stdout();
 
         CliService::write(&mut stdout, GREETING).await?;
+        CliService::write(&mut stdout, &format!("workspace: {}\n", workspace_directory.display())).await?;
+        if let Some(log_path) = log_path {
+            CliService::write(&mut stdout, &format!("log: {}\n", log_path.display())).await?;
+        }
+        CliService::write(&mut stdout, "\n").await?;
         loop {
             CliService::write(&mut stdout, PROMPT).await?;
             let line: Option<String> = tokio::select! {

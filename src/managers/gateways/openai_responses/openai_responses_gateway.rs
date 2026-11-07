@@ -39,7 +39,7 @@ impl OpenAiResponsesGateway {
             .with("model", self.model.as_str())
             .with("service_tier", model_request.service_tier.name());
 
-        let body: Vec<u8> = serde_json::to_vec(&ResponseRequestBuilder::build(&self.model, model_request)).map_err(
+        let body: Vec<u8> = serde_json::to_vec(&ResponseRequestBuilder::build(&self.model, model_request)?).map_err(
             |exception: serde_json::Error| {
                 ApplicationBaseException::new(
                     OpenAiResponsesGatewayException::OpenAiRequest,

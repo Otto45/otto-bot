@@ -1,16 +1,20 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use chrono::Utc;
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 
+use crate::managers::data_layer::data_facade::DataFacade;
 use crate::managers::engines::agent_run::agent_run_engine::AgentRunEngine;
 use crate::managers::exceptions::application_base_exception::{ApplicationBaseException, ApplicationResult};
 use crate::managers::exceptions::contextual_data::ContextualData;
 use crate::managers::exceptions::otto_bot_manager_exception::OttoBotManagerException;
+use crate::managers::gateways::workspace::workspace_gateway::WorkspaceGateway;
 use crate::managers::logger::application_logger::ApplicationLogger;
 use crate::managers::logger::log_level::LogLevel;
+use crate::managers::models::run_summary::RunSummary;
 use crate::managers::models::session::Session;
 use crate::managers::models::session_event::SessionEvent;
 use crate::managers::models::session_options::SessionOptions;
@@ -28,20 +32,34 @@ const SESSION_EVENT_CAPACITY: usize = 1024;
 pub struct OttoBotManager {
     session_processor: Arc<SessionProcessor>,
     agent_run_engine: Arc<AgentRunEngine>,
+    workspace_gateway: Arc<WorkspaceGateway>,
+    // Shared with the Domain Facade, which owns it and closes it.
+    data_facade: Arc<DataFacade>,
     live_sessions: Mutex<HashMap<String, LiveSession>>,
 }
 
 impl OttoBotManager {
-    pub fn new(service_locator: &ServiceLocator) -> ApplicationResult<Self> {
+    pub fn new(service_locator: &ServiceLocator, data_facade: Arc<DataFacade>) -> ApplicationResult<Self> {
         Ok(OttoBotManager {
             session_processor: service_locator.get_session_processor()?,
             agent_run_engine: service_locator.get_agent_run_engine()?,
+            workspace_gateway: service_locator.get_workspace_gateway()?,
+            data_facade,
             live_sessions: Mutex::new(HashMap::new()),
         })
     }
 
-    pub fn start_session(&self, session_options: &SessionOptions) -> String {
-        let session: Session = self.session_processor.create_session(session_options, Utc::now());
+    /// Starts a session in the client's workspace, which must be a directory, and keeps it in the session store.
+    pub async fn start_session(&self, session_options: &SessionOptions) -> ApplicationResult<String> {
+        let workspace_directory: PathBuf = self
+            .workspace_gateway
+            .resolve_workspace_directory(&session_options.workspace_directory)
+            .await?;
+        let session: Session = self
+            .session_processor
+            .create_session(session_options, workspace_directory, Utc::now());
+        self.data_facade.save_session(&session).await?;
+
         let session_id: String = session.id.clone();
         let (events, _): (broadcast::Sender<SessionEvent>, broadcast::Receiver<SessionEvent>) =
             broadcast::channel(SESSION_EVENT_CAPACITY);
@@ -54,7 +72,7 @@ impl OttoBotManager {
                 run: None,
             },
         );
-        session_id
+        Ok(session_id)
     }
 
     /// Starts running the request in the background and returns; what happens is reported on the session's events,
@@ -85,6 +103,7 @@ impl OttoBotManager {
             live_session.session.clone(),
             user_request.clone(),
             live_session.events.clone(),
+            self.data_facade.clone(),
         ));
         live_session.run = Some(LiveRun {
             abort_handle: run.abort_handle(),
@@ -137,10 +156,14 @@ impl OttoBotManager {
         session: Session,
         user_request: UserRequest,
         events: broadcast::Sender<SessionEvent>,
+        data_facade: Arc<DataFacade>,
     ) {
-        match agent_run_engine.run(&session, &user_request, &events).await {
-            Ok(()) => {
-                events.send(SessionEvent::RunCompleted).ok();
+        let ran: ApplicationResult<RunSummary> = agent_run_engine
+            .run(&session, &user_request, &events, &data_facade)
+            .await;
+        match ran {
+            Ok(run_summary) => {
+                events.send(SessionEvent::RunCompleted { run_summary }).ok();
             }
             Err(exception) => {
                 // Logged here, where it is caught, so the client is only told what failed.

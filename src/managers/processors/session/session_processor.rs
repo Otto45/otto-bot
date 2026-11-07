@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
@@ -19,10 +21,17 @@ impl SessionProcessor {
         SessionProcessor { default_service_tier }
     }
 
-    /// A new session: what the client chose, and the configured defaults for what it left out.
-    pub fn create_session(&self, session_options: &SessionOptions, started_on: DateTime<Utc>) -> Session {
+    /// A new session: what the client chose, and the configured defaults for what it left out. The workspace is the
+    /// client's, resolved to its canonical path.
+    pub fn create_session(
+        &self,
+        session_options: &SessionOptions,
+        workspace_directory: PathBuf,
+        started_on: DateTime<Utc>,
+    ) -> Session {
         Session {
             id: Uuid::new_v4().simple().to_string(),
+            workspace_directory,
             service_tier: session_options.service_tier.unwrap_or(self.default_service_tier),
             started_on,
         }

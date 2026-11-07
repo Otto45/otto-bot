@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use tokio::sync::broadcast;
 
+use crate::managers::data_layer::data_facade::DataFacade;
 use crate::managers::exceptions::application_base_exception::ApplicationResult;
 use crate::managers::models::session_event::SessionEvent;
 use crate::managers::models::session_options::SessionOptions;
@@ -17,6 +18,7 @@ use crate::managers::service_locator::service_locator::ServiceLocator;
 /// path, the way the CLI does.
 pub struct OttoBotFacade {
     service_locator: Arc<ServiceLocator>,
+    data_facade: Arc<DataFacade>,
     otto_bot_manager: OttoBotManager,
 }
 
@@ -28,17 +30,19 @@ impl OttoBotFacade {
     }
 
     pub fn with_service_locator(service_locator: Arc<ServiceLocator>) -> ApplicationResult<Self> {
-        let otto_bot_manager: OttoBotManager = OttoBotManager::new(&service_locator)?;
+        let data_facade: Arc<DataFacade> = Arc::new(DataFacade::new(&service_locator)?);
+        let otto_bot_manager: OttoBotManager = OttoBotManager::new(&service_locator, data_facade.clone())?;
 
         Ok(OttoBotFacade {
             service_locator,
+            data_facade,
             otto_bot_manager,
         })
     }
 
-    /// Starts a session and returns its id.
-    pub fn start_session(&self, session_options: &SessionOptions) -> String {
-        self.otto_bot_manager.start_session(session_options)
+    /// Starts a session in the client's workspace and returns its id.
+    pub async fn start_session(&self, session_options: &SessionOptions) -> ApplicationResult<String> {
+        self.otto_bot_manager.start_session(session_options).await
     }
 
     /// The session's events from now on. Subscribe before submitting, so no event of the run is missed.
@@ -58,7 +62,8 @@ impl OttoBotFacade {
 
     pub async fn close(&self) {
         self.otto_bot_manager.close().await;
-        // Last: the locator closes the singletons (gateways) the manager was using.
+        self.data_facade.close();
+        // Last: the locator closes the singletons (gateways) the manager and the DataFacade were using.
         self.service_locator.close().await;
     }
 }

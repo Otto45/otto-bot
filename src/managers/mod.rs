@@ -1,5 +1,6 @@
 pub mod common;
 pub mod configuration_providers;
+pub mod data_layer;
 pub mod engines;
 pub mod exceptions;
 pub mod gateways;

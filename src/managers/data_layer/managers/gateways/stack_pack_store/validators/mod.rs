@@ -1,0 +1,1 @@
+pub mod validator_stack_pack_manifest_resource;

@@ -1,11 +1,22 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::Duration;
 
 use crate::managers::configuration_providers::configuration_provider::ConfigurationProvider;
+use crate::managers::data_layer::managers::gateways::session_store::session_store_gateway::SessionStoreGateway;
+use crate::managers::data_layer::managers::gateways::stack_pack_store::stack_pack_store_gateway::StackPackStoreGateway;
 use crate::managers::engines::agent_run::agent_run_engine::AgentRunEngine;
-use crate::managers::exceptions::application_base_exception::ApplicationResult;
+use crate::managers::engines::agent_run::processors::patch::patch_processor::PatchProcessor;
+use crate::managers::engines::agent_run::processors::prompt::prompt_processor::PromptProcessor;
+use crate::managers::engines::agent_run::processors::tool::tool_processor::ToolProcessor;
+use crate::managers::exceptions::application_base_exception::{ApplicationBaseException, ApplicationResult};
+use crate::managers::exceptions::configuration_provider_exception::ConfigurationProviderException;
+use crate::managers::exceptions::contextual_data::ContextualData;
+use crate::managers::gateways::command_runner::command_runner_gateway::CommandRunnerGateway;
 use crate::managers::gateways::openai_responses::openai_responses_gateway::OpenAiResponsesGateway;
+use crate::managers::gateways::workspace::workspace_gateway::WorkspaceGateway;
+use crate::managers::models::settings::agent_settings::AgentSettings;
 use crate::managers::models::settings::openai_responses_settings::OpenAiResponsesSettings;
 use crate::managers::processors::session::session_processor::SessionProcessor;
 use crate::managers::service_locator::service_locator_seams::ServiceLocatorSeams;
@@ -15,13 +26,20 @@ use crate::managers::service_locator::service_locator_seams_protocol::ServiceLoc
 type CloseCallback = Box<dyn FnOnce() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send>;
 
 /// Builds, owns and closes every dependency except the DataFacade. Every singleton is created on first use and
-/// cached; the Domain Facade and its managers share them (`Arc`), so the locator's methods take `&self` and each
-/// cache sits behind a lock.
+/// cached; the Domain Facade, its managers and the DataFacade share them (`Arc`), so the locator's methods take
+/// `&self` and each cache sits behind a lock.
 pub struct ServiceLocator {
     seams: Arc<dyn ServiceLocatorSeamsProtocol>,
     configuration_provider: Mutex<Option<Arc<ConfigurationProvider>>>,
     openai_responses_gateway: Mutex<Option<Arc<OpenAiResponsesGateway>>>,
+    workspace_gateway: Mutex<Option<Arc<WorkspaceGateway>>>,
+    command_runner_gateway: Mutex<Option<Arc<CommandRunnerGateway>>>,
+    session_store_gateway: Mutex<Option<Arc<SessionStoreGateway>>>,
+    stack_pack_store_gateway: Mutex<Option<Arc<StackPackStoreGateway>>>,
     session_processor: Mutex<Option<Arc<SessionProcessor>>>,
+    prompt_processor: Mutex<Option<Arc<PromptProcessor>>>,
+    tool_processor: Mutex<Option<Arc<ToolProcessor>>>,
+    patch_processor: Mutex<Option<Arc<PatchProcessor>>>,
     agent_run_engine: Mutex<Option<Arc<AgentRunEngine>>>,
     // The close() of every singleton created so far, in creation order.
     close_callbacks: Mutex<Vec<CloseCallback>>,
@@ -44,7 +62,14 @@ impl ServiceLocator {
             seams,
             configuration_provider: Mutex::new(None),
             openai_responses_gateway: Mutex::new(None),
+            workspace_gateway: Mutex::new(None),
+            command_runner_gateway: Mutex::new(None),
+            session_store_gateway: Mutex::new(None),
+            stack_pack_store_gateway: Mutex::new(None),
             session_processor: Mutex::new(None),
+            prompt_processor: Mutex::new(None),
+            tool_processor: Mutex::new(None),
+            patch_processor: Mutex::new(None),
             agent_run_engine: Mutex::new(None),
             close_callbacks: Mutex::new(Vec::new()),
         }
@@ -79,6 +104,51 @@ impl ServiceLocator {
         })
     }
 
+    pub fn get_workspace_gateway(&self) -> ApplicationResult<Arc<WorkspaceGateway>> {
+        ServiceLocator::get_or_create(&self.workspace_gateway, || {
+            let workspace_gateway: Arc<WorkspaceGateway> = Arc::new(WorkspaceGateway::new());
+            let gateway_to_close: Arc<WorkspaceGateway> = workspace_gateway.clone();
+            self.register_close(Box::new(move || Box::pin(async move { gateway_to_close.close() })));
+            Ok(workspace_gateway)
+        })
+    }
+
+    pub fn get_command_runner_gateway(&self) -> ApplicationResult<Arc<CommandRunnerGateway>> {
+        ServiceLocator::get_or_create(&self.command_runner_gateway, || {
+            let command_runner_gateway: Arc<CommandRunnerGateway> = Arc::new(CommandRunnerGateway::new());
+            let gateway_to_close: Arc<CommandRunnerGateway> = command_runner_gateway.clone();
+            self.register_close(Box::new(move || Box::pin(async move { gateway_to_close.close() })));
+            Ok(command_runner_gateway)
+        })
+    }
+
+    pub fn get_session_store_gateway(&self) -> ApplicationResult<Arc<SessionStoreGateway>> {
+        ServiceLocator::get_or_create(&self.session_store_gateway, || {
+            let configuration_provider: Arc<ConfigurationProvider> = self.get_configuration_provider()?;
+            let session_store_gateway: Arc<SessionStoreGateway> = Arc::new(SessionStoreGateway::new(
+                configuration_provider.get_storage_settings().sessions_directory.clone(),
+            ));
+            let gateway_to_close: Arc<SessionStoreGateway> = session_store_gateway.clone();
+            self.register_close(Box::new(move || Box::pin(async move { gateway_to_close.close() })));
+            Ok(session_store_gateway)
+        })
+    }
+
+    pub fn get_stack_pack_store_gateway(&self) -> ApplicationResult<Arc<StackPackStoreGateway>> {
+        ServiceLocator::get_or_create(&self.stack_pack_store_gateway, || {
+            let configuration_provider: Arc<ConfigurationProvider> = self.get_configuration_provider()?;
+            let stack_pack_store_gateway: Arc<StackPackStoreGateway> = Arc::new(StackPackStoreGateway::new(
+                configuration_provider
+                    .get_storage_settings()
+                    .stack_packs_directory
+                    .clone(),
+            ));
+            let gateway_to_close: Arc<StackPackStoreGateway> = stack_pack_store_gateway.clone();
+            self.register_close(Box::new(move || Box::pin(async move { gateway_to_close.close() })));
+            Ok(stack_pack_store_gateway)
+        })
+    }
+
     pub fn get_session_processor(&self) -> ApplicationResult<Arc<SessionProcessor>> {
         ServiceLocator::get_or_create(&self.session_processor, || {
             let configuration_provider: Arc<ConfigurationProvider> = self.get_configuration_provider()?;
@@ -88,17 +158,51 @@ impl ServiceLocator {
         })
     }
 
+    pub fn get_prompt_processor(&self) -> ApplicationResult<Arc<PromptProcessor>> {
+        ServiceLocator::get_or_create(&self.prompt_processor, || Ok(Arc::new(PromptProcessor)))
+    }
+
+    pub fn get_tool_processor(&self) -> ApplicationResult<Arc<ToolProcessor>> {
+        ServiceLocator::get_or_create(&self.tool_processor, || Ok(Arc::new(ToolProcessor)))
+    }
+
+    pub fn get_patch_processor(&self) -> ApplicationResult<Arc<PatchProcessor>> {
+        ServiceLocator::get_or_create(&self.patch_processor, || Ok(Arc::new(PatchProcessor)))
+    }
+
     pub fn get_agent_run_engine(&self) -> ApplicationResult<Arc<AgentRunEngine>> {
         ServiceLocator::get_or_create(&self.agent_run_engine, || {
-            let openai_responses_gateway: Arc<OpenAiResponsesGateway> = self.get_openai_responses_gateway()?;
+            let configuration_provider: Arc<ConfigurationProvider> = self.get_configuration_provider()?;
+            let agent_settings: &AgentSettings = configuration_provider.get_agent_settings();
+            // The validator keeps the timeout positive and finite; one too long for a Duration is refused here.
+            let check_timeout: Duration = Duration::try_from_secs_f64(agent_settings.check_timeout_seconds).map_err(
+                |_: std::time::TryFromFloatSecsError| {
+                    ApplicationBaseException::new(
+                        ConfigurationProviderException::InvalidConfiguration,
+                        "Agent configuration is invalid",
+                        ContextualData::new()
+                            .with("setting_name", "agent")
+                            .with("errors", "check_timeout_seconds is too long"),
+                    )
+                },
+            )?;
 
-            // Holds nothing of its own to release, so it registers no close(); the gateway it uses already has.
-            Ok(Arc::new(AgentRunEngine::new(openai_responses_gateway)))
+            // Holds nothing of its own to release, so it registers no close(); the gateways it uses already have.
+            Ok(Arc::new(AgentRunEngine::new(
+                self.get_openai_responses_gateway()?,
+                self.get_workspace_gateway()?,
+                self.get_command_runner_gateway()?,
+                self.get_prompt_processor()?,
+                self.get_tool_processor()?,
+                self.get_patch_processor()?,
+                agent_settings.max_turns,
+                check_timeout,
+            )))
         })
     }
 
     /// Closes every singleton this locator created, in reverse order of creation. The Domain Facade calls this last,
-    /// after its managers, so nothing is closed while still in use.
+    /// after its managers and the DataFacade, so nothing is closed while still in use.
     pub async fn close(&self) {
         let close_callbacks: Vec<CloseCallback> = std::mem::take(&mut *ServiceLocator::lock(&self.close_callbacks));
 

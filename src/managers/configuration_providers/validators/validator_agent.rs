@@ -9,27 +9,55 @@ pub struct ValidatorAgent;
 
 impl ValidatorAgent {
     pub fn validate_agent_config(config: &AgentConfig) -> ApplicationResult<()> {
+        let mut missing: Vec<String> = Vec::new();
         if let Some(error) = ValidatorString::validate("default_service_tier", config.default_service_tier.as_deref()) {
-            return Err(ApplicationBaseException::new(
+            missing.push(error);
+        }
+        if config.max_turns.is_none() {
+            missing.push("max_turns is missing".to_string());
+        }
+        if config.check_timeout_seconds.is_none() {
+            missing.push("check_timeout_seconds is missing".to_string());
+        }
+        if !missing.is_empty() {
+            return Err(ValidatorAgent::to_exception(
                 ConfigurationProviderException::MissingConfiguration,
-                "Agent configuration is invalid",
-                ContextualData::new()
-                    .with("setting_name", "agent")
-                    .with("errors", error),
+                missing,
             ));
         }
 
+        let mut invalid: Vec<String> = Vec::new();
         if let Some(default_service_tier) = config.default_service_tier.as_deref()
             && ServiceTier::from_name(default_service_tier).is_none()
         {
-            return Err(ApplicationBaseException::new(
+            invalid.push("default_service_tier is not one of standard, fast, ultrafast".to_string());
+        }
+        if let Some(max_turns) = config.max_turns
+            && max_turns <= 0
+        {
+            invalid.push("max_turns is not positive".to_string());
+        }
+        if let Some(check_timeout_seconds) = config.check_timeout_seconds
+            && !(check_timeout_seconds.is_finite() && check_timeout_seconds > 0.0)
+        {
+            invalid.push("check_timeout_seconds is not a positive, finite number".to_string());
+        }
+        if !invalid.is_empty() {
+            return Err(ValidatorAgent::to_exception(
                 ConfigurationProviderException::InvalidConfiguration,
-                "Agent configuration is invalid",
-                ContextualData::new()
-                    .with("setting_name", "agent")
-                    .with("errors", "default_service_tier is not one of standard, fast, ultrafast"),
+                invalid,
             ));
         }
         Ok(())
+    }
+
+    fn to_exception(kind: ConfigurationProviderException, errors: Vec<String>) -> ApplicationBaseException {
+        ApplicationBaseException::new(
+            kind,
+            "Agent configuration is invalid",
+            ContextualData::new()
+                .with("setting_name", "agent")
+                .with("errors", errors.join("; ")),
+        )
     }
 }

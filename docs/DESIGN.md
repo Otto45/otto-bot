@@ -31,6 +31,7 @@ The architecture is what makes these reachable. Every file's role follows from i
 | Service tier | `--service-tier standard\|fast\|ultrafast`, default `standard` (sent as `"default"`) |
 | Clients | several, all over one domain facade; an interactive CLI first |
 | Data retention | `store=false`; the harness keeps every conversation itself |
+| Session store | append-only JSON Lines files, one folder per session under `~/.otto-bot/sessions/` (no database, no migrations) |
 | Approvals | none: runs are unattended, and will run in their own sandbox VM |
 | Tests in generated apps | deferred; packs keep an empty `test` command slot |
 
@@ -203,7 +204,7 @@ src/
         data_layer/
             data_facade.rs, managers/data_manager.rs
             managers/gateways/
-                session_store/      SQLite: sessions, plans, lane item logs, usage ledger
+                session_store/      JSONL files: sessions, plans, lane item logs, usage ledger
                 stack_pack_store/   the stack packs
         common/                     diagnostics parsing (used by the engine and the manager)
         models/, exceptions/, logger/, configuration_providers/, service_locator/

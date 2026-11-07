@@ -1,24 +1,8 @@
 use serde::Deserialize;
+use serde_json::Value;
 
 // Resource models: the JSON body deserialized as it is, with every field optional so that anything the API sends
 // deserializes and the validator can say what is wrong with it. Fields the harness doesn't use are left out.
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default)]
-pub struct ContentResource {
-    #[serde(rename = "type")]
-    pub content_type: Option<String>,
-    pub text: Option<String>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default)]
-pub struct OutputItemResource {
-    #[serde(rename = "type")]
-    pub item_type: Option<String>,
-    pub role: Option<String>,
-    pub content: Option<Vec<ContentResource>>,
-}
-
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct InputTokensDetailsResource {
@@ -50,9 +34,12 @@ pub struct IncompleteDetailsResource {
 #[serde(default)]
 pub struct ResponseResource {
     pub id: Option<String>,
+    pub model: Option<String>,
     pub status: Option<String>,
     pub incomplete_details: Option<IncompleteDetailsResource>,
-    pub output: Option<Vec<OutputItemResource>>,
+    // Kept as the API sent them: each is sent back unchanged in the next request (see OutputItemResource for what
+    // the harness reads of one).
+    pub output: Option<Vec<Value>>,
     pub usage: Option<UsageResource>,
     pub service_tier: Option<String>,
 }

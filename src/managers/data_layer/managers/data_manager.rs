@@ -1,0 +1,58 @@
+use std::sync::Arc;
+
+use crate::managers::data_layer::managers::gateways::session_store::session_store_gateway::SessionStoreGateway;
+use crate::managers::data_layer::managers::gateways::stack_pack_store::stack_pack_store_gateway::StackPackStoreGateway;
+use crate::managers::exceptions::application_base_exception::ApplicationResult;
+use crate::managers::models::conversation_item::ConversationItem;
+use crate::managers::models::session::Session;
+use crate::managers::models::stack_pack::StackPack;
+use crate::managers::models::usage_record::UsageRecord;
+use crate::managers::service_locator::service_locator::ServiceLocator;
+
+pub struct DataManager {
+    session_store_gateway: Arc<SessionStoreGateway>,
+    stack_pack_store_gateway: Arc<StackPackStoreGateway>,
+}
+
+impl DataManager {
+    pub fn new(service_locator: &ServiceLocator) -> ApplicationResult<Self> {
+        Ok(DataManager {
+            session_store_gateway: service_locator.get_session_store_gateway()?,
+            stack_pack_store_gateway: service_locator.get_stack_pack_store_gateway()?,
+        })
+    }
+
+    pub async fn save_session(&self, session: &Session) -> ApplicationResult<()> {
+        self.session_store_gateway.save_session(session).await
+    }
+
+    pub async fn get_conversation_items(&self, session_id: &str) -> ApplicationResult<Vec<ConversationItem>> {
+        self.session_store_gateway.get_conversation_items(session_id).await
+    }
+
+    pub async fn append_conversation_items(
+        &self,
+        session_id: &str,
+        conversation_items: &[ConversationItem],
+    ) -> ApplicationResult<()> {
+        self.session_store_gateway
+            .append_conversation_items(session_id, conversation_items)
+            .await
+    }
+
+    pub async fn append_usage_record(&self, usage_record: &UsageRecord) -> ApplicationResult<()> {
+        self.session_store_gateway.append_usage_record(usage_record).await
+    }
+
+    pub async fn get_stack_packs(&self) -> ApplicationResult<Vec<StackPack>> {
+        self.stack_pack_store_gateway.get_stack_packs().await
+    }
+
+    pub async fn get_stack_pack_rules(&self, stack_pack: &StackPack) -> ApplicationResult<String> {
+        self.stack_pack_store_gateway.get_rules(stack_pack).await
+    }
+
+    /// Releases what this manager owns itself. It owns nothing yet: the gateways it uses are singletons that the
+    /// ServiceLocator closes when the Domain Facade closes it.
+    pub fn close(&self) {}
+}

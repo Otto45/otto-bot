@@ -1,5 +1,6 @@
 use std::error::Error;
 use std::panic::PanicHookInfo;
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::Parser;
@@ -7,6 +8,8 @@ use clap::Parser;
 use crate::managers::exceptions::application_base_exception::ApplicationBaseException;
 use crate::managers::exceptions::contextual_data::ContextualData;
 use crate::managers::logger::application_logger::ApplicationLogger;
+use crate::managers::logger::handlers::file_log_handler::FileLogHandler;
+use crate::managers::logger::handlers::log_handler_protocol::LogHandlerProtocol;
 use crate::managers::logger::log_level::LogLevel;
 use crate::managers::logger::panic_exception::PanicException;
 use crate::services::cli::cli_service::CliService;
@@ -38,20 +41,47 @@ impl UncaughtPanicLogger {
 }
 
 pub fn main() -> ExitCode {
-    // The terminal is the CLI's conversation, so only what needs looking at is logged to it (on stderr).
-    ApplicationLogger::configure(LogLevel::Warning, None);
+    // The terminal is the CLI's conversation, so the log goes to a file; to the console only if the file can't be
+    // opened, and then only what needs looking at.
+    let log_path: Option<PathBuf> = configure_logger();
     // What reqwest and the other libraries log goes through the ApplicationLogger too, and so does any panic.
     TracingLoggingBridge::install();
     std::panic::set_hook(Box::new(UncaughtPanicLogger::log_panic));
 
     // `--help` and arguments that don't parse are answered by clap, which exits.
     let cli_arguments: CliArguments = CliArguments::parse();
-    let exit_code: ExitCode = run(&cli_arguments);
+    let exit_code: ExitCode = run(&cli_arguments, log_path);
     ApplicationLogger::close();
     exit_code
 }
 
-fn run(cli_arguments: &CliArguments) -> ExitCode {
+// Where the CLI logs, like where a service listens, is the entry point's to decide: the log is open before anything
+// else runs, configuration included. It is otto-bot's home folder's logs/otto.log.
+fn configure_logger() -> Option<PathBuf> {
+    let home_directory: Option<PathBuf> = std::env::var_os("OTTO_BOT_HOME").map(PathBuf::from).or_else(|| {
+        std::env::var_os("HOME")
+            .map(|user_home_directory: std::ffi::OsString| PathBuf::from(user_home_directory).join(".otto-bot"))
+    });
+    let Some(home_directory) = home_directory else {
+        ApplicationLogger::configure(LogLevel::Warning, None);
+        return None;
+    };
+    let log_path: PathBuf = home_directory.join("logs").join("otto.log");
+
+    match FileLogHandler::open(&log_path) {
+        Ok(file_log_handler) => {
+            let handlers: Vec<Box<dyn LogHandlerProtocol>> = vec![Box::new(file_log_handler)];
+            ApplicationLogger::configure(LogLevel::Info, Some(handlers));
+            Some(log_path)
+        }
+        Err(_) => {
+            ApplicationLogger::configure(LogLevel::Warning, None);
+            None
+        }
+    }
+}
+
+fn run(cli_arguments: &CliArguments, log_path: Option<PathBuf>) -> ExitCode {
     let runtime: tokio::runtime::Runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
         Ok(runtime) => runtime,
         Err(error) => {
@@ -64,7 +94,8 @@ fn run(cli_arguments: &CliArguments) -> ExitCode {
         }
     };
 
-    let ran: Result<(), Box<dyn Error + Send + Sync>> = runtime.block_on(CliService::run(cli_arguments));
+    let ran: Result<(), Box<dyn Error + Send + Sync>> =
+        runtime.block_on(CliService::run(cli_arguments, log_path.as_deref()));
     match ran {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {

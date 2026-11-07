@@ -55,8 +55,7 @@ pub struct ConsoleLogHandler;
 
 impl LogHandlerProtocol for ConsoleLogHandler {
     fn handle(&self, log_entry: &LogEntry<'_>) {
-        let console_line: ConsoleLine = ConsoleLogHandler::to_console_line(log_entry);
-        let line: String = serde_json::to_string(&console_line).expect("a log line serializes to JSON");
+        let line: String = ConsoleLogHandler::to_json_line(log_entry);
 
         // Locking stderr keeps lines written from several threads at once from interleaving. A line that can't be
         // written has nowhere else to go, so it is dropped.
@@ -71,6 +70,13 @@ impl LogHandlerProtocol for ConsoleLogHandler {
 }
 
 impl ConsoleLogHandler {
+    /// The entry as one line of JSON, what must never be logged taken out. Every handler that writes lines writes
+    /// these, so every log otto-bot writes has the one format.
+    pub fn to_json_line(log_entry: &LogEntry<'_>) -> String {
+        let console_line: ConsoleLine = ConsoleLogHandler::to_console_line(log_entry);
+        serde_json::to_string(&console_line).expect("a log line serializes to JSON")
+    }
+
     fn to_console_line(log_entry: &LogEntry<'_>) -> ConsoleLine {
         let mut context: ContextualData = ContextualData::new();
         for (key, value) in log_entry.context.iter() {

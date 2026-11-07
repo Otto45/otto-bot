@@ -1,9 +1,14 @@
+use serde_json::Value;
+
 use crate::managers::common::validators::validator_string::ValidatorString;
 use crate::managers::exceptions::application_base_exception::{ApplicationBaseException, ApplicationResult};
 use crate::managers::exceptions::contextual_data::ContextualData;
 use crate::managers::exceptions::openai_responses_gateway_exception::OpenAiResponsesGatewayException;
+use crate::managers::gateways::openai_responses::resource_models::output_item_resource::{
+    OutputItemResource, PatchOperationResource,
+};
 use crate::managers::gateways::openai_responses::resource_models::response_resource::{
-    ContentResource, IncompleteDetailsResource, OutputItemResource, ResponseResource, UsageResource,
+    IncompleteDetailsResource, ResponseResource, UsageResource,
 };
 
 pub struct ValidatorResponseResource;
@@ -32,6 +37,7 @@ impl ValidatorResponseResource {
         let mut errors: Vec<String> = Vec::new();
         for (property_name, property_value) in [
             ("id", response_resource.id.as_deref()),
+            ("model", response_resource.model.as_deref()),
             ("status", response_resource.status.as_deref()),
         ] {
             if let Some(error) = ValidatorString::validate(property_name, property_value) {
@@ -46,10 +52,11 @@ impl ValidatorResponseResource {
 
         match response_resource.output.as_deref() {
             None => errors.push("output is missing".to_string()),
-            Some(output) if !ValidatorResponseResource::has_output_text(output) => {
-                errors.push("output has no output_text".to_string());
+            Some(output) => {
+                for (index, output_item) in output.iter().enumerate() {
+                    errors.extend(ValidatorResponseResource::validate_output_item(output_item, index));
+                }
             }
-            Some(_) => {}
         }
 
         if !errors.is_empty() {
@@ -80,13 +87,68 @@ impl ValidatorResponseResource {
         .collect()
     }
 
-    fn has_output_text(output: &[OutputItemResource]) -> bool {
-        output
-            .iter()
-            .filter(|output_item: &&OutputItemResource| output_item.item_type.as_deref() == Some("message"))
-            .flat_map(|output_item: &OutputItemResource| output_item.content.iter().flatten())
-            .any(|content: &ContentResource| {
-                content.content_type.as_deref() == Some("output_text") && content.text.is_some()
-            })
+    // Only the items the harness acts on must have what it reads; any other item is only sent back.
+    fn validate_output_item(output_item: &Value, index: usize) -> Vec<String> {
+        let output_item_resource: OutputItemResource =
+            match serde_json::from_value::<OutputItemResource>(output_item.clone()) {
+                Ok(output_item_resource) => output_item_resource,
+                Err(exception) => return vec![format!("output[{index}]: {exception}")],
+            };
+
+        let mut errors: Vec<String> = Vec::new();
+        match output_item_resource.item_type.as_deref() {
+            Some("function_call") => {
+                for (property_name, property_value) in [
+                    ("call_id", output_item_resource.call_id.as_deref()),
+                    ("name", output_item_resource.name.as_deref()),
+                ] {
+                    if let Some(error) =
+                        ValidatorString::validate(&format!("output[{index}].{property_name}"), property_value)
+                    {
+                        errors.push(error);
+                    }
+                }
+                if output_item_resource.arguments.is_none() {
+                    errors.push(format!("output[{index}].arguments is missing"));
+                }
+            }
+            Some("apply_patch_call") => {
+                if let Some(error) = ValidatorString::validate(
+                    &format!("output[{index}].call_id"),
+                    output_item_resource.call_id.as_deref(),
+                ) {
+                    errors.push(error);
+                }
+                match output_item_resource.operation.as_ref() {
+                    None => errors.push(format!("output[{index}].operation is missing")),
+                    Some(operation) => {
+                        errors.extend(ValidatorResponseResource::validate_patch_operation(operation, index));
+                    }
+                }
+            }
+            None => errors.push(format!("output[{index}].type is missing")),
+            Some(_) => {}
+        }
+        errors
+    }
+
+    fn validate_patch_operation(operation: &PatchOperationResource, index: usize) -> Vec<String> {
+        let mut errors: Vec<String> = Vec::new();
+        if let Some(error) =
+            ValidatorString::validate(&format!("output[{index}].operation.path"), operation.path.as_deref())
+        {
+            errors.push(error);
+        }
+        match operation.operation_type.as_deref() {
+            Some("create_file") | Some("update_file") => {
+                if operation.diff.is_none() {
+                    errors.push(format!("output[{index}].operation.diff is missing"));
+                }
+            }
+            Some("delete_file") => {}
+            Some(_) => errors.push(format!("output[{index}].operation.type is not a file operation")),
+            None => errors.push(format!("output[{index}].operation.type is missing")),
+        }
+        errors
     }
 }

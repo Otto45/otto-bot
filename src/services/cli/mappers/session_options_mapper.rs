@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use crate::managers::models::service_tier::ServiceTier;
 use crate::managers::models::session_options::SessionOptions;
 use crate::services::cli::wire_models::cli_arguments::CliArguments;
@@ -6,8 +8,10 @@ use crate::services::cli::wire_models::service_tier_argument::ServiceTierArgumen
 pub struct SessionOptionsMapper;
 
 impl SessionOptionsMapper {
-    pub fn to_session_options(cli_arguments: &CliArguments) -> SessionOptions {
+    /// `default_workspace_directory` is where the CLI was started, the workspace when `--workspace` doesn't say.
+    pub fn to_session_options(cli_arguments: &CliArguments, default_workspace_directory: PathBuf) -> SessionOptions {
         SessionOptions {
+            workspace_directory: cli_arguments.workspace.clone().unwrap_or(default_workspace_directory),
             service_tier: cli_arguments.service_tier.map(SessionOptionsMapper::to_service_tier),
         }
     }

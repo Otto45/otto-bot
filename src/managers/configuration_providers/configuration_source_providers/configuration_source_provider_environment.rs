@@ -1,9 +1,13 @@
 use crate::managers::configuration_providers::config_models::agent_config::AgentConfig;
 use crate::managers::configuration_providers::config_models::openai_responses_config::OpenAiResponsesConfig;
+use crate::managers::configuration_providers::config_models::storage_config::StorageConfig;
 use crate::managers::configuration_providers::configuration_source_providers::configuration_source_provider_protocol::ConfigurationSourceProviderProtocol;
 use crate::managers::exceptions::application_base_exception::{ApplicationBaseException, ApplicationResult};
 use crate::managers::exceptions::configuration_provider_exception::ConfigurationProviderException;
 use crate::managers::exceptions::contextual_data::ContextualData;
+
+// The stack packs this build of otto-bot came with, unless OTTO_BOT_STACK_PACKS_DIRECTORY says otherwise.
+const DEFAULT_STACK_PACKS_DIRECTORY: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/stack_packs");
 
 pub struct ConfigurationSourceProviderEnvironment;
 
@@ -13,6 +17,30 @@ impl ConfigurationSourceProviderProtocol for ConfigurationSourceProviderEnvironm
             default_service_tier: Some(ConfigurationSourceProviderEnvironment::get_string(
                 "OTTO_BOT_SERVICE_TIER",
                 "standard",
+            )),
+            max_turns: Some(ConfigurationSourceProviderEnvironment::get_integer(
+                "OTTO_BOT_MAX_TURNS",
+                "60",
+            )?),
+            check_timeout_seconds: Some(ConfigurationSourceProviderEnvironment::get_float(
+                "OTTO_BOT_CHECK_TIMEOUT_SECONDS",
+                "600",
+            )?),
+        })
+    }
+
+    fn get_storage_config(&self) -> ApplicationResult<StorageConfig> {
+        // Under the user's home folder unless OTTO_BOT_HOME says otherwise; with neither, the validator says so.
+        let home_directory: Option<String> = std::env::var("OTTO_BOT_HOME").ok().or_else(|| {
+            std::env::var("HOME")
+                .ok()
+                .map(|user_home_directory: String| format!("{user_home_directory}/.otto-bot"))
+        });
+        Ok(StorageConfig {
+            home_directory,
+            stack_packs_directory: Some(ConfigurationSourceProviderEnvironment::get_string(
+                "OTTO_BOT_STACK_PACKS_DIRECTORY",
+                DEFAULT_STACK_PACKS_DIRECTORY,
             )),
         })
     }
@@ -42,6 +70,22 @@ impl ConfigurationSourceProviderProtocol for ConfigurationSourceProviderEnvironm
 impl ConfigurationSourceProviderEnvironment {
     fn get_string(environment_variable_name: &str, default_value: &str) -> String {
         std::env::var(environment_variable_name).unwrap_or_else(|_: std::env::VarError| default_value.to_string())
+    }
+
+    fn get_integer(environment_variable_name: &str, default_value: &str) -> ApplicationResult<i64> {
+        let value: String =
+            ConfigurationSourceProviderEnvironment::get_string(environment_variable_name, default_value);
+        value
+            .trim()
+            .parse::<i64>()
+            .map_err(|exception: std::num::ParseIntError| {
+                ApplicationBaseException::new(
+                    ConfigurationProviderException::InvalidConfiguration,
+                    "Environment variable is not a whole number",
+                    ContextualData::new().with("environment_variable_name", environment_variable_name),
+                )
+                .with_source(exception)
+            })
     }
 
     fn get_float(environment_variable_name: &str, default_value: &str) -> ApplicationResult<f64> {

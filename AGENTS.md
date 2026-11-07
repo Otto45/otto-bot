@@ -31,7 +31,7 @@ src/
         processors/             domain logic the Manager delegates to, one subfolder per processor type
         engines/                multi-step tasks the Manager hands off whole, one subfolder per engine
         gateways/<system>/      one gateway per external system (e.g. openai_responses/)
-        data_layer/             DataFacade -> DataManager -> data gateways (see Data layer; not built yet)
+        data_layer/             DataFacade -> DataManager -> data gateways (see Data layer)
         models/                 domain models; models/settings/ the settings
         exceptions/             ApplicationBaseException and its kinds
         logger/                 ApplicationLogger
@@ -75,7 +75,6 @@ docs/DESIGN.md                  otto-bot's design
   - never copy a common helper into a component as a private function
 
 ## Facade, locator and closing
-- changed for otto-bot, until the data layer is built: the domain facade creates the `ServiceLocator` and the managers only; the rules about the `DataFacade` apply from when it exists
 - the domain facade creates the `ServiceLocator`, then the `DataFacade` (passing it the `ServiceLocator`)
   - the `ServiceLocator` never creates the `DataFacade`
   - the domain facade passes both the `ServiceLocator` and the `DataFacade` (`Arc<DataFacade>`) to every manager it creates
@@ -130,8 +129,22 @@ docs/DESIGN.md                  otto-bot's design
 - when building a gateway's request is too involved to inline, it goes in a `request_builders/` subfolder of the gateway (the counterpart of a data gateway's `query_builders/`)
 - an HTTP gateway is given its `reqwest::Client` (built by a seam, with the configured timeout) and its base URL, which it joins to each path (reqwest has none of its own); the client holds nothing that outlives it, so the gateway's `close()` has nothing to do
 
+## The agent's workspace and tools
+- the `WorkspaceGateway` is the only code that reads or changes the agent's workspace, so it is where the workspace's boundary is kept: every path is relative to the workspace and resolves inside it (no `..`, no symbolic link out of it), and `.env` files and `.git/` are never read or changed
+- the `CommandRunnerGateway` runs only a stack pack's declared commands, with no input, a timeout, and without `OPENAI_API_KEY` in their environment
+- what the agent reads, and what checks print, goes to the model only through the `ToolProcessor`, which takes recognizable secrets out (`SecretRedactor`)
+- an exception a tool call runs into (a missing file, a patch that doesn't apply, a check that can't start) is told to the model as that call's output, so it can do something else; `AgentRunEngine::is_told_to_model` decides which, naming every family; any other exception ends the run
+- every role gets the same tools in the same order: a role is restricted by which tools it may call, never by removing tools, so the cached prompt prefix is shared
+
 ## Data layer
-- otto-bot has no data layer yet: it arrives with the session store (sessions, lane item logs, the usage ledger), in SQLite rather than Postgres; until then the rules below are the Rust pack's, and the Postgres-specific ones are restated for SQLite when the first data gateway is added
+- changed for otto-bot: its data is files, not databases, so it has no migrations and no relational gateway; the Postgres rules below apply only if one is ever added
+  ```
+  managers/data_layer/managers/gateways/
+      session_store/       a folder per session: session.json, and append-only conversation_items.jsonl and usage_records.jsonl
+      stack_pack_store/    the stack packs, read-only: each folder's pack.toml
+  ```
+  - a session's files are only ever appended to, never rewritten, so a crash mid-write loses at most the line being written; whatever needs a changed record appends a new one
+  - each line is a document (a resource model, every field optional): read back, it is deserialized, validated and mapped like anything else from outside the process
 - the data layer repeats the architecture one level down: the `DataFacade` (the only entry point a manager sees) over one `DataManager`, which orchestrates every data gateway
   ```
   managers/data_layer/
@@ -187,5 +200,6 @@ docs/DESIGN.md                  otto-bot's design
     - changed for otto-bot: the CLI's person is its operator, so it also shows a server error's own message (which never holds a secret: see Exceptions) and says the details are in the log; a service that answers anyone else (e.g. an HTTP API) answers generically, so tables, queries and upstream details never leak
   - it creates the domain facade once when it starts and closes it when it stops (`CliService::run`), on every path; nothing builds one per request
   - a client subscribes to a session's events before it submits a request, and follows them until the run ends (`SessionEvent::ends_run`); runs never wait on a person, so no service asks one anything mid-run
+  - the CLI logs to a file (`$OTTO_BOT_HOME/logs/otto.log`, by default `~/.otto-bot/logs/otto.log`), because its terminal is the conversation; its entry point opens the log before anything else runs, the way a service's entry point reads where it listens
   - the CLI reads nothing from the environment itself: its arguments override what configuration holds (e.g. `--service-tier` over `OTTO_BOT_SERVICE_TIER`), through the options it passes the facade
   - an HTTP service, when there is one, follows the Rust pack's HTTP rules (`stack_packs/rust/template/AGENTS.md`, Service): axum, utoipa and `openapi.json`, its `JsonBody` and `PathParameters` extractors, `HOST` and `PORT`, graceful shutdown on Ctrl-C and SIGTERM
