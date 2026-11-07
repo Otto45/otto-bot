@@ -47,6 +47,15 @@ impl ValidatorStackPackManifestResource {
             errors.extend(ValidatorStackPackManifestResource::validate_lint_resource(lint));
         }
 
+        if let Some(scaffold) = manifest.scaffold.as_ref() {
+            if let Some(error) = ValidatorString::validate("scaffold.kinds", scaffold.kinds.as_deref()) {
+                errors.push(error);
+            }
+            if scaffold.format.is_none() {
+                errors.push("scaffold.format is missing".to_string());
+            }
+        }
+
         for (index, check) in manifest.checks.iter().flatten().enumerate() {
             errors.extend(ValidatorStackPackManifestResource::validate_check_resource(
                 check, index,

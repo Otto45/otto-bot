@@ -4,6 +4,7 @@ use serde_json::json;
 use crate::managers::engines::agent_run::processors::tool::redactors::secret_redactor::SecretRedactor;
 use crate::managers::engines::agent_run::processors::tool::tool_arguments::list_files_arguments::ListFilesArguments;
 use crate::managers::engines::agent_run::processors::tool::tool_arguments::read_files_arguments::ReadFilesArguments;
+use crate::managers::engines::agent_run::processors::tool::tool_arguments::scaffold_arguments::ScaffoldArguments;
 use crate::managers::engines::agent_run::processors::tool::tool_arguments::search_arguments::SearchArguments;
 use crate::managers::exceptions::agent_run_engine_exception::AgentRunEngineException;
 use crate::managers::exceptions::application_base_exception::{ApplicationBaseException, ApplicationResult};
@@ -22,6 +23,7 @@ const READ_FILES: &str = "read_files";
 const LIST_FILES: &str = "list_files";
 const SEARCH: &str = "search";
 const RUN_CHECKS: &str = "run_checks";
+const SCAFFOLD: &str = "scaffold";
 // What a failed check prints is cut to its end, where compilers and linters say what is wrong.
 const MAX_CHECK_OUTPUT_CHARS: usize = 8_000;
 const UNFINISHED_TOOL_CALL_OUTPUT: &str =
@@ -95,6 +97,27 @@ impl ToolProcessor {
                     "additionalProperties": false,
                 }),
             },
+            ToolDefinition {
+                name: SCAFFOLD.to_string(),
+                description: "Create a new component and wire it in (its files, its module declarations, the service \
+                              locator), without writing it by hand; then read what it created and write the logic. \
+                              The stack's kinds are listed in the instructions."
+                    .to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "kind": { "type": "string", "description": "One of the stack's scaffold kinds" },
+                        "name": { "type": "string", "description": "The component's name, snake_case" },
+                        "within": {
+                            "type": ["string", "null"],
+                            "description": "For a kind that lives inside another component: that component's name; \
+                                            otherwise null",
+                        },
+                    },
+                    "required": ["kind", "name", "within"],
+                    "additionalProperties": false,
+                }),
+            },
         ]
     }
 
@@ -128,6 +151,19 @@ impl ToolProcessor {
                 }
             }
             RUN_CHECKS => Ok(ToolRequest::RunChecks),
+            SCAFFOLD => {
+                let scaffold_arguments: ScaffoldArguments = ToolProcessor::parse_arguments(name, arguments)?;
+                match (scaffold_arguments.kind, scaffold_arguments.name) {
+                    (Some(kind), Some(component_name)) => Ok(ToolRequest::Scaffold {
+                        kind,
+                        name: component_name,
+                        within: scaffold_arguments
+                            .within
+                            .filter(|within: &String| !within.trim().is_empty()),
+                    }),
+                    _ => Err(ToolProcessor::to_invalid_tool_call(name, "kind and name are required")),
+                }
+            }
             _ => Err(ToolProcessor::to_invalid_tool_call(
                 name,
                 "there is no tool by that name",
@@ -182,6 +218,10 @@ impl ToolProcessor {
                 None => format!("/{pattern}/"),
             },
             ToolRequest::RunChecks => String::new(),
+            ToolRequest::Scaffold { kind, name, within } => match within {
+                Some(within) => format!("{kind} {name} in {within}"),
+                None => format!("{kind} {name}"),
+            },
         }
     }
 
@@ -252,6 +292,26 @@ impl ToolProcessor {
             .join("\n")
     }
 
+    /// What a scaffold did: the files it created, whole (as they are now), so the model can patch them without reading
+    /// them; the files it wired the component into; and how formatting went.
+    pub fn format_scaffold(
+        &self,
+        created_files: &[WorkspaceFile],
+        updated_paths: &[String],
+        format_result: &str,
+    ) -> String {
+        let created: String = created_files
+            .iter()
+            .map(|created_file: &WorkspaceFile| self.format_file(created_file))
+            .collect::<Vec<String>>()
+            .join("\n\n");
+        format!(
+            "{format_result}\nWired into (module declarations and the service locator; no need to read them for \
+             that):\n{}\n\nCreated, as they are now: write the component's logic in them.\n\n{created}",
+            ToolProcessor::to_bullets(updated_paths)
+        )
+    }
+
     pub fn format_error(&self, message: &str) -> String {
         format!("error: {message}")
     }
@@ -271,6 +331,17 @@ impl ToolProcessor {
         };
         let output: String = SecretRedactor::redact(&ToolProcessor::keep_end(&check_result.output));
         format!("{}: failed{how}\n{}", check_result.name, output.trim_end())
+    }
+
+    fn to_bullets(paths: &[String]) -> String {
+        if paths.is_empty() {
+            return "- nothing".to_string();
+        }
+        paths
+            .iter()
+            .map(|path: &String| format!("- {path}"))
+            .collect::<Vec<String>>()
+            .join("\n")
     }
 
     fn keep_end(text: &str) -> String {

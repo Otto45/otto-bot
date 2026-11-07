@@ -4,11 +4,12 @@ A coding agent harness that builds apps on the Domain Container architecture, in
 itself a Domain Container app, in Rust. The design is [docs/DESIGN.md](docs/DESIGN.md); the rules every change to it
 follows are [AGENTS.md](AGENTS.md).
 
-Status: build step 3 of [docs/DESIGN.md](docs/DESIGN.md). One agent works in a workspace: it reads, lists and
+Status: build step 3 of [docs/DESIGN.md](docs/DESIGN.md) is done. One agent works in a workspace: it reads, lists and
 searches files, edits them with `apply_patch`, and runs the stack pack's checks, remembering the whole session. Every
 request opens with cached layers (the stack's rules, then the workspace's project map), and goes over a WebSocket
-connection that sends only what is new. The checks include an architecture lint of the stack pack's rules.
-Scaffolding, sub-agents and the other stack packs come next.
+connection that sends only what is new. The checks include an architecture lint of the stack pack's rules, and new
+components (processors, engines, models) are scaffolded and wired in without the model. Sub-agents (step 4) and the
+other stack packs come next.
 
 ## What you need
 

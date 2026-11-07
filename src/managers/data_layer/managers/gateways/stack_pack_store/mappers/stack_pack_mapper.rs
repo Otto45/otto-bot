@@ -2,24 +2,29 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::managers::data_layer::managers::gateways::stack_pack_store::resource_models::stack_pack_manifest_resource::{
-    CheckResource, DetectResource, LintResource, LintRuleResource, ProjectMapResource, StackPackManifestResource,
+    CheckResource, DetectResource, LintResource, LintRuleResource, ProjectMapResource, ScaffoldResource,
+    StackPackManifestResource,
 };
 use crate::managers::models::lint_rule::LintRule;
 use crate::managers::models::stack_pack::StackPack;
 use crate::managers::models::stack_pack_check::StackPackCheck;
 use crate::managers::models::stack_pack_lint::StackPackLint;
+use crate::managers::models::scaffold_kind::ScaffoldKind;
 use crate::managers::models::stack_pack_project_map::StackPackProjectMap;
+use crate::managers::models::stack_pack_scaffold::StackPackScaffold;
 
 pub struct StackPackMapper;
 
 impl StackPackMapper {
     /// Expects a manifest that has already passed ValidatorStackPackManifestResource: each `expect` states a checked
     /// fact, and fails only if the validator is wrong. `queries` holds the text of every query file the manifest
-    /// names, by the path it names it with, read by the gateway.
+    /// names, by the path it names it with, read by the gateway; `scaffold_kinds` the pack's scaffold kinds, read and
+    /// mapped by the gateway.
     pub fn to_stack_pack(
         manifest: StackPackManifestResource,
         pack_directory: &Path,
         queries: &HashMap<String, String>,
+        scaffold_kinds: Vec<ScaffoldKind>,
     ) -> StackPack {
         let detect: DetectResource = manifest
             .detect
@@ -63,6 +68,12 @@ impl StackPackMapper {
                     .into_iter()
                     .map(|lint_rule: LintRuleResource| StackPackMapper::to_lint_rule(lint_rule, &get_query))
                     .collect(),
+            }),
+            scaffold: manifest.scaffold.map(|scaffold: ScaffoldResource| StackPackScaffold {
+                kinds: scaffold_kinds,
+                format_command: scaffold
+                    .format
+                    .expect("validated by ValidatorStackPackManifestResource"),
             }),
         }
     }

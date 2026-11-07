@@ -2,14 +2,20 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::managers::common::formatters::validation_error_formatter::ValidationErrorFormatter;
+use crate::managers::data_layer::managers::gateways::stack_pack_store::mappers::scaffold_kind_mapper::ScaffoldKindMapper;
 use crate::managers::data_layer::managers::gateways::stack_pack_store::mappers::stack_pack_mapper::StackPackMapper;
-use crate::managers::data_layer::managers::gateways::stack_pack_store::resource_models::stack_pack_manifest_resource::{
-    LintRuleResource, ProjectMapResource, StackPackManifestResource,
+use crate::managers::data_layer::managers::gateways::stack_pack_store::resource_models::scaffold_kind_resource::{
+    ScaffoldFileResource, ScaffoldKindResource,
 };
+use crate::managers::data_layer::managers::gateways::stack_pack_store::resource_models::stack_pack_manifest_resource::{
+    LintRuleResource, ProjectMapResource, ScaffoldResource, StackPackManifestResource,
+};
+use crate::managers::data_layer::managers::gateways::stack_pack_store::validators::validator_scaffold_kind_resource::ValidatorScaffoldKindResource;
 use crate::managers::data_layer::managers::gateways::stack_pack_store::validators::validator_stack_pack_manifest_resource::ValidatorStackPackManifestResource;
 use crate::managers::exceptions::application_base_exception::{ApplicationBaseException, ApplicationResult};
 use crate::managers::exceptions::contextual_data::ContextualData;
 use crate::managers::exceptions::stack_pack_store_gateway_exception::StackPackStoreGatewayException;
+use crate::managers::models::scaffold_kind::ScaffoldKind;
 use crate::managers::models::stack_pack::StackPack;
 
 const MANIFEST_FILE_NAME: &str = "pack.toml";
@@ -110,7 +116,100 @@ impl StackPackStoreGateway {
                 })?;
             queries.insert(query_path, query);
         }
-        Ok(StackPackMapper::to_stack_pack(manifest, pack_directory, &queries))
+        let scaffold_kinds: Vec<ScaffoldKind> = match manifest
+            .scaffold
+            .as_ref()
+            .and_then(|scaffold: &ScaffoldResource| scaffold.kinds.as_ref())
+        {
+            Some(kinds_directory) => {
+                StackPackStoreGateway::get_scaffold_kinds(&pack_directory.join(kinds_directory), &context).await?
+            }
+            None => Vec::new(),
+        };
+        Ok(StackPackMapper::to_stack_pack(
+            manifest,
+            pack_directory,
+            &queries,
+            scaffold_kinds,
+        ))
+    }
+
+    // Every scaffold kind in the folder (each <kind>.toml), with its templates, in the order of their names.
+    async fn get_scaffold_kinds(
+        kinds_directory: &Path,
+        context: &ContextualData,
+    ) -> ApplicationResult<Vec<ScaffoldKind>> {
+        let mut kind_paths: Vec<PathBuf> = Vec::new();
+        let mut entries: tokio::fs::ReadDir =
+            tokio::fs::read_dir(kinds_directory)
+                .await
+                .map_err(|exception: std::io::Error| {
+                    StackPackStoreGateway::to_io_exception(exception, "listing a stack pack's scaffold kinds", context)
+                })?;
+        while let Some(entry) = entries.next_entry().await.map_err(|exception: std::io::Error| {
+            StackPackStoreGateway::to_io_exception(exception, "listing a stack pack's scaffold kinds", context)
+        })? {
+            let path: PathBuf = entry.path();
+            if path
+                .extension()
+                .is_some_and(|extension: &std::ffi::OsStr| extension == "toml")
+            {
+                kind_paths.push(path);
+            }
+        }
+        kind_paths.sort();
+
+        let mut scaffold_kinds: Vec<ScaffoldKind> = Vec::with_capacity(kind_paths.len());
+        for kind_path in kind_paths {
+            let kind_name: String = kind_path
+                .file_stem()
+                .map(|file_stem: &std::ffi::OsStr| file_stem.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let kind_context: ContextualData = context.clone().with("scaffold_kind", kind_name.as_str());
+            let content: String =
+                tokio::fs::read_to_string(&kind_path)
+                    .await
+                    .map_err(|exception: std::io::Error| {
+                        StackPackStoreGateway::to_io_exception(exception, "reading a scaffold kind", &kind_context)
+                    })?;
+            let scaffold_kind: ScaffoldKindResource =
+                toml::from_str(&content).map_err(|exception: toml::de::Error| {
+                    ApplicationBaseException::new(
+                        StackPackStoreGatewayException::InvalidStackPackManifest,
+                        "A stack pack's scaffold kind could not be deserialized",
+                        kind_context.clone().with(
+                            "errors",
+                            ValidationErrorFormatter::format_whole(&exception, "scaffold kind"),
+                        ),
+                    )
+                })?;
+            ValidatorScaffoldKindResource::validate_scaffold_kind_resource(&scaffold_kind, &kind_name)?;
+
+            let mut templates: HashMap<String, String> = HashMap::new();
+            for template_path in scaffold_kind
+                .files
+                .iter()
+                .flatten()
+                .filter_map(|file: &ScaffoldFileResource| file.template.clone())
+            {
+                let template: String = tokio::fs::read_to_string(kinds_directory.join(&template_path))
+                    .await
+                    .map_err(|exception: std::io::Error| {
+                        StackPackStoreGateway::to_io_exception(
+                            exception,
+                            "reading a scaffold template",
+                            &kind_context.clone().with("template_path", template_path.as_str()),
+                        )
+                    })?;
+                templates.insert(template_path, template);
+            }
+            scaffold_kinds.push(ScaffoldKindMapper::to_scaffold_kind(
+                scaffold_kind,
+                &kind_name,
+                &templates,
+            ));
+        }
+        Ok(scaffold_kinds)
     }
 
     // Every query file the manifest names.

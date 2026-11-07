@@ -11,6 +11,7 @@ use crate::managers::engines::agent_run::processors::architecture_lint::architec
 use crate::managers::engines::agent_run::processors::patch::patch_processor::PatchProcessor;
 use crate::managers::engines::agent_run::processors::project_map::project_map_processor::ProjectMapProcessor;
 use crate::managers::engines::agent_run::processors::prompt::prompt_processor::PromptProcessor;
+use crate::managers::engines::agent_run::processors::scaffold::scaffold_processor::ScaffoldProcessor;
 use crate::managers::engines::agent_run::processors::tool::tool_processor::ToolProcessor;
 use crate::managers::exceptions::agent_run_engine_exception::AgentRunEngineException;
 use crate::managers::exceptions::application_base_exception::{ApplicationBaseException, ApplicationResult};
@@ -33,12 +34,14 @@ use crate::managers::models::patch_operation_kind::PatchOperationKind;
 use crate::managers::models::project_map_role::ProjectMapRole;
 use crate::managers::models::run_context::RunContext;
 use crate::managers::models::run_summary::RunSummary;
+use crate::managers::models::scaffold_plan::ScaffoldPlan;
 use crate::managers::models::session::Session;
 use crate::managers::models::session_event::SessionEvent;
 use crate::managers::models::session_project_maps::SessionProjectMaps;
 use crate::managers::models::stack_pack::StackPack;
 use crate::managers::models::stack_pack_lint::StackPackLint;
 use crate::managers::models::stack_pack_project_map::StackPackProjectMap;
+use crate::managers::models::stack_pack_scaffold::StackPackScaffold;
 use crate::managers::models::tool_call::ToolCall;
 use crate::managers::models::tool_request::ToolRequest;
 use crate::managers::models::usage_record::UsageRecord;
@@ -62,6 +65,7 @@ pub struct AgentRunEngine {
     patch_processor: Arc<PatchProcessor>,
     project_map_processor: Arc<ProjectMapProcessor>,
     architecture_lint_processor: Arc<ArchitectureLintProcessor>,
+    scaffold_processor: Arc<ScaffoldProcessor>,
     max_turns: i64,
     check_timeout: Duration,
 }
@@ -77,6 +81,7 @@ impl AgentRunEngine {
         patch_processor: Arc<PatchProcessor>,
         project_map_processor: Arc<ProjectMapProcessor>,
         architecture_lint_processor: Arc<ArchitectureLintProcessor>,
+        scaffold_processor: Arc<ScaffoldProcessor>,
         max_turns: i64,
         check_timeout: Duration,
     ) -> Self {
@@ -89,6 +94,7 @@ impl AgentRunEngine {
             patch_processor,
             project_map_processor,
             architecture_lint_processor,
+            scaffold_processor,
             max_turns,
             check_timeout,
         }
@@ -425,6 +431,28 @@ impl AgentRunEngine {
                     Err(exception) => Ok((self.to_tool_error(exception)?, false)),
                 }
             }
+            ToolRequest::Scaffold { kind, name, within } => {
+                match run_context
+                    .stack_pack
+                    .as_ref()
+                    .and_then(|stack_pack: &StackPack| stack_pack.scaffold.as_ref())
+                {
+                    None => Ok((
+                        self.tool_processor
+                            .format_error("The workspace's stack has no scaffolds; write the component by hand"),
+                        false,
+                    )),
+                    Some(stack_pack_scaffold) => {
+                        match self
+                            .scaffold(workspace_directory, stack_pack_scaffold, kind, name, within.as_deref())
+                            .await
+                        {
+                            Ok(output) => Ok((output, true)),
+                            Err(exception) => Ok((self.to_tool_error(exception)?, false)),
+                        }
+                    }
+                }
+            }
             ToolRequest::RunChecks => match run_context.stack_pack.as_ref() {
                 None => Ok((
                     self.tool_processor
@@ -440,6 +468,116 @@ impl AgentRunEngine {
                 }
             },
         }
+    }
+
+    // Creates a component from the pack's scaffold kind and wires it in. Everything is checked first (the component it
+    // lives within exists, no file it creates does, every anchor is found), so a scaffold applies whole or not at all;
+    // then the pack's formatter sorts the lines it added in.
+    async fn scaffold(
+        &self,
+        workspace_directory: &Path,
+        stack_pack_scaffold: &StackPackScaffold,
+        kind: &str,
+        name: &str,
+        within: Option<&str>,
+    ) -> ApplicationResult<String> {
+        let scaffold_plan: ScaffoldPlan = self.scaffold_processor.plan(stack_pack_scaffold, kind, name, within)?;
+
+        if let Some(within_path) = scaffold_plan.within_path.as_deref()
+            && !self
+                .workspace_gateway
+                .file_exists(workspace_directory, within_path)
+                .await?
+        {
+            return Err(ApplicationBaseException::new(
+                AgentRunEngineException::ScaffoldNotApplicable,
+                format!(
+                    "{within_path} doesn't exist: there is no component named {}",
+                    within.unwrap_or_default()
+                ),
+                ContextualData::new().with("path", within_path),
+            ));
+        }
+        for created_file in &scaffold_plan.created_files {
+            if self
+                .workspace_gateway
+                .file_exists(workspace_directory, &created_file.path)
+                .await?
+            {
+                return Err(ApplicationBaseException::new(
+                    AgentRunEngineException::ScaffoldNotApplicable,
+                    format!("{} already exists: the component is there already", created_file.path),
+                    ContextualData::new().with("path", created_file.path.as_str()),
+                ));
+            }
+        }
+
+        // Each file wired into, with every insertion made, in the order they are first named.
+        let mut updated_files: Vec<WorkspaceFile> = Vec::new();
+        for scaffold_insertion in &scaffold_plan.insertions {
+            let position: Option<usize> = updated_files
+                .iter()
+                .position(|updated_file: &WorkspaceFile| updated_file.path == scaffold_insertion.path);
+            let current: WorkspaceFile = match position {
+                Some(index) => updated_files.remove(index),
+                None => {
+                    self.workspace_gateway
+                        .read_file(workspace_directory, &scaffold_insertion.path)
+                        .await?
+                }
+            };
+            let content: String = self.scaffold_processor.insert(&current.content, scaffold_insertion)?;
+            updated_files.push(WorkspaceFile {
+                path: current.path,
+                content,
+            });
+        }
+
+        for created_file in &scaffold_plan.created_files {
+            self.workspace_gateway
+                .write_file(workspace_directory, &created_file.path, &created_file.content, true)
+                .await?;
+        }
+        for updated_file in &updated_files {
+            self.workspace_gateway
+                .write_file(workspace_directory, &updated_file.path, &updated_file.content, false)
+                .await?;
+        }
+
+        let format_result: String = if stack_pack_scaffold.format_command.is_empty() {
+            String::new()
+        } else {
+            match self
+                .command_runner_gateway
+                .run(
+                    workspace_directory,
+                    &stack_pack_scaffold.format_command,
+                    self.check_timeout,
+                )
+                .await
+            {
+                Ok(command_result) if command_result.exit_code == Some(0) => "Formatted.".to_string(),
+                Ok(command_result) => format!("Formatting failed:\n{}", command_result.output.trim_end()),
+                Err(exception) => format!("Formatting failed: {}", self.to_tool_error_message(exception)?),
+            }
+        };
+
+        // As they are after formatting, which the model patches against.
+        let mut created_files: Vec<WorkspaceFile> = Vec::with_capacity(scaffold_plan.created_files.len());
+        for created_file in &scaffold_plan.created_files {
+            created_files.push(
+                self.workspace_gateway
+                    .read_file(workspace_directory, &created_file.path)
+                    .await?,
+            );
+        }
+        let updated_paths: Vec<String> = updated_files
+            .iter()
+            .map(|updated_file: &WorkspaceFile| updated_file.path.clone())
+            .collect();
+        Ok(self
+            .tool_processor
+            .format_scaffold(&created_files, &updated_paths, &format_result))
     }
 
     // Every check of the pack that has a command, in order; a check that can't be started fails.
@@ -542,7 +680,9 @@ impl AgentRunEngine {
     fn is_told_to_model(exception_kind: ExceptionKind) -> bool {
         match exception_kind {
             ExceptionKind::AgentRunEngine(exception) => match exception {
-                AgentRunEngineException::InvalidToolCall | AgentRunEngineException::InvalidPatch => true,
+                AgentRunEngineException::InvalidToolCall
+                | AgentRunEngineException::InvalidPatch
+                | AgentRunEngineException::ScaffoldNotApplicable => true,
                 AgentRunEngineException::MaxTurnsReached => false,
             },
             ExceptionKind::WorkspaceGateway(_) | ExceptionKind::CommandRunnerGateway(_) => true,

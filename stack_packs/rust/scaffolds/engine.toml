@@ -1,0 +1,44 @@
+description = "An engine: a multi-step task a manager hands off whole, in managers/engines/<name>/ with its own processors/ folder; a singleton the ServiceLocator builds (get_<name>_engine). The manager passes it the DataFacade with each call."
+
+[[files]]
+path = "src/managers/engines/{name}/mod.rs"
+template = "templates/engine_mod.rs"
+
+[[files]]
+path = "src/managers/engines/{name}/{name}_engine.rs"
+template = "templates/engine.rs"
+
+[[files]]
+path = "src/managers/engines/{name}/processors/mod.rs"
+template = "templates/empty_mod.rs"
+
+[[insertions]]
+path = "src/managers/engines/mod.rs"
+text = "pub mod {name};\n"
+
+[[insertions]]
+path = "src/managers/service_locator/service_locator.rs"
+before = "use crate::managers::service_locator::service_locator_seams::ServiceLocatorSeams;"
+text = "use crate::managers::engines::{name}::{name}_engine::{Name}Engine;\n"
+
+[[insertions]]
+path = "src/managers/service_locator/service_locator.rs"
+before = "    // The close() of every singleton created so far, in creation order."
+text = "    {name}_engine: Mutex<Option<Arc<{Name}Engine>>>,\n"
+
+[[insertions]]
+path = "src/managers/service_locator/service_locator.rs"
+before = "            close_callbacks: Mutex::new(Vec::new()),"
+text = "            {name}_engine: Mutex::new(None),\n"
+
+[[insertions]]
+path = "src/managers/service_locator/service_locator.rs"
+before = "    /// Closes every singleton this locator created, in reverse order of creation."
+text = """    pub fn get_{name}_engine(&self) -> ApplicationResult<Arc<{Name}Engine>> {
+        ServiceLocator::get_or_create(&self.{name}_engine, || {
+            // Holds nothing of its own to release, so it registers no close(); the gateways it uses already have.
+            Ok(Arc::new({Name}Engine))
+        })
+    }
+
+"""

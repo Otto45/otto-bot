@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use crate::managers::models::stack_pack_check::StackPackCheck;
 use crate::managers::models::stack_pack_lint::StackPackLint;
 use crate::managers::models::stack_pack_project_map::StackPackProjectMap;
+use crate::managers::models::stack_pack_scaffold::StackPackScaffold;
 
 /// What otto-bot knows about building apps in one language.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,4 +21,6 @@ pub struct StackPack {
     pub project_map: Option<StackPackProjectMap>,
     /// None for a pack with no architecture lint.
     pub lint: Option<StackPackLint>,
+    /// None for a pack with no scaffolds.
+    pub scaffold: Option<StackPackScaffold>,
 }
