@@ -1,0 +1,3 @@
+/target
+# A Cargo.lock names its package, so an app made from this template locks its own dependencies.
+/Cargo.lock

@@ -1,0 +1,40 @@
+# The Rust stack pack: everything the harness knows about building Domain Container apps in Rust.
+# Draft: the harness reads it from step 2 of docs/DESIGN.md on; fields are added as the harness needs them.
+
+name = "rust"
+
+# The template app (one example of every component kind) and the rules every change to an app follows.
+template = "template"
+rules = "template/AGENTS.md"
+
+[detect]
+# A project is a Rust app when its root has all of these.
+files = ["Cargo.toml"]
+
+# The checks every change passes, run from the app's root, in order.
+[[checks]]
+name = "format"
+command = ["cargo", "fmt", "--check"]
+
+[[checks]]
+name = "lint"
+command = ["cargo", "clippy", "--all-targets", "--", "-D", "warnings"]
+
+[[checks]]
+name = "contract"
+command = ["cargo", "run", "--bin", "export-openapi", "--", "--check"]
+
+# Tests are deferred; the slot is kept so adding them changes no harness code.
+[[checks]]
+name = "test"
+command = []
+
+# Starting an app: names in the template replaced by the app's own, in this order (AGENTS.md, "Starting an app
+# from the template").
+[rename]
+"example-app" = "{app_name_kebab}"
+"example_app" = "{app_name_snake}"
+"ExampleAppFacade" = "{app_name_pascal}Facade"
+"ExampleAppManager" = "{app_name_pascal}Manager"
+"EXAMPLE_APP_" = "{app_name_upper}_"
+"Example App" = "{app_name_title}"

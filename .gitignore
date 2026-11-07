@@ -25,3 +25,6 @@ rustc-ice-*.txt
 
 # Local only
 reference/
+
+# Local secrets (e.g. OPENAI_API_KEY)
+.env
