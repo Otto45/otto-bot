@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 #[serde(default)]
 pub struct UsageRecordDocument {
     pub session_id: Option<String>,
+    pub lane_name: Option<String>,
+    pub role: Option<String>,
     pub response_id: Option<String>,
     pub model: Option<String>,
     pub requested_service_tier: Option<String>,

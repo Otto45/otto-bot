@@ -1,6 +1,7 @@
+use crate::managers::models::reasoning_effort::ReasoningEffort;
 use crate::managers::models::tool_call_reference::ToolCallReference;
 
-/// One item of a session's conversation, in the order the model saw it. With `store=false` the API keeps nothing, so
+/// One item of a lane's conversation, in the order the model saw it. With `store=false` the API keeps nothing, so
 /// every request sends the whole conversation, and these are what it is made of.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConversationItem {
@@ -11,6 +12,10 @@ pub enum ConversationItem {
     /// message.
     HarnessNote {
         text: String,
+    },
+    /// Sets how hard the model reasons from here on (a lane's role decides it), without changing the cached prefix.
+    ConfigurationUpdate {
+        reasoning_effort: ReasoningEffort,
     },
     /// An item the model produced (a message, reasoning with its encrypted content, a tool call), kept exactly as the
     /// API returned it, as JSON text, so it is sent back unchanged. The domain reads what it needs from the

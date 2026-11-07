@@ -17,6 +17,8 @@ use crate::managers::models::tool_definition::ToolDefinition;
 // explicit cache breakpoint with its layer's lifetime. Implicit mode keeps a breakpoint at the end of the latest
 // message too, so the conversation is cached as it grows. That is at most three cache writes per request, within the
 // API's four.
+const APPLY_PATCH: &str = "apply_patch";
+
 pub struct ResponseRequestBuilder;
 
 impl ResponseRequestBuilder {
@@ -68,7 +70,7 @@ impl ResponseRequestBuilder {
             .iter()
             .map(ResponseRequestBuilder::to_function_tool)
             .collect();
-        tools.push(json!({ "type": "apply_patch" }));
+        tools.push(json!({ "type": APPLY_PATCH }));
 
         let mut body: Value = json!({
             "model": model,
@@ -81,6 +83,17 @@ impl ResponseRequestBuilder {
             "tools": tools,
             "input": input,
         });
+        if let Some(allowed_tool_names) = model_request.allowed_tool_names.as_ref() {
+            // Restricts the calls the model may make without changing the tools sent, so the cached prefix holds.
+            body["tool_choice"] = json!({
+                "type": "allowed_tools",
+                "mode": "auto",
+                "tools": allowed_tool_names
+                    .iter()
+                    .map(|tool_name: &String| ResponseRequestBuilder::to_tool_reference(tool_name))
+                    .collect::<Vec<Value>>(),
+            });
+        }
         if let Some(previous_response_id) = previous_response_id {
             body["previous_response_id"] = Value::from(previous_response_id);
         }
@@ -96,6 +109,10 @@ impl ResponseRequestBuilder {
             ConversationItem::HarnessNote { text } => json!({
                 "role": "developer",
                 "content": [{ "type": "input_text", "text": text }],
+            }),
+            ConversationItem::ConfigurationUpdate { reasoning_effort } => json!({
+                "type": "configuration_update",
+                "reasoning": { "effort": reasoning_effort.name() },
             }),
             // Sent back exactly as the API returned it.
             ConversationItem::ModelOutput { item, .. } => {
@@ -138,6 +155,15 @@ impl ResponseRequestBuilder {
                 },
             },
         })
+    }
+
+    // apply_patch is the API's own tool; every other is a function.
+    fn to_tool_reference(tool_name: &str) -> Value {
+        if tool_name == APPLY_PATCH {
+            json!({ "type": "apply_patch" })
+        } else {
+            json!({ "type": "function", "name": tool_name })
+        }
     }
 
     // Strict, so the model's arguments always match the tool's schema.

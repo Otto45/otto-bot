@@ -24,17 +24,22 @@ impl DataFacade {
         self.data_manager.save_session(session).await
     }
 
-    pub async fn get_conversation_items(&self, session_id: &str) -> ApplicationResult<Vec<ConversationItem>> {
-        self.data_manager.get_conversation_items(session_id).await
+    pub async fn get_conversation_items(
+        &self,
+        session_id: &str,
+        lane_name: &str,
+    ) -> ApplicationResult<Vec<ConversationItem>> {
+        self.data_manager.get_conversation_items(session_id, lane_name).await
     }
 
     pub async fn append_conversation_items(
         &self,
         session_id: &str,
+        lane_name: &str,
         conversation_items: &[ConversationItem],
     ) -> ApplicationResult<()> {
         self.data_manager
-            .append_conversation_items(session_id, conversation_items)
+            .append_conversation_items(session_id, lane_name, conversation_items)
             .await
     }
 

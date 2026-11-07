@@ -62,6 +62,13 @@ impl WorkspaceGateway {
         Ok(canonical_directory)
     }
 
+    /// The path as every other method names it (relative to the workspace, with no `.` parts), once it is known to
+    /// stay inside the workspace; the file needn't exist.
+    pub async fn normalize_path(&self, workspace_directory: &Path, path: &str) -> ApplicationResult<String> {
+        let (relative_path, _): (String, PathBuf) = WorkspaceGateway::resolve_path(workspace_directory, path).await?;
+        Ok(relative_path)
+    }
+
     pub async fn read_file(&self, workspace_directory: &Path, path: &str) -> ApplicationResult<WorkspaceFile> {
         let (relative_path, absolute_path): (String, PathBuf) =
             WorkspaceGateway::resolve_path(workspace_directory, path).await?;

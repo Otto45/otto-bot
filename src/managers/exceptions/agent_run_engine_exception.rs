@@ -7,6 +7,10 @@ pub enum AgentRunEngineException {
     /// A scaffold that can't be applied to the workspace (a file it would create exists, an anchor is missing): told
     /// to the model, which writes the component by hand instead.
     ScaffoldNotApplicable,
+    /// A tool the agent's role may not call: told to the model, which was told which it may.
+    ToolNotAllowed,
+    /// A change to a file the agent doesn't own: told to the model, which says what it needs instead.
+    FileNotOwned,
     MaxTurnsReached,
 }
 
@@ -16,6 +20,8 @@ impl AgentRunEngineException {
             AgentRunEngineException::InvalidToolCall => "InvalidToolCallException",
             AgentRunEngineException::InvalidPatch => "InvalidPatchException",
             AgentRunEngineException::ScaffoldNotApplicable => "ScaffoldNotApplicableException",
+            AgentRunEngineException::ToolNotAllowed => "ToolNotAllowedException",
+            AgentRunEngineException::FileNotOwned => "FileNotOwnedException",
             AgentRunEngineException::MaxTurnsReached => "MaxTurnsReachedException",
         }
     }

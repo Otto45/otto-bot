@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 
+use crate::managers::models::agent_role::AgentRole;
 use crate::managers::models::model_usage::ModelUsage;
 use crate::managers::models::service_tier::ServiceTier;
 
@@ -7,6 +8,8 @@ use crate::managers::models::service_tier::ServiceTier;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UsageRecord {
     pub session_id: String,
+    pub lane_name: String,
+    pub role: AgentRole,
     pub response_id: String,
     pub model: String,
     pub requested_service_tier: ServiceTier,

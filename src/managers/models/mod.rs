@@ -1,3 +1,5 @@
+pub mod agent_assignment;
+pub mod agent_role;
 pub mod cache_lifetime;
 pub mod check_result;
 pub mod command_result;
@@ -12,6 +14,7 @@ pub mod patch_operation;
 pub mod patch_operation_kind;
 pub mod project_map_role;
 pub mod prompt_layer;
+pub mod reasoning_effort;
 pub mod run_context;
 pub mod run_summary;
 pub mod scaffold_file;

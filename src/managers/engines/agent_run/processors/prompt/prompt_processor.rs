@@ -1,8 +1,11 @@
 use std::path::Path;
 
+use crate::managers::models::agent_role::AgentRole;
 use crate::managers::models::cache_lifetime::CacheLifetime;
 use crate::managers::models::prompt_layer::PromptLayer;
+use crate::managers::models::reasoning_effort::ReasoningEffort;
 use crate::managers::models::stack_pack::StackPack;
+use crate::managers::models::workspace_file::WorkspaceFile;
 
 // The opening of every request, in layers ordered from what the most requests share to what the fewest do, each
 // cached on its own:
@@ -10,7 +13,9 @@ use crate::managers::models::stack_pack::StackPack;
 //    workspace, so every session of every project on the stack shares it, and it is kept for 12 hours.
 // 2. the workspace's layer: where the workspace is, and its project map. The session keeps the map from run to run
 //    (what changes is told in notes in the conversation), so every request of the session shares this layer.
-// The conversation follows, cached as it grows. Nothing in a layer changes between requests of a session.
+// 3. the assignment's layer, for an agent other than the lead: its role, and the files it owns as they were when it
+//    started. Only its own lane has it.
+// The conversation follows, cached as it grows. Nothing in a layer changes between requests of a lane.
 pub struct PromptProcessor;
 
 impl PromptProcessor {
@@ -31,6 +36,47 @@ impl PromptProcessor {
                 cache_lifetime: CacheLifetime::ThirtyMinutes,
             },
         ]
+    }
+
+    /// The layer that tells an agent other than the lead what its part is; none for the lead, whose part is the
+    /// request itself. `owned_files` are the files it may change, as they are now.
+    pub fn build_assignment_layer(&self, agent_role: AgentRole, owned_files: &[WorkspaceFile]) -> Option<PromptLayer> {
+        let mut assignment_layer: String = match agent_role {
+            AgentRole::Lead => return None,
+            AgentRole::Worker => "You are a worker, building one package of a larger change. Other workers build the \
+                 other packages at the same time, each in its own copy of the workspace. The contracts (models, \
+                 exceptions and signatures) are written and frozen: build against them, and change only the files \
+                 you own. They are below as they are now, so patch them without reading them first. Build all of \
+                 your package that your files can hold; if a part of it needs a change to a file you don't own, \
+                 leave that part, and when you are done say which change you need there and why.\n"
+                .to_string(),
+            AgentRole::Reviewer => "You are the reviewer. Read the change and report what is wrong with it, most \
+                 severe first: security, then the architecture's rules, then correctness. You change nothing.\n"
+                .to_string(),
+        };
+        if !owned_files.is_empty() {
+            assignment_layer.push_str("\nThe files you own, as they are now:\n");
+            for owned_file in owned_files {
+                assignment_layer.push_str(&format!(
+                    "\n<file path=\"{}\">\n{}\n</file>\n",
+                    owned_file.path,
+                    owned_file.content.trim_end()
+                ));
+            }
+        }
+        Some(PromptLayer {
+            text: assignment_layer,
+            cache_lifetime: CacheLifetime::ThirtyMinutes,
+        })
+    }
+
+    /// How hard the role's model reasons; none for the model's default (medium), which needs no configuration update.
+    pub fn get_reasoning_effort(&self, agent_role: AgentRole) -> Option<ReasoningEffort> {
+        match agent_role {
+            AgentRole::Lead | AgentRole::Worker => None,
+            // Its output is short, and what it misses ships.
+            AgentRole::Reviewer => Some(ReasoningEffort::High),
+        }
     }
 
     fn build_workspace_layer(workspace_directory: &Path, project_map: Option<&str>) -> String {

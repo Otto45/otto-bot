@@ -1,5 +1,6 @@
 use crate::managers::data_layer::managers::gateways::session_store::resource_models::conversation_item_document::ConversationItemDocument;
 use crate::managers::models::conversation_item::ConversationItem;
+use crate::managers::models::reasoning_effort::ReasoningEffort;
 use crate::managers::models::tool_call_kind::ToolCallKind;
 use crate::managers::models::tool_call_reference::ToolCallReference;
 
@@ -16,6 +17,11 @@ impl ConversationItemDocumentMapper {
             ConversationItem::HarnessNote { text } => ConversationItemDocument {
                 item_type: Some("harness_note".to_string()),
                 text: Some(text.clone()),
+                ..ConversationItemDocument::default()
+            },
+            ConversationItem::ConfigurationUpdate { reasoning_effort } => ConversationItemDocument {
+                item_type: Some("configuration_update".to_string()),
+                reasoning_effort: Some(reasoning_effort.name().to_string()),
                 ..ConversationItemDocument::default()
             },
             ConversationItem::ModelOutput { item, tool_call } => ConversationItemDocument {
@@ -62,6 +68,13 @@ impl ConversationItemDocumentMapper {
             },
             "harness_note" => ConversationItem::HarnessNote {
                 text: document.text.expect("validated by ValidatorConversationItemDocument"),
+            },
+            "configuration_update" => ConversationItem::ConfigurationUpdate {
+                reasoning_effort: document
+                    .reasoning_effort
+                    .as_deref()
+                    .and_then(ReasoningEffort::from_name)
+                    .expect("validated by ValidatorConversationItemDocument"),
             },
             "model_output" => ConversationItem::ModelOutput {
                 item: document.item.expect("validated by ValidatorConversationItemDocument"),

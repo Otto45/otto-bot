@@ -5,12 +5,14 @@ use crate::managers::models::run_summary::RunSummary;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionEvent {
     RunStarted,
-    /// The agent wrote to the person.
+    /// An agent wrote to the person. `agent` names the agent (its lane), unless it is the session's own (the lead).
     AssistantReplied {
+        agent: Option<String>,
         text: String,
     },
-    /// The agent used a tool: which, on what (e.g. the paths it read), and whether it worked.
+    /// An agent used a tool: which, on what (e.g. the paths it read), and whether it worked.
     ToolUsed {
+        agent: Option<String>,
         tool_name: String,
         target: String,
         succeeded: bool,

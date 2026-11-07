@@ -23,6 +23,8 @@ use crate::managers::gateways::openai_responses::openai_responses_gateway::OpenA
 use crate::managers::gateways::workspace::workspace_gateway::WorkspaceGateway;
 use crate::managers::logger::application_logger::ApplicationLogger;
 use crate::managers::logger::log_level::LogLevel;
+use crate::managers::models::agent_assignment::AgentAssignment;
+use crate::managers::models::agent_role::AgentRole;
 use crate::managers::models::check_result::CheckResult;
 use crate::managers::models::conversation_item::ConversationItem;
 use crate::managers::models::lint_violation::LintViolation;
@@ -32,6 +34,7 @@ use crate::managers::models::model_usage::ModelUsage;
 use crate::managers::models::patch_operation::PatchOperation;
 use crate::managers::models::patch_operation_kind::PatchOperationKind;
 use crate::managers::models::project_map_role::ProjectMapRole;
+use crate::managers::models::prompt_layer::PromptLayer;
 use crate::managers::models::run_context::RunContext;
 use crate::managers::models::run_summary::RunSummary;
 use crate::managers::models::scaffold_plan::ScaffoldPlan;
@@ -49,6 +52,8 @@ use crate::managers::models::user_request::UserRequest;
 use crate::managers::models::workspace_file::WorkspaceFile;
 
 const APPLY_PATCH: &str = "apply_patch";
+// The lane of the session's own agent.
+const LEAD_LANE_NAME: &str = "lead";
 // The check the harness runs itself, before the pack's commands.
 const ARCHITECTURE_CHECK: &str = "architecture";
 
@@ -100,8 +105,9 @@ impl AgentRunEngine {
         }
     }
 
-    /// Reports what happens on `events`; the run's start and end are the manager's to report. The engine is a shared
-    /// singleton, which the ServiceLocator builds without the DataFacade, so the manager passes it in.
+    /// Runs the session's own agent, the lead, on the person's request. Reports what happens on `events`; the run's
+    /// start and end are the manager's to report. The engine is a shared singleton, which the ServiceLocator builds
+    /// without the DataFacade, so the manager passes it in.
     pub async fn run(
         &self,
         session: &Session,
@@ -109,51 +115,183 @@ impl AgentRunEngine {
         events: &broadcast::Sender<SessionEvent>,
         data_facade: &DataFacade,
     ) -> ApplicationResult<RunSummary> {
-        let run_context: RunContext = self.prepare_run(session, data_facade).await?;
+        let agent_assignment: AgentAssignment = AgentAssignment {
+            lane_name: LEAD_LANE_NAME.to_string(),
+            role: AgentRole::Lead,
+            workspace_directory: session.workspace_directory.clone(),
+            owned_paths: None,
+        };
+        let (stack_pack, rules): (Option<StackPack>, Option<String>) = self
+            .detect_stack_pack(&agent_assignment.workspace_directory, data_facade)
+            .await?;
+        // The session keeps the lead's map from run to run, so its requests' prefix (and its lane) carries over.
+        let (project_map, project_map_note): (Option<String>, Option<ConversationItem>) =
+            match AgentRunEngine::get_project_map_source(stack_pack.as_ref()) {
+                Some((language_name, stack_pack_project_map)) => {
+                    let current_map: String = self
+                        .build_project_map(
+                            &agent_assignment.workspace_directory,
+                            language_name,
+                            stack_pack_project_map,
+                        )
+                        .await?;
+                    let (layer_map, project_map_note): (String, Option<ConversationItem>) =
+                        self.choose_project_map(session, current_map, data_facade).await?;
+                    (Some(layer_map), project_map_note)
+                }
+                None => (None, None),
+            };
+        let run_context: RunContext = self.build_run_context(
+            &agent_assignment,
+            stack_pack,
+            rules.as_deref(),
+            project_map.as_deref(),
+            &[],
+        );
 
-        let mut conversation_items: Vec<ConversationItem> = data_facade.get_conversation_items(&session.id).await?;
+        let mut opening_items: Vec<ConversationItem> = Vec::with_capacity(2);
+        opening_items.extend(project_map_note);
+        opening_items.push(ConversationItem::UserMessage {
+            text: user_request.text.clone(),
+        });
+        self.run_lane(
+            session,
+            &agent_assignment,
+            &run_context,
+            opening_items,
+            events,
+            data_facade,
+        )
+        .await
+    }
+
+    /// Runs an agent other than the lead on its assignment, with `brief` as what it is asked; a lane that has run
+    /// before continues where it stopped. Its requests open with the map of its own workspace as it is now, and its
+    /// owned files as they are now, so agents that start on identical copies share every layer but their own.
+    pub async fn run_assignment(
+        &self,
+        session: &Session,
+        agent_assignment: &AgentAssignment,
+        brief: &str,
+        events: &broadcast::Sender<SessionEvent>,
+        data_facade: &DataFacade,
+    ) -> ApplicationResult<RunSummary> {
+        let workspace_directory: &Path = &agent_assignment.workspace_directory;
+        let (stack_pack, rules): (Option<StackPack>, Option<String>) =
+            self.detect_stack_pack(workspace_directory, data_facade).await?;
+        let project_map: Option<String> = match AgentRunEngine::get_project_map_source(stack_pack.as_ref()) {
+            Some((language_name, stack_pack_project_map)) => Some(
+                self.build_project_map(workspace_directory, language_name, stack_pack_project_map)
+                    .await?,
+            ),
+            None => None,
+        };
+
+        // A file it owns that doesn't exist yet is one it creates.
+        let mut owned_files: Vec<WorkspaceFile> = Vec::new();
+        for owned_path in agent_assignment.owned_paths.iter().flatten() {
+            match self.workspace_gateway.read_file(workspace_directory, owned_path).await {
+                Ok(owned_file) => owned_files.push(owned_file),
+                Err(exception)
+                    if exception.kind() == ExceptionKind::WorkspaceGateway(WorkspaceGatewayException::FileNotFound) => {
+                }
+                Err(exception) => return Err(exception),
+            }
+        }
+        let run_context: RunContext = self.build_run_context(
+            agent_assignment,
+            stack_pack,
+            rules.as_deref(),
+            project_map.as_deref(),
+            &owned_files,
+        );
+
+        let opening_items: Vec<ConversationItem> = vec![ConversationItem::UserMessage {
+            text: brief.to_string(),
+        }];
+        self.run_lane(
+            session,
+            agent_assignment,
+            &run_context,
+            opening_items,
+            events,
+            data_facade,
+        )
+        .await
+    }
+
+    // One agent's turns on its lane, to completion. Each turn sends the lane's whole conversation (the API keeps
+    // nothing), does what the model asked and sends what came of it back, until the model answers without asking for
+    // anything. Every item is appended to the lane's conversation in the session store as it happens.
+    async fn run_lane(
+        &self,
+        session: &Session,
+        agent_assignment: &AgentAssignment,
+        run_context: &RunContext,
+        opening_items: Vec<ConversationItem>,
+        events: &broadcast::Sender<SessionEvent>,
+        data_facade: &DataFacade,
+    ) -> ApplicationResult<RunSummary> {
+        let lane_name: &str = &agent_assignment.lane_name;
+        let mut conversation_items: Vec<ConversationItem> =
+            data_facade.get_conversation_items(&session.id, lane_name).await?;
         // A run cancelled midway can leave tool calls unanswered, which the API refuses: they are answered first.
         let unfinished_tool_call_outputs: Vec<ConversationItem> =
             self.tool_processor.answer_unfinished_tool_calls(&conversation_items);
         if !unfinished_tool_call_outputs.is_empty() {
             data_facade
-                .append_conversation_items(&session.id, &unfinished_tool_call_outputs)
+                .append_conversation_items(&session.id, lane_name, &unfinished_tool_call_outputs)
                 .await?;
             conversation_items.extend(unfinished_tool_call_outputs);
         }
-        let mut new_items: Vec<ConversationItem> = Vec::with_capacity(2);
-        if let Some(project_map_note) = run_context.project_map_note.as_ref() {
-            new_items.push(project_map_note.clone());
+        let mut new_items: Vec<ConversationItem> = Vec::with_capacity(opening_items.len() + 1);
+        // A new lane's role sets how hard it reasons, once, in its conversation.
+        if conversation_items.is_empty()
+            && let Some(reasoning_effort) = self.prompt_processor.get_reasoning_effort(agent_assignment.role)
+        {
+            new_items.push(ConversationItem::ConfigurationUpdate { reasoning_effort });
         }
-        new_items.push(ConversationItem::UserMessage {
-            text: user_request.text.clone(),
-        });
-        data_facade.append_conversation_items(&session.id, &new_items).await?;
+        new_items.extend(opening_items);
+        data_facade
+            .append_conversation_items(&session.id, lane_name, &new_items)
+            .await?;
         conversation_items.extend(new_items);
 
+        let lane_id: String = format!("{}/{}", session.id, lane_name);
+        let agent: Option<String> = AgentRunEngine::to_agent(agent_assignment);
         let mut usage: ModelUsage = ModelUsage::default();
         for turn in 1..=self.max_turns {
             let model_response: ModelResponse = self
                 .openai_responses_gateway
                 .create_response(&ModelRequest {
-                    lane_id: session.id.clone(),
+                    lane_id: lane_id.clone(),
                     prompt_layers: run_context.prompt_layers.clone(),
                     items: conversation_items.clone(),
                     tools: run_context.tools.clone(),
+                    allowed_tool_names: run_context.allowed_tool_names.clone(),
                     service_tier: session.service_tier,
                 })
                 .await?;
             usage = usage.plus(model_response.usage);
             data_facade
-                .append_usage_record(&AgentRunEngine::to_usage_record(session, &model_response))
+                .append_usage_record(&AgentRunEngine::to_usage_record(
+                    session,
+                    agent_assignment,
+                    &model_response,
+                ))
                 .await?;
             data_facade
-                .append_conversation_items(&session.id, &model_response.output_items)
+                .append_conversation_items(&session.id, lane_name, &model_response.output_items)
                 .await?;
             conversation_items.extend(model_response.output_items.iter().cloned());
 
             if let Some(text) = model_response.text.as_ref() {
-                events.send(SessionEvent::AssistantReplied { text: text.clone() }).ok();
+                events
+                    .send(SessionEvent::AssistantReplied {
+                        agent: agent.clone(),
+                        text: text.clone(),
+                    })
+                    .ok();
             }
             if model_response.tool_calls.is_empty() {
                 return Ok(RunSummary {
@@ -165,10 +303,10 @@ impl AgentRunEngine {
 
             let mut tool_outputs: Vec<ConversationItem> = Vec::with_capacity(model_response.tool_calls.len());
             for tool_call in &model_response.tool_calls {
-                tool_outputs.push(self.use_tool(session, &run_context, tool_call, events).await?);
+                tool_outputs.push(self.use_tool(agent_assignment, run_context, tool_call, events).await?);
             }
             data_facade
-                .append_conversation_items(&session.id, &tool_outputs)
+                .append_conversation_items(&session.id, lane_name, &tool_outputs)
                 .await?;
             conversation_items.extend(tool_outputs);
         }
@@ -178,52 +316,57 @@ impl AgentRunEngine {
             format!("The run stopped after {} model turns without finishing", self.max_turns),
             ContextualData::new()
                 .with("session_id", session.id.as_str())
+                .with("lane_name", lane_name)
                 .with("max_turns", self.max_turns),
         ))
     }
 
-    // The workspace's stack (the first pack whose files it has), and the prompt layers and tools every turn sends.
-    async fn prepare_run(&self, session: &Session, data_facade: &DataFacade) -> ApplicationResult<RunContext> {
-        let mut workspace_stack_pack: Option<StackPack> = None;
+    // The workspace's stack (the first pack whose files it has), and its rules.
+    async fn detect_stack_pack(
+        &self,
+        workspace_directory: &Path,
+        data_facade: &DataFacade,
+    ) -> ApplicationResult<(Option<StackPack>, Option<String>)> {
         for stack_pack in data_facade.get_stack_packs().await? {
-            if self
-                .has_files(&session.workspace_directory, &stack_pack.detect_files)
-                .await?
-            {
-                workspace_stack_pack = Some(stack_pack);
-                break;
+            if self.has_files(workspace_directory, &stack_pack.detect_files).await? {
+                let rules: String = data_facade.get_stack_pack_rules(&stack_pack).await?;
+                return Ok((Some(stack_pack), Some(rules)));
             }
         }
-        let rules: Option<String> = match workspace_stack_pack.as_ref() {
-            Some(stack_pack) => Some(data_facade.get_stack_pack_rules(stack_pack).await?),
-            None => None,
-        };
-        let (project_map, project_map_note): (Option<String>, Option<ConversationItem>) = match workspace_stack_pack
-            .as_ref()
-            .and_then(|stack_pack: &StackPack| stack_pack.language.as_deref().zip(stack_pack.project_map.as_ref()))
-        {
-            Some((language_name, stack_pack_project_map)) => {
-                let current_map: String = self
-                    .build_project_map(&session.workspace_directory, language_name, stack_pack_project_map)
-                    .await?;
-                let (layer_map, project_map_note): (String, Option<ConversationItem>) =
-                    self.choose_project_map(session, current_map, data_facade).await?;
-                (Some(layer_map), project_map_note)
-            }
-            None => (None, None),
-        };
+        Ok((None, None))
+    }
 
-        Ok(RunContext {
-            prompt_layers: self.prompt_processor.build_prompt_layers(
-                &session.workspace_directory,
-                workspace_stack_pack.as_ref(),
-                rules.as_deref(),
-                project_map.as_deref(),
-            ),
+    // The prompt layers and tools every turn of the agent's run sends, and the tools its role may call.
+    fn build_run_context(
+        &self,
+        agent_assignment: &AgentAssignment,
+        stack_pack: Option<StackPack>,
+        rules: Option<&str>,
+        project_map: Option<&str>,
+        owned_files: &[WorkspaceFile],
+    ) -> RunContext {
+        let mut prompt_layers: Vec<PromptLayer> = self.prompt_processor.build_prompt_layers(
+            &agent_assignment.workspace_directory,
+            stack_pack.as_ref(),
+            rules,
+            project_map,
+        );
+        prompt_layers.extend(
+            self.prompt_processor
+                .build_assignment_layer(agent_assignment.role, owned_files),
+        );
+        RunContext {
+            prompt_layers,
             tools: self.tool_processor.get_tool_definitions(),
-            stack_pack: workspace_stack_pack,
-            project_map_note,
-        })
+            allowed_tool_names: self.tool_processor.get_allowed_tool_names(agent_assignment.role),
+            stack_pack,
+        }
+    }
+
+    // The pack's grammar and project map settings, if it has both.
+    fn get_project_map_source(stack_pack: Option<&StackPack>) -> Option<(&str, &StackPackProjectMap)> {
+        stack_pack
+            .and_then(|stack_pack: &StackPack| stack_pack.language.as_deref().zip(stack_pack.project_map.as_ref()))
     }
 
     // The map the requests open with, and a note of what changed since the last run, if anything did. The session
@@ -330,10 +473,11 @@ impl AgentRunEngine {
         Ok(true)
     }
 
-    // Does what one tool call asks, reports it, and returns the output the model is sent for it.
+    // Does what one tool call asks, reports it, and returns the output the model is sent for it. A tool the agent's
+    // role may not call, or a change to a file it doesn't own, is refused, and the model is told why.
     async fn use_tool(
         &self,
-        session: &Session,
+        agent_assignment: &AgentAssignment,
         run_context: &RunContext,
         tool_call: &ToolCall,
         events: &broadcast::Sender<SessionEvent>,
@@ -344,17 +488,21 @@ impl AgentRunEngine {
                 name,
                 arguments,
             } => {
-                let (target, output, succeeded): (String, String, bool) =
-                    match self.tool_processor.to_tool_request(name, arguments) {
-                        Ok(tool_request) => {
-                            let (output, succeeded): (String, bool) =
-                                self.use_function_tool(session, run_context, &tool_request).await?;
-                            (self.tool_processor.describe_target(&tool_request), output, succeeded)
-                        }
-                        Err(exception) => (String::new(), self.to_tool_error(exception)?, false),
-                    };
+                let (target, output, succeeded): (String, String, bool) = match self
+                    .check_tool_allowed(agent_assignment, name)
+                    .and_then(|(): ()| self.tool_processor.to_tool_request(name, arguments))
+                {
+                    Ok(tool_request) => {
+                        let (output, succeeded): (String, bool) = self
+                            .use_function_tool(agent_assignment, run_context, &tool_request)
+                            .await?;
+                        (self.tool_processor.describe_target(&tool_request), output, succeeded)
+                    }
+                    Err(exception) => (String::new(), self.to_tool_error(exception)?, false),
+                };
                 events
                     .send(SessionEvent::ToolUsed {
+                        agent: AgentRunEngine::to_agent(agent_assignment),
                         tool_name: name.clone(),
                         target,
                         succeeded,
@@ -370,13 +518,14 @@ impl AgentRunEngine {
                 patch_operation,
             } => {
                 let (output, succeeded): (String, bool) =
-                    match self.apply_patch(&session.workspace_directory, patch_operation).await {
+                    match self.apply_owned_patch(agent_assignment, patch_operation).await {
                         Ok(output) => (output, true),
                         // The model knows this error format from the reference applier.
                         Err(exception) => (format!("Error: {}", self.to_tool_error_message(exception)?), false),
                     };
                 events
                     .send(SessionEvent::ToolUsed {
+                        agent: AgentRunEngine::to_agent(agent_assignment),
                         tool_name: APPLY_PATCH.to_string(),
                         target: format!("{} {}", patch_operation.kind.name(), patch_operation.path),
                         succeeded,
@@ -394,11 +543,11 @@ impl AgentRunEngine {
     // The tool's output and whether it did what was asked.
     async fn use_function_tool(
         &self,
-        session: &Session,
+        agent_assignment: &AgentAssignment,
         run_context: &RunContext,
         tool_request: &ToolRequest,
     ) -> ApplicationResult<(String, bool)> {
-        let workspace_directory: &Path = &session.workspace_directory;
+        let workspace_directory: &Path = &agent_assignment.workspace_directory;
         match tool_request {
             ToolRequest::ReadFiles { paths } => {
                 let mut sections: Vec<String> = Vec::with_capacity(paths.len());
@@ -623,6 +772,58 @@ impl AgentRunEngine {
         Ok(check_results)
     }
 
+    // The InvalidToolCall-like refusal of a tool the agent's role may not call.
+    fn check_tool_allowed(&self, agent_assignment: &AgentAssignment, tool_name: &str) -> ApplicationResult<()> {
+        if self.tool_processor.is_tool_allowed(agent_assignment.role, tool_name) {
+            return Ok(());
+        }
+        let allowed_tool_names: Vec<String> = self
+            .tool_processor
+            .get_allowed_tool_names(agent_assignment.role)
+            .unwrap_or_default();
+        Err(ApplicationBaseException::new(
+            AgentRunEngineException::ToolNotAllowed,
+            format!(
+                "As the {}, you may not call {tool_name}; you may call {}",
+                agent_assignment.role.name(),
+                allowed_tool_names.join(", ")
+            ),
+            ContextualData::new()
+                .with("lane_name", agent_assignment.lane_name.as_str())
+                .with("tool_name", tool_name),
+        ))
+    }
+
+    // A patch's file operation, if the agent may patch and owns the file.
+    async fn apply_owned_patch(
+        &self,
+        agent_assignment: &AgentAssignment,
+        patch_operation: &PatchOperation,
+    ) -> ApplicationResult<String> {
+        self.check_tool_allowed(agent_assignment, APPLY_PATCH)?;
+        if let Some(owned_paths) = agent_assignment.owned_paths.as_ref() {
+            let path: String = self
+                .workspace_gateway
+                .normalize_path(&agent_assignment.workspace_directory, &patch_operation.path)
+                .await?;
+            if !owned_paths.contains(&path) {
+                return Err(ApplicationBaseException::new(
+                    AgentRunEngineException::FileNotOwned,
+                    format!(
+                        "You don't own {path}, so you may not change it; you own {}. If your package needs it \
+                         changed, stop and say which change and why.",
+                        owned_paths.join(", ")
+                    ),
+                    ContextualData::new()
+                        .with("lane_name", agent_assignment.lane_name.as_str())
+                        .with("path", path.as_str()),
+                ));
+            }
+        }
+        self.apply_patch(&agent_assignment.workspace_directory, patch_operation)
+            .await
+    }
+
     // A patch's file operation; what it did, for the model.
     async fn apply_patch(
         &self,
@@ -682,7 +883,9 @@ impl AgentRunEngine {
             ExceptionKind::AgentRunEngine(exception) => match exception {
                 AgentRunEngineException::InvalidToolCall
                 | AgentRunEngineException::InvalidPatch
-                | AgentRunEngineException::ScaffoldNotApplicable => true,
+                | AgentRunEngineException::ScaffoldNotApplicable
+                | AgentRunEngineException::ToolNotAllowed
+                | AgentRunEngineException::FileNotOwned => true,
                 AgentRunEngineException::MaxTurnsReached => false,
             },
             ExceptionKind::WorkspaceGateway(_) | ExceptionKind::CommandRunnerGateway(_) => true,
@@ -696,9 +899,23 @@ impl AgentRunEngine {
         }
     }
 
-    fn to_usage_record(session: &Session, model_response: &ModelResponse) -> UsageRecord {
+    // The agent as events name it: the lead is the session's own, so it is unnamed.
+    fn to_agent(agent_assignment: &AgentAssignment) -> Option<String> {
+        match agent_assignment.role {
+            AgentRole::Lead => None,
+            AgentRole::Worker | AgentRole::Reviewer => Some(agent_assignment.lane_name.clone()),
+        }
+    }
+
+    fn to_usage_record(
+        session: &Session,
+        agent_assignment: &AgentAssignment,
+        model_response: &ModelResponse,
+    ) -> UsageRecord {
         UsageRecord {
             session_id: session.id.clone(),
+            lane_name: agent_assignment.lane_name.clone(),
+            role: agent_assignment.role,
             response_id: model_response.id.clone(),
             model: model_response.model.clone(),
             requested_service_tier: session.service_tier,

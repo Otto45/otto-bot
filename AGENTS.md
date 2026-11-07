@@ -134,8 +134,11 @@ docs/DESIGN.md                  otto-bot's design
 - the `CommandRunnerGateway` runs only a stack pack's declared commands, with no input, a timeout, and without `OPENAI_API_KEY` in their environment
 - what the agent reads, and what checks print, goes to the model only through the `ToolProcessor`, which takes recognizable secrets out (`SecretRedactor`)
 - an exception a tool call runs into (a missing file, a patch that doesn't apply, a check that can't start) is told to the model as that call's output, so it can do something else; `AgentRunEngine::is_told_to_model` decides which, naming every family; any other exception ends the run
-- every role gets the same tools in the same order: a role is restricted by which tools it may call, never by removing tools, so the cached prompt prefix is shared
-- every request opens with the `PromptProcessor`'s layers, each a content block ending in an explicit cache breakpoint, ordered from what the most requests share to what the fewest do: the stack's layer (instructions and the pack's rules; it names no workspace, so every project on the stack shares it; 12 hours), then the workspace's (its path and project map; 30 minutes); implicit mode caches the conversation after them
+- every agent runs on its own lane (`AgentAssignment`: a lane name, a role, a workspace, the files it owns) with its own conversation; the lead is the session's own agent, and workers and the reviewer get theirs from the lead's plan
+  - every role gets the same tools in the same order: a role is restricted by which tools it may call (`ToolProcessor::get_allowed_tool_names`, sent as `allowed_tools`), never by removing tools, so the cached prompt prefix is shared; the engine refuses a call outside them too, and tells the model why
+  - an agent that owns files may change only those (`FileNotOwned`, told to the model); paths are compared as the `WorkspaceGateway` normalizes them
+  - a role's reasoning effort is a `configuration_update` item at the start of its lane, never the request's `reasoning.effort`, which would miss the cache
+- every request opens with the `PromptProcessor`'s layers, each a content block ending in an explicit cache breakpoint, ordered from what the most requests share to what the fewest do: the stack's layer (instructions and the pack's rules; it names no workspace, so every project on the stack shares it; 12 hours), then the workspace's (its path and project map; 30 minutes), then, for an agent other than the lead, its assignment's (its role and the files it owns, as they are when it starts; 30 minutes); implicit mode caches the conversation after them
   - nothing that varies goes in a layer (no time, no id, nothing unsorted), and a layer never changes during a run; something new for the model is appended to the conversation instead
 - the project map is every file of the workspace and, under each source file, its public items with their bodies left out, picked by the stack pack's tree-sitter query (`[project_map]` in pack.toml: a grammar built into otto-bot, source globs, and a query whose `@item` captures are shown and whose `@body` and `@omit` captures inside them are left out)
   - a session keeps the map its requests open with from run to run (its `project_maps.jsonl`), so the prefix and the lane carry over; each run tells what changed since the last as a harness note (a developer message) in the conversation, and the map is rebuilt only when the notes would be more than a quarter of it
@@ -146,14 +149,14 @@ docs/DESIGN.md                  otto-bot's design
   - a scaffold applies whole or not at all: the component it lives within must exist, no file it creates may, and every anchor must be found, before anything is written; then the pack's formatter sorts the added lines in, and the created files are returned as they are, so the model patches them without reading them
   - a scaffolded project passes every check as it is (formatting, lint, the architecture lint, the contract)
 - the OpenAI gateway's transport is a setting (`OTTO_BOT_OPENAI_TRANSPORT`: `websocket`, the default, or `http`); the domain always hands it a lane's whole conversation, and the transport decides what to send
-  - over WebSocket each lane (a session's agent, for now) has its own connection, which holds the lane's latest response; a request that only adds to the conversation that response covers continues it (`previous_response_id`) and sends the new items only
+  - over WebSocket each lane (one agent of a session, `<session_id>/<lane_name>`) has its own connection, which holds the lane's latest response; a request that only adds to the conversation that response covers continues it (`previous_response_id`) and sends the new items only
   - a continuation the connection no longer holds, or a lost connection, is sent once more with the whole conversation on a fresh connection; a connection near the API's 60-minute limit is replaced before a request; a lane whose last request was abandoned (its run cancelled) gets a new connection; if no connection can be opened, the request goes over HTTP
 
 ## Data layer
 - changed for otto-bot: its data is files, not databases, so it has no migrations and no relational gateway; the Postgres rules below apply only if one is ever added
   ```
   managers/data_layer/managers/gateways/
-      session_store/       a folder per session: session.json, and append-only conversation_items.jsonl and usage_records.jsonl
+      session_store/       a folder per session: session.json, and append-only conversation_items/<lane_name>.jsonl (one per lane), usage_records.jsonl and project_maps.jsonl
       stack_pack_store/    the stack packs, read-only: each folder's pack.toml
   ```
   - a session's files are only ever appended to, never rewritten, so a crash mid-write loses at most the line being written; whatever needs a changed record appends a new one

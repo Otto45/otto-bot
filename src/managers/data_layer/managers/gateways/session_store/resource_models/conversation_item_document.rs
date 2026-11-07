@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-// One line of a session's conversation_items.jsonl. Which fields it has depends on its type.
+// One line of a lane's conversation (conversation_items/<lane>.jsonl). Which fields it has depends on its type.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ConversationItemDocument {
@@ -19,4 +19,6 @@ pub struct ConversationItemDocument {
     pub output: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub succeeded: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
 }

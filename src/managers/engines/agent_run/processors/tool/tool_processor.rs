@@ -9,6 +9,7 @@ use crate::managers::engines::agent_run::processors::tool::tool_arguments::searc
 use crate::managers::exceptions::agent_run_engine_exception::AgentRunEngineException;
 use crate::managers::exceptions::application_base_exception::{ApplicationBaseException, ApplicationResult};
 use crate::managers::exceptions::contextual_data::ContextualData;
+use crate::managers::models::agent_role::AgentRole;
 use crate::managers::models::check_result::CheckResult;
 use crate::managers::models::conversation_item::ConversationItem;
 use crate::managers::models::lint_violation::LintViolation;
@@ -24,6 +25,8 @@ const LIST_FILES: &str = "list_files";
 const SEARCH: &str = "search";
 const RUN_CHECKS: &str = "run_checks";
 const SCAFFOLD: &str = "scaffold";
+// The API's own tool, offered with the function tools to every role.
+const APPLY_PATCH: &str = "apply_patch";
 // What a failed check prints is cut to its end, where compilers and linters say what is wrong.
 const MAX_CHECK_OUTPUT_CHARS: usize = 8_000;
 const UNFINISHED_TOOL_CALL_OUTPUT: &str =
@@ -121,6 +124,29 @@ impl ToolProcessor {
         ]
     }
 
+    /// The tools the role may call, by name; none when it may call every tool. Every role is sent every tool, so the
+    /// cached prefix is shared, and restricted to these.
+    pub fn get_allowed_tool_names(&self, agent_role: AgentRole) -> Option<Vec<String>> {
+        let tool_names: &[&str] = match agent_role {
+            AgentRole::Lead => return None,
+            // A worker's components were scaffolded with the skeleton; it writes their logic.
+            AgentRole::Worker => &[READ_FILES, LIST_FILES, SEARCH, RUN_CHECKS, APPLY_PATCH],
+            AgentRole::Reviewer => &[READ_FILES, LIST_FILES, SEARCH],
+        };
+        Some(
+            tool_names
+                .iter()
+                .map(|tool_name: &&str| tool_name.to_string())
+                .collect(),
+        )
+    }
+
+    /// Whether the role may call the tool: the model is told which it may, and the harness holds it to that too.
+    pub fn is_tool_allowed(&self, agent_role: AgentRole, tool_name: &str) -> bool {
+        self.get_allowed_tool_names(agent_role)
+            .is_none_or(|tool_names: Vec<String>| tool_names.iter().any(|allowed: &String| allowed == tool_name))
+    }
+
     /// What a function tool call asks for. An unknown tool or arguments that don't fit are an InvalidToolCall, whose
     /// message is told to the model.
     pub fn to_tool_request(&self, name: &str, arguments: &str) -> ApplicationResult<ToolRequest> {
@@ -181,6 +207,7 @@ impl ToolProcessor {
                 | ConversationItem::ApplyPatchCallOutput { call_id, .. } => Some(call_id.as_str()),
                 ConversationItem::UserMessage { .. }
                 | ConversationItem::HarnessNote { .. }
+                | ConversationItem::ConfigurationUpdate { .. }
                 | ConversationItem::ModelOutput { .. } => None,
             })
             .collect();

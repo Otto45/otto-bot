@@ -96,8 +96,9 @@ Output dominates the cost, which is why the speed levers below also cut cost.
 ## Model I/O
 
 - **Responses API over WebSocket mode**: each turn sends only new input items (up to ~40% faster on long tool-call
-  runs). Each sub-agent is a `stream_id` lane; a connection allows 16 responses in flight and 32 lanes, and lasts 60
-  minutes. HTTP is the fallback.
+  runs). Each agent is a lane (`<session>/<lane>`) with a connection of its own, which lasts 60 minutes; HTTP is the
+  fallback. (A connection could carry several lanes as `stream_id`s, 16 responses in flight and 32 lanes, if the
+  number of connections ever matters.)
 - **`store=false`.** The harness's session log holds every lane's full ordered item list, including encrypted
   reasoning (`include: ["reasoning.encrypted_content"]`) and compaction items. When a lane is lost (disconnect, the
   60-minute limit, an error that evicts it), the gateway replays the item list from the log; the prefix is unchanged,

@@ -2,6 +2,7 @@ use crate::managers::data_layer::managers::gateways::session_store::resource_mod
 use crate::managers::exceptions::application_base_exception::{ApplicationBaseException, ApplicationResult};
 use crate::managers::exceptions::contextual_data::ContextualData;
 use crate::managers::exceptions::session_store_gateway_exception::SessionStoreGatewayException;
+use crate::managers::models::reasoning_effort::ReasoningEffort;
 use crate::managers::models::tool_call_kind::ToolCallKind;
 
 pub struct ValidatorConversationItemDocument;
@@ -13,6 +14,14 @@ impl ValidatorConversationItemDocument {
     ) -> ApplicationResult<()> {
         let required: Vec<(&str, bool)> = match document.item_type.as_deref() {
             Some("user_message") | Some("harness_note") => vec![("text", document.text.is_some())],
+            Some("configuration_update") => vec![(
+                "reasoning_effort (one of low, medium, high, xhigh, max)",
+                document
+                    .reasoning_effort
+                    .as_deref()
+                    .and_then(ReasoningEffort::from_name)
+                    .is_some(),
+            )],
             Some("model_output") => {
                 if let Some(call_kind) = document.call_kind.as_deref()
                     && ToolCallKind::from_name(call_kind).is_none()

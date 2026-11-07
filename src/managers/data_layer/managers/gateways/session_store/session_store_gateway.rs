@@ -21,13 +21,15 @@ use crate::managers::models::session_project_maps::SessionProjectMaps;
 use crate::managers::models::usage_record::UsageRecord;
 
 const SESSION_FILE_NAME: &str = "session.json";
-const CONVERSATION_ITEMS_FILE_NAME: &str = "conversation_items.jsonl";
+// A folder of one conversation per lane, each `<lane_name>.jsonl`.
+const CONVERSATION_ITEMS_DIRECTORY_NAME: &str = "conversation_items";
 const USAGE_RECORDS_FILE_NAME: &str = "usage_records.jsonl";
 const PROJECT_MAPS_FILE_NAME: &str = "project_maps.jsonl";
 
-/// Keeps each session in a folder of its own: `session.json`, and two append-only JSON Lines files, its conversation
-/// (every item in the order the model saw it) and its usage ledger (one line per model response). Nothing is ever
-/// rewritten, so a session's history is never lost to a crash halfway through a write.
+/// Keeps each session in a folder of its own: `session.json`, and append-only JSON Lines files: each lane's
+/// conversation (every item in the order the model saw it, `conversation_items/<lane_name>.jsonl`), the usage ledger
+/// (one line per model response) and the project maps. Nothing is ever rewritten, so a session's history is never lost
+/// to a crash halfway through a write.
 pub struct SessionStoreGateway {
     sessions_directory: PathBuf,
 }
@@ -57,17 +59,23 @@ impl SessionStoreGateway {
             })
     }
 
-    /// The session's conversation so far; none for a session that has had no request yet.
-    pub async fn get_conversation_items(&self, session_id: &str) -> ApplicationResult<Vec<ConversationItem>> {
-        let context: ContextualData = ContextualData::new().with("session_id", session_id);
+    /// The lane's conversation so far; none for a lane that hasn't started.
+    pub async fn get_conversation_items(
+        &self,
+        session_id: &str,
+        lane_name: &str,
+    ) -> ApplicationResult<Vec<ConversationItem>> {
+        let context: ContextualData = ContextualData::new()
+            .with("session_id", session_id)
+            .with("lane_name", lane_name);
         let content: String =
-            match tokio::fs::read_to_string(self.get_file_path(session_id, CONVERSATION_ITEMS_FILE_NAME)).await {
+            match tokio::fs::read_to_string(self.get_conversation_items_path(session_id, lane_name)?).await {
                 Ok(content) => content,
                 Err(exception) if exception.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
                 Err(exception) => {
                     return Err(SessionStoreGateway::to_io_exception(
                         exception,
-                        "reading a session's conversation",
+                        "reading a lane's conversation",
                         &context,
                     ));
                 }
@@ -90,8 +98,24 @@ impl SessionStoreGateway {
     pub async fn append_conversation_items(
         &self,
         session_id: &str,
+        lane_name: &str,
         conversation_items: &[ConversationItem],
     ) -> ApplicationResult<()> {
+        let path: PathBuf = self.get_conversation_items_path(session_id, lane_name)?;
+        let context: ContextualData = ContextualData::new()
+            .with("session_id", session_id)
+            .with("lane_name", lane_name);
+        if let Some(directory) = path.parent() {
+            tokio::fs::create_dir_all(directory)
+                .await
+                .map_err(|exception: std::io::Error| {
+                    SessionStoreGateway::to_io_exception(
+                        exception,
+                        "creating a session's conversations folder",
+                        &context,
+                    )
+                })?;
+        }
         let lines: Vec<String> = conversation_items
             .iter()
             .map(|conversation_item: &ConversationItem| {
@@ -101,12 +125,7 @@ impl SessionStoreGateway {
                 .expect("a conversation item document serializes to JSON")
             })
             .collect();
-        self.append_lines(
-            &self.get_file_path(session_id, CONVERSATION_ITEMS_FILE_NAME),
-            &lines,
-            &ContextualData::new().with("session_id", session_id),
-        )
-        .await
+        self.append_lines(&path, &lines, &context).await
     }
 
     pub async fn append_usage_record(&self, usage_record: &UsageRecord) -> ApplicationResult<()> {
@@ -187,6 +206,28 @@ impl SessionStoreGateway {
 
     fn get_file_path(&self, session_id: &str, file_name: &str) -> PathBuf {
         self.sessions_directory.join(session_id).join(file_name)
+    }
+
+    // The lane's name becomes a file's, so it may hold nothing that leads elsewhere.
+    fn get_conversation_items_path(&self, session_id: &str, lane_name: &str) -> ApplicationResult<PathBuf> {
+        let is_file_name: bool = !lane_name.is_empty()
+            && lane_name.chars().all(|character: char| {
+                character.is_ascii_lowercase() || character.is_ascii_digit() || character == '_'
+            });
+        if !is_file_name {
+            return Err(ApplicationBaseException::new(
+                SessionStoreGatewayException::InvalidLaneName,
+                "A lane's name is not snake_case",
+                ContextualData::new()
+                    .with("session_id", session_id)
+                    .with("lane_name", lane_name),
+            ));
+        }
+        Ok(self
+            .sessions_directory
+            .join(session_id)
+            .join(CONVERSATION_ITEMS_DIRECTORY_NAME)
+            .join(format!("{lane_name}.jsonl")))
     }
 
     // Appends every line in one write, so a run's items land together.

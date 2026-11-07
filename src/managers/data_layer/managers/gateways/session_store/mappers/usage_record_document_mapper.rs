@@ -10,6 +10,8 @@ impl UsageRecordDocumentMapper {
     pub fn to_usage_record_document(usage_record: &UsageRecord) -> UsageRecordDocument {
         UsageRecordDocument {
             session_id: Some(usage_record.session_id.clone()),
+            lane_name: Some(usage_record.lane_name.clone()),
+            role: Some(usage_record.role.name().to_string()),
             response_id: Some(usage_record.response_id.clone()),
             model: Some(usage_record.model.clone()),
             requested_service_tier: Some(usage_record.requested_service_tier.name().to_string()),

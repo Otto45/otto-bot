@@ -10,14 +10,22 @@ impl SessionEventMapper {
     pub fn to_output(session_event: &SessionEvent) -> Option<String> {
         match session_event {
             SessionEvent::RunStarted => None,
-            SessionEvent::AssistantReplied { text } => Some(format!("\n{}\n", text.trim_end())),
+            SessionEvent::AssistantReplied { agent, text } => Some(format!(
+                "\n{}{}\n",
+                SessionEventMapper::to_agent_prefix(agent.as_deref()),
+                text.trim_end()
+            )),
             SessionEvent::ToolUsed {
+                agent,
                 tool_name,
                 target,
                 succeeded,
             } => {
                 let mark: &str = if *succeeded { "·" } else { "✗" };
-                Some(format!("  {mark} {tool_name} {target}\n"))
+                Some(format!(
+                    "  {mark} {}{tool_name} {target}\n",
+                    SessionEventMapper::to_agent_prefix(agent.as_deref())
+                ))
             }
             SessionEvent::RunCompleted { run_summary } => {
                 Some(format!("\n{}\n\n", SessionEventMapper::to_summary_line(run_summary)))
@@ -25,6 +33,11 @@ impl SessionEventMapper {
             SessionEvent::RunFailed { message } => Some(format!("\nerror: {message}\n\n")),
             SessionEvent::RunCancelled => Some("\ncancelled\n\n".to_string()),
         }
+    }
+
+    // The session's own agent is unnamed; any other is named before what it did.
+    fn to_agent_prefix(agent: Option<&str>) -> String {
+        agent.map_or_else(String::new, |agent: &str| format!("[{agent}] "))
     }
 
     fn to_summary_line(run_summary: &RunSummary) -> String {
