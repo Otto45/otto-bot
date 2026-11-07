@@ -135,6 +135,41 @@ format = ["cargo", "fmt"]
 # A project is a Rust app when its root has all of these.
 files = ["Cargo.toml"]
 
+# How an app divides among agents (docs/DESIGN.md, "Implementing a feature"): a work plan gives each worker files that
+# match `workers` and not `orchestrator`. The orchestrator writes everything `orchestrator` matches: the wiring every
+# component is registered in (module files, the service locator, the facades, the data manager), the contracts the
+# workers build against (models, exceptions, settings), and the managers, whose methods are short coordinations of the
+# workers' components.
+[layout]
+orchestrator = [
+    "Cargo.toml",
+    "Cargo.lock",
+    "src/lib.rs",
+    "src/main.rs",
+    "src/bin/**",
+    "src/**/mod.rs",
+    "src/*_facade.rs",
+    "src/managers/*_manager.rs",
+    "src/managers/service_locator/**",
+    "src/managers/models/**",
+    "src/managers/exceptions/**",
+    "src/managers/configuration_providers/**",
+    "src/managers/logger/**",
+    "src/managers/data_layer/data_facade.rs",
+    "src/managers/data_layer/managers/data_manager.rs",
+]
+workers = [
+    "src/managers/processors/**",
+    "src/managers/engines/**",
+    "src/managers/gateways/**",
+    "src/managers/common/**",
+    "src/managers/runtime/**",
+    "src/managers/data_layer/managers/gateways/**",
+    "src/services/**",
+    "migrations/*.sql",
+    "openapi.json",
+]
+
 # The checks every change passes, run from the app's root, in order.
 [[checks]]
 name = "format"

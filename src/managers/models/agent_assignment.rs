@@ -6,7 +6,8 @@ use crate::managers::models::agent_role::AgentRole;
 /// or a worker's copy of it) and the files it may change.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentAssignment {
-    /// Unique within the session, and snake_case: the lead's is "lead", a worker's is its package's name.
+    /// Unique within the session, and snake_case: the orchestrator's is "orchestrator", a worker's is its package's
+    /// name.
     pub lane_name: String,
     pub role: AgentRole,
     /// Absolute and canonical: every path the agent uses is relative to it.

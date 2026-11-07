@@ -6,6 +6,7 @@ use crate::managers::models::session::Session;
 use crate::managers::models::session_project_maps::SessionProjectMaps;
 use crate::managers::models::stack_pack::StackPack;
 use crate::managers::models::usage_record::UsageRecord;
+use crate::managers::models::work_plan::WorkPlan;
 use crate::managers::service_locator::service_locator::ServiceLocator;
 
 /// The data layer's only entry point: managers (and the engines they pass it to) never learn where data is kept.
@@ -45,6 +46,10 @@ impl DataFacade {
 
     pub async fn append_usage_record(&self, usage_record: &UsageRecord) -> ApplicationResult<()> {
         self.data_manager.append_usage_record(usage_record).await
+    }
+
+    pub async fn append_work_plan(&self, session_id: &str, work_plan: &WorkPlan) -> ApplicationResult<()> {
+        self.data_manager.append_work_plan(session_id, work_plan).await
     }
 
     pub async fn get_session_project_maps(&self, session_id: &str) -> ApplicationResult<SessionProjectMaps> {

@@ -4,13 +4,15 @@ A coding agent harness that builds apps on the Domain Container architecture, in
 itself a Domain Container app, in Rust. The design is [docs/DESIGN.md](docs/DESIGN.md); the rules every change to it
 follows are [AGENTS.md](AGENTS.md).
 
-Status: build steps 1-3 of [docs/DESIGN.md](docs/DESIGN.md) are done, and step 4 (sub-agents) is under way. One agent works in a workspace: it reads, lists and
-searches files, edits them with `apply_patch`, and runs the stack pack's checks, remembering the whole session. Every
-request opens with cached layers (the stack's rules, then the workspace's project map), and goes over a WebSocket
-connection that sends only what is new. The checks include an architecture lint of the stack pack's rules, and new
-components (processors, engines, models) are scaffolded and wired in without the model. Agents run in roles (the
-lead, workers that own files, a reviewer) on lanes of their own; the lead's plan, and the workers and reviewer it starts,
-are being built (step 4), and the other stack packs come next.
+Status: build steps 1-3 of [docs/DESIGN.md](docs/DESIGN.md) are done, and step 4 (sub-agents) is under way. One agent
+works in a workspace: it reads, lists and searches files, edits them with `apply_patch`, and runs the stack pack's
+checks, remembering the whole session. Every request opens with cached layers (the stack's rules, then the workspace's
+project map), and goes over a WebSocket connection that sends only what is new. The checks include an architecture lint
+of the stack pack's rules, and new components (processors, engines, models) are scaffolded and wired in without the
+model. Agents run in roles (the orchestrator, workers that own files, a reviewer) on lanes of their own. The
+orchestrator plans a change too big to build alone (`submit_plan`, checked against the stack pack's layout) and does a
+small one itself; carrying a plan out (the skeleton, the workers, integration and review) is being built (step 4), and
+the other stack packs come next.
 
 ## What you need
 
@@ -34,7 +36,7 @@ otto reads and writes nothing outside the workspace, and never reads `.env` file
 
 Everything otto keeps is under `~/.otto-bot/` (`OTTO_BOT_HOME`): `logs/otto.log` (one JSON object per line) and
 `sessions/<id>/`, with each agent's conversation (`conversation_items/<lane>.jsonl`, the session's own agent being
-`lead`) and token usage (`usage_records.jsonl`).
+`orchestrator`), token usage (`usage_records.jsonl`) and accepted plans (`plans.jsonl`).
 
 ## Checks
 

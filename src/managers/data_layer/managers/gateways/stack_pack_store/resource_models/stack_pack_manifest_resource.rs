@@ -52,6 +52,13 @@ pub struct ScaffoldResource {
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
+pub struct LayoutResource {
+    pub orchestrator: Option<Vec<String>>,
+    pub workers: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
 pub struct StackPackManifestResource {
     pub name: Option<String>,
     pub language: Option<String>,
@@ -61,4 +68,5 @@ pub struct StackPackManifestResource {
     pub project_map: Option<ProjectMapResource>,
     pub lint: Option<LintResource>,
     pub scaffold: Option<ScaffoldResource>,
+    pub layout: Option<LayoutResource>,
 }

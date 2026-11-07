@@ -13,8 +13,8 @@ use crate::managers::models::workspace_file::WorkspaceFile;
 //    workspace, so every session of every project on the stack shares it, and it is kept for 12 hours.
 // 2. the workspace's layer: where the workspace is, and its project map. The session keeps the map from run to run
 //    (what changes is told in notes in the conversation), so every request of the session shares this layer.
-// 3. the assignment's layer, for an agent other than the lead: its role, and the files it owns as they were when it
-//    started. Only its own lane has it.
+// 3. the assignment's layer, for an agent other than the orchestrator: its role, and the files it owns as they were
+//    when it started. Only its own lane has it.
 // The conversation follows, cached as it grows. Nothing in a layer changes between requests of a lane.
 pub struct PromptProcessor;
 
@@ -38,11 +38,11 @@ impl PromptProcessor {
         ]
     }
 
-    /// The layer that tells an agent other than the lead what its part is; none for the lead, whose part is the
-    /// request itself. `owned_files` are the files it may change, as they are now.
+    /// The layer that tells an agent other than the orchestrator what its part is; none for the orchestrator, whose
+    /// part is the request itself. `owned_files` are the files it may change, as they are now.
     pub fn build_assignment_layer(&self, agent_role: AgentRole, owned_files: &[WorkspaceFile]) -> Option<PromptLayer> {
         let mut assignment_layer: String = match agent_role {
-            AgentRole::Lead => return None,
+            AgentRole::Orchestrator => return None,
             AgentRole::Worker => "You are a worker, building one package of a larger change. Other workers build the \
                  other packages at the same time, each in its own copy of the workspace. The contracts (models, \
                  exceptions and signatures) are written and frozen: build against them, and change only the files \
@@ -73,7 +73,7 @@ impl PromptProcessor {
     /// How hard the role's model reasons; none for the model's default (medium), which needs no configuration update.
     pub fn get_reasoning_effort(&self, agent_role: AgentRole) -> Option<ReasoningEffort> {
         match agent_role {
-            AgentRole::Lead | AgentRole::Worker => None,
+            AgentRole::Orchestrator | AgentRole::Worker => None,
             // Its output is short, and what it misses ships.
             AgentRole::Reviewer => Some(ReasoningEffort::High),
         }
@@ -117,6 +117,21 @@ impl PromptProcessor {
             for scaffold_kind in &stack_pack_scaffold.kinds {
                 stack_layer.push_str(&format!("- {}: {}\n", scaffold_kind.name, scaffold_kind.description));
             }
+        }
+
+        if let Some(stack_pack_layout) = stack_pack.and_then(|stack_pack: &StackPack| stack_pack.layout.as_ref()) {
+            stack_layer.push_str(&format!(
+                "\nA change too big to build well alone (several new components, or parts that can be built at the \
+                 same time in different files) is planned instead, with submit_plan, before any file is changed. You \
+                 list the components to scaffold, and divide the work into packages, each owning files no other \
+                 package touches; the harness scaffolds the components, you write the contracts (models, exceptions, \
+                 signatures), and one worker per package builds it, all at the same time. Build a small change \
+                 yourself: planning it costs more than it saves.\n\
+                 - Files no package may own, because you write them (the wiring and the contracts): {}\n\
+                 - Where a package's files may be: {}\n",
+                stack_pack_layout.orchestrator_globs.join(", "),
+                stack_pack_layout.worker_globs.join(", ")
+            ));
         }
 
         match (stack_pack, rules) {

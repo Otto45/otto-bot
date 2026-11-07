@@ -1,6 +1,7 @@
 use crate::managers::models::run_summary::RunSummary;
 use crate::managers::models::service_tier::ServiceTier;
 use crate::managers::models::session_event::SessionEvent;
+use crate::managers::models::work_plan::WorkPlan;
 
 // What the terminal shows for each event.
 pub struct SessionEventMapper;
@@ -27,12 +28,38 @@ impl SessionEventMapper {
                     SessionEventMapper::to_agent_prefix(agent.as_deref())
                 ))
             }
+            SessionEvent::PlanAccepted { work_plan } => Some(SessionEventMapper::to_plan_output(work_plan)),
             SessionEvent::RunCompleted { run_summary } => {
                 Some(format!("\n{}\n\n", SessionEventMapper::to_summary_line(run_summary)))
             }
             SessionEvent::RunFailed { message } => Some(format!("\nerror: {message}\n\n")),
             SessionEvent::RunCancelled => Some("\ncancelled\n\n".to_string()),
         }
+    }
+
+    fn to_plan_output(work_plan: &WorkPlan) -> String {
+        let mut output: String = format!("\nplan: {}\n", work_plan.summary.trim());
+        for assumption in &work_plan.assumptions {
+            output.push_str(&format!("  assumed: {assumption}\n"));
+        }
+        for planned_component in &work_plan.components {
+            match planned_component.within.as_deref() {
+                Some(within) => output.push_str(&format!(
+                    "  + {} {} in {within}\n",
+                    planned_component.kind, planned_component.name
+                )),
+                None => output.push_str(&format!("  + {} {}\n", planned_component.kind, planned_component.name)),
+            }
+        }
+        for work_package in &work_plan.packages {
+            output.push_str(&format!(
+                "  [{}] {}\n      {}\n",
+                work_package.name,
+                work_package.brief.trim(),
+                work_package.owned_paths.join(", ")
+            ));
+        }
+        output
     }
 
     // The session's own agent is unnamed; any other is named before what it did.

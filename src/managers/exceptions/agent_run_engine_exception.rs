@@ -11,6 +11,8 @@ pub enum AgentRunEngineException {
     ToolNotAllowed,
     /// A change to a file the agent doesn't own: told to the model, which says what it needs instead.
     FileNotOwned,
+    /// A work plan that fails the harness's checks: told to the model, which fixes the plan and submits it again.
+    InvalidWorkPlan,
     MaxTurnsReached,
 }
 
@@ -22,6 +24,7 @@ impl AgentRunEngineException {
             AgentRunEngineException::ScaffoldNotApplicable => "ScaffoldNotApplicableException",
             AgentRunEngineException::ToolNotAllowed => "ToolNotAllowedException",
             AgentRunEngineException::FileNotOwned => "FileNotOwnedException",
+            AgentRunEngineException::InvalidWorkPlan => "InvalidWorkPlanException",
             AgentRunEngineException::MaxTurnsReached => "MaxTurnsReachedException",
         }
     }

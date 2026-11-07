@@ -8,6 +8,7 @@ use crate::managers::common::formatters::validation_error_formatter::ValidationE
 use crate::managers::data_layer::managers::gateways::session_store::mappers::conversation_item_document_mapper::ConversationItemDocumentMapper;
 use crate::managers::data_layer::managers::gateways::session_store::mappers::session_document_mapper::SessionDocumentMapper;
 use crate::managers::data_layer::managers::gateways::session_store::mappers::usage_record_document_mapper::UsageRecordDocumentMapper;
+use crate::managers::data_layer::managers::gateways::session_store::mappers::work_plan_document_mapper::WorkPlanDocumentMapper;
 use crate::managers::data_layer::managers::gateways::session_store::resource_models::conversation_item_document::ConversationItemDocument;
 use crate::managers::data_layer::managers::gateways::session_store::resource_models::project_map_document::ProjectMapDocument;
 use crate::managers::data_layer::managers::gateways::session_store::validators::validator_conversation_item_document::ValidatorConversationItemDocument;
@@ -19,16 +20,18 @@ use crate::managers::models::project_map_role::ProjectMapRole;
 use crate::managers::models::session::Session;
 use crate::managers::models::session_project_maps::SessionProjectMaps;
 use crate::managers::models::usage_record::UsageRecord;
+use crate::managers::models::work_plan::WorkPlan;
 
 const SESSION_FILE_NAME: &str = "session.json";
 // A folder of one conversation per lane, each `<lane_name>.jsonl`.
 const CONVERSATION_ITEMS_DIRECTORY_NAME: &str = "conversation_items";
 const USAGE_RECORDS_FILE_NAME: &str = "usage_records.jsonl";
 const PROJECT_MAPS_FILE_NAME: &str = "project_maps.jsonl";
+const PLANS_FILE_NAME: &str = "plans.jsonl";
 
 /// Keeps each session in a folder of its own: `session.json`, and append-only JSON Lines files: each lane's
 /// conversation (every item in the order the model saw it, `conversation_items/<lane_name>.jsonl`), the usage ledger
-/// (one line per model response) and the project maps. Nothing is ever rewritten, so a session's history is never lost
+/// (one line per model response), the project maps and the accepted plans. Nothing is ever rewritten, so a session's history is never lost
 /// to a crash halfway through a write.
 pub struct SessionStoreGateway {
     sessions_directory: PathBuf,
@@ -195,6 +198,18 @@ impl SessionStoreGateway {
         .expect("a project map document serializes to JSON");
         self.append_lines(
             &self.get_file_path(session_id, PROJECT_MAPS_FILE_NAME),
+            &[line],
+            &ContextualData::new().with("session_id", session_id),
+        )
+        .await
+    }
+
+    /// Keeps a plan the harness accepted, after those before it.
+    pub async fn append_work_plan(&self, session_id: &str, work_plan: &WorkPlan) -> ApplicationResult<()> {
+        let line: String = serde_json::to_string(&WorkPlanDocumentMapper::to_work_plan_document(work_plan, Utc::now()))
+            .expect("a work plan document serializes to JSON");
+        self.append_lines(
+            &self.get_file_path(session_id, PLANS_FILE_NAME),
             &[line],
             &ContextualData::new().with("session_id", session_id),
         )

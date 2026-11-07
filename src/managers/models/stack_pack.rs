@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use crate::managers::models::stack_pack_check::StackPackCheck;
+use crate::managers::models::stack_pack_layout::StackPackLayout;
 use crate::managers::models::stack_pack_lint::StackPackLint;
 use crate::managers::models::stack_pack_project_map::StackPackProjectMap;
 use crate::managers::models::stack_pack_scaffold::StackPackScaffold;
@@ -23,4 +24,6 @@ pub struct StackPack {
     pub lint: Option<StackPackLint>,
     /// None for a pack with no scaffolds.
     pub scaffold: Option<StackPackScaffold>,
+    /// None for a pack whose apps can't be divided among workers.
+    pub layout: Option<StackPackLayout>,
 }

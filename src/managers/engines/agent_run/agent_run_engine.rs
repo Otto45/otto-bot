@@ -13,6 +13,7 @@ use crate::managers::engines::agent_run::processors::project_map::project_map_pr
 use crate::managers::engines::agent_run::processors::prompt::prompt_processor::PromptProcessor;
 use crate::managers::engines::agent_run::processors::scaffold::scaffold_processor::ScaffoldProcessor;
 use crate::managers::engines::agent_run::processors::tool::tool_processor::ToolProcessor;
+use crate::managers::engines::agent_run::processors::work_plan::work_plan_processor::WorkPlanProcessor;
 use crate::managers::exceptions::agent_run_engine_exception::AgentRunEngineException;
 use crate::managers::exceptions::application_base_exception::{ApplicationBaseException, ApplicationResult};
 use crate::managers::exceptions::contextual_data::ContextualData;
@@ -25,6 +26,7 @@ use crate::managers::logger::application_logger::ApplicationLogger;
 use crate::managers::logger::log_level::LogLevel;
 use crate::managers::models::agent_assignment::AgentAssignment;
 use crate::managers::models::agent_role::AgentRole;
+use crate::managers::models::agent_run_outcome::AgentRunOutcome;
 use crate::managers::models::check_result::CheckResult;
 use crate::managers::models::conversation_item::ConversationItem;
 use crate::managers::models::lint_violation::LintViolation;
@@ -37,11 +39,13 @@ use crate::managers::models::project_map_role::ProjectMapRole;
 use crate::managers::models::prompt_layer::PromptLayer;
 use crate::managers::models::run_context::RunContext;
 use crate::managers::models::run_summary::RunSummary;
+use crate::managers::models::scaffold_file::ScaffoldFile;
 use crate::managers::models::scaffold_plan::ScaffoldPlan;
 use crate::managers::models::session::Session;
 use crate::managers::models::session_event::SessionEvent;
 use crate::managers::models::session_project_maps::SessionProjectMaps;
 use crate::managers::models::stack_pack::StackPack;
+use crate::managers::models::stack_pack_layout::StackPackLayout;
 use crate::managers::models::stack_pack_lint::StackPackLint;
 use crate::managers::models::stack_pack_project_map::StackPackProjectMap;
 use crate::managers::models::stack_pack_scaffold::StackPackScaffold;
@@ -49,11 +53,12 @@ use crate::managers::models::tool_call::ToolCall;
 use crate::managers::models::tool_request::ToolRequest;
 use crate::managers::models::usage_record::UsageRecord;
 use crate::managers::models::user_request::UserRequest;
+use crate::managers::models::work_plan::WorkPlan;
 use crate::managers::models::workspace_file::WorkspaceFile;
 
 const APPLY_PATCH: &str = "apply_patch";
 // The lane of the session's own agent.
-const LEAD_LANE_NAME: &str = "lead";
+const ORCHESTRATOR_LANE_NAME: &str = "orchestrator";
 // The check the harness runs itself, before the pack's commands.
 const ARCHITECTURE_CHECK: &str = "architecture";
 
@@ -71,6 +76,7 @@ pub struct AgentRunEngine {
     project_map_processor: Arc<ProjectMapProcessor>,
     architecture_lint_processor: Arc<ArchitectureLintProcessor>,
     scaffold_processor: Arc<ScaffoldProcessor>,
+    work_plan_processor: Arc<WorkPlanProcessor>,
     max_turns: i64,
     check_timeout: Duration,
 }
@@ -87,6 +93,7 @@ impl AgentRunEngine {
         project_map_processor: Arc<ProjectMapProcessor>,
         architecture_lint_processor: Arc<ArchitectureLintProcessor>,
         scaffold_processor: Arc<ScaffoldProcessor>,
+        work_plan_processor: Arc<WorkPlanProcessor>,
         max_turns: i64,
         check_timeout: Duration,
     ) -> Self {
@@ -100,31 +107,33 @@ impl AgentRunEngine {
             project_map_processor,
             architecture_lint_processor,
             scaffold_processor,
+            work_plan_processor,
             max_turns,
             check_timeout,
         }
     }
 
-    /// Runs the session's own agent, the lead, on the person's request. Reports what happens on `events`; the run's
-    /// start and end are the manager's to report. The engine is a shared singleton, which the ServiceLocator builds
-    /// without the DataFacade, so the manager passes it in.
+    /// Runs the session's own agent, the orchestrator, on the person's request. Reports what happens on `events`; the
+    /// run's start and end are the manager's to report. The engine is a shared singleton, which the ServiceLocator
+    /// builds without the DataFacade, so the manager passes it in.
     pub async fn run(
         &self,
         session: &Session,
         user_request: &UserRequest,
         events: &broadcast::Sender<SessionEvent>,
         data_facade: &DataFacade,
-    ) -> ApplicationResult<RunSummary> {
+    ) -> ApplicationResult<AgentRunOutcome> {
         let agent_assignment: AgentAssignment = AgentAssignment {
-            lane_name: LEAD_LANE_NAME.to_string(),
-            role: AgentRole::Lead,
+            lane_name: ORCHESTRATOR_LANE_NAME.to_string(),
+            role: AgentRole::Orchestrator,
             workspace_directory: session.workspace_directory.clone(),
             owned_paths: None,
         };
         let (stack_pack, rules): (Option<StackPack>, Option<String>) = self
             .detect_stack_pack(&agent_assignment.workspace_directory, data_facade)
             .await?;
-        // The session keeps the lead's map from run to run, so its requests' prefix (and its lane) carries over.
+        // The session keeps the orchestrator's map from run to run, so its requests' prefix (and its lane) carries
+        // over.
         let (project_map, project_map_note): (Option<String>, Option<ConversationItem>) =
             match AgentRunEngine::get_project_map_source(stack_pack.as_ref()) {
                 Some((language_name, stack_pack_project_map)) => {
@@ -165,8 +174,8 @@ impl AgentRunEngine {
         .await
     }
 
-    /// Runs an agent other than the lead on its assignment, with `brief` as what it is asked; a lane that has run
-    /// before continues where it stopped. Its requests open with the map of its own workspace as it is now, and its
+    /// Runs an agent other than the orchestrator on its assignment, with `brief` as what it is asked; a lane that has
+    /// run before continues where it stopped. Its requests open with the map of its own workspace as it is now, and its
     /// owned files as they are now, so agents that start on identical copies share every layer but their own.
     pub async fn run_assignment(
         &self,
@@ -209,20 +218,23 @@ impl AgentRunEngine {
         let opening_items: Vec<ConversationItem> = vec![ConversationItem::UserMessage {
             text: brief.to_string(),
         }];
-        self.run_lane(
-            session,
-            agent_assignment,
-            &run_context,
-            opening_items,
-            events,
-            data_facade,
-        )
-        .await
+        let agent_run_outcome: AgentRunOutcome = self
+            .run_lane(
+                session,
+                agent_assignment,
+                &run_context,
+                opening_items,
+                events,
+                data_facade,
+            )
+            .await?;
+        Ok(agent_run_outcome.run_summary)
     }
 
     // One agent's turns on its lane, to completion. Each turn sends the lane's whole conversation (the API keeps
     // nothing), does what the model asked and sends what came of it back, until the model answers without asking for
-    // anything. Every item is appended to the lane's conversation in the session store as it happens.
+    // anything, or the harness accepts its plan. Every item is appended to the lane's conversation in the session store
+    // as it happens.
     async fn run_lane(
         &self,
         session: &Session,
@@ -231,7 +243,7 @@ impl AgentRunEngine {
         opening_items: Vec<ConversationItem>,
         events: &broadcast::Sender<SessionEvent>,
         data_facade: &DataFacade,
-    ) -> ApplicationResult<RunSummary> {
+    ) -> ApplicationResult<AgentRunOutcome> {
         let lane_name: &str = &agent_assignment.lane_name;
         let mut conversation_items: Vec<ConversationItem> =
             data_facade.get_conversation_items(&session.id, lane_name).await?;
@@ -293,22 +305,37 @@ impl AgentRunEngine {
                     })
                     .ok();
             }
+            let run_summary: RunSummary = RunSummary {
+                turns: turn,
+                usage,
+                service_tier: model_response.service_tier,
+            };
             if model_response.tool_calls.is_empty() {
-                return Ok(RunSummary {
-                    turns: turn,
-                    usage,
-                    service_tier: model_response.service_tier,
+                return Ok(AgentRunOutcome {
+                    run_summary,
+                    work_plan: None,
                 });
             }
 
             let mut tool_outputs: Vec<ConversationItem> = Vec::with_capacity(model_response.tool_calls.len());
+            let mut accepted_work_plan: Option<WorkPlan> = None;
             for tool_call in &model_response.tool_calls {
-                tool_outputs.push(self.use_tool(agent_assignment, run_context, tool_call, events).await?);
+                let (tool_output, work_plan): (ConversationItem, Option<WorkPlan>) =
+                    self.use_tool(agent_assignment, run_context, tool_call, events).await?;
+                tool_outputs.push(tool_output);
+                accepted_work_plan = accepted_work_plan.or(work_plan);
             }
             data_facade
                 .append_conversation_items(&session.id, lane_name, &tool_outputs)
                 .await?;
             conversation_items.extend(tool_outputs);
+            // An accepted plan ends the orchestrator's run here; the workflow carries on from it.
+            if accepted_work_plan.is_some() {
+                return Ok(AgentRunOutcome {
+                    run_summary,
+                    work_plan: accepted_work_plan,
+                });
+            }
         }
 
         Err(ApplicationBaseException::new(
@@ -473,33 +500,44 @@ impl AgentRunEngine {
         Ok(true)
     }
 
-    // Does what one tool call asks, reports it, and returns the output the model is sent for it. A tool the agent's
-    // role may not call, or a change to a file it doesn't own, is refused, and the model is told why.
+    // Does what one tool call asks, reports it, and returns the output the model is sent for it, and the plan it
+    // submitted if the harness accepted it. A tool the agent's role may not call, or a change to a file it doesn't own,
+    // is refused, and the model is told why.
     async fn use_tool(
         &self,
         agent_assignment: &AgentAssignment,
         run_context: &RunContext,
         tool_call: &ToolCall,
         events: &broadcast::Sender<SessionEvent>,
-    ) -> ApplicationResult<ConversationItem> {
+    ) -> ApplicationResult<(ConversationItem, Option<WorkPlan>)> {
         match tool_call {
             ToolCall::Function {
                 call_id,
                 name,
                 arguments,
             } => {
-                let (target, output, succeeded): (String, String, bool) = match self
-                    .check_tool_allowed(agent_assignment, name)
-                    .and_then(|(): ()| self.tool_processor.to_tool_request(name, arguments))
-                {
-                    Ok(tool_request) => {
-                        let (output, succeeded): (String, bool) = self
-                            .use_function_tool(agent_assignment, run_context, &tool_request)
-                            .await?;
-                        (self.tool_processor.describe_target(&tool_request), output, succeeded)
-                    }
-                    Err(exception) => (String::new(), self.to_tool_error(exception)?, false),
-                };
+                let (target, output, succeeded, accepted_work_plan): (String, String, bool, Option<WorkPlan>) =
+                    match self
+                        .check_tool_allowed(agent_assignment, name)
+                        .and_then(|(): ()| self.tool_processor.to_tool_request(name, arguments))
+                    {
+                        Ok(tool_request) => {
+                            let (output, succeeded): (String, bool) = self
+                                .use_function_tool(agent_assignment, run_context, &tool_request)
+                                .await?;
+                            let accepted_work_plan: Option<WorkPlan> = match &tool_request {
+                                ToolRequest::SubmitPlan { work_plan } if succeeded => Some(work_plan.clone()),
+                                _ => None,
+                            };
+                            (
+                                self.tool_processor.describe_target(&tool_request),
+                                output,
+                                succeeded,
+                                accepted_work_plan,
+                            )
+                        }
+                        Err(exception) => (String::new(), self.to_tool_error(exception)?, false, None),
+                    };
                 events
                     .send(SessionEvent::ToolUsed {
                         agent: AgentRunEngine::to_agent(agent_assignment),
@@ -508,10 +546,13 @@ impl AgentRunEngine {
                         succeeded,
                     })
                     .ok();
-                Ok(ConversationItem::FunctionCallOutput {
-                    call_id: call_id.clone(),
-                    output,
-                })
+                Ok((
+                    ConversationItem::FunctionCallOutput {
+                        call_id: call_id.clone(),
+                        output,
+                    },
+                    accepted_work_plan,
+                ))
             }
             ToolCall::ApplyPatch {
                 call_id,
@@ -531,11 +572,14 @@ impl AgentRunEngine {
                         succeeded,
                     })
                     .ok();
-                Ok(ConversationItem::ApplyPatchCallOutput {
-                    call_id: call_id.clone(),
-                    succeeded,
-                    output,
-                })
+                Ok((
+                    ConversationItem::ApplyPatchCallOutput {
+                        call_id: call_id.clone(),
+                        succeeded,
+                        output,
+                    },
+                    None,
+                ))
             }
         }
     }
@@ -600,6 +644,12 @@ impl AgentRunEngine {
                             Err(exception) => Ok((self.to_tool_error(exception)?, false)),
                         }
                     }
+                }
+            }
+            ToolRequest::SubmitPlan { work_plan } => {
+                match self.check_work_plan(agent_assignment, run_context, work_plan).await {
+                    Ok(()) => Ok((self.tool_processor.format_plan_accepted(work_plan), true)),
+                    Err(exception) => Ok((self.to_tool_error(exception)?, false)),
                 }
             }
             ToolRequest::RunChecks => match run_context.stack_pack.as_ref() {
@@ -772,6 +822,95 @@ impl AgentRunEngine {
         Ok(check_results)
     }
 
+    // Checks a plan against the workspace and the stack: each component is scaffolded on paper (its kind exists, the
+    // component it lives within exists or is planned too, none of its files exists yet), then the WorkPlanProcessor
+    // checks the packages' files. Every problem is reported in one InvalidWorkPlan.
+    async fn check_work_plan(
+        &self,
+        agent_assignment: &AgentAssignment,
+        run_context: &RunContext,
+        work_plan: &WorkPlan,
+    ) -> ApplicationResult<()> {
+        let workspace_directory: &Path = &agent_assignment.workspace_directory;
+        let Some((stack_pack, stack_pack_layout)) =
+            run_context.stack_pack.as_ref().and_then(|stack_pack: &StackPack| {
+                stack_pack
+                    .layout
+                    .as_ref()
+                    .map(|stack_pack_layout: &StackPackLayout| (stack_pack, stack_pack_layout))
+            })
+        else {
+            return Err(ApplicationBaseException::new(
+                AgentRunEngineException::InvalidWorkPlan,
+                "The workspace's stack can't be divided among workers, so there is no plan to submit: build the \
+                 change yourself",
+                ContextualData::new(),
+            ));
+        };
+
+        let mut component_errors: Vec<String> = Vec::new();
+        let mut scaffold_plans: Vec<ScaffoldPlan> = Vec::with_capacity(work_plan.components.len());
+        for planned_component in &work_plan.components {
+            let Some(stack_pack_scaffold) = stack_pack.scaffold.as_ref() else {
+                component_errors.push("the stack has no scaffolds, so a plan can't have components".to_string());
+                break;
+            };
+            match self.scaffold_processor.plan(
+                stack_pack_scaffold,
+                &planned_component.kind,
+                &planned_component.name,
+                planned_component.within.as_deref(),
+            ) {
+                Ok(scaffold_plan) => scaffold_plans.push(scaffold_plan),
+                Err(exception) if AgentRunEngine::is_told_to_model(exception.kind()) => {
+                    component_errors.push(format!(
+                        "the {} {}: {}",
+                        planned_component.kind,
+                        planned_component.name,
+                        exception.message()
+                    ));
+                }
+                Err(exception) => return Err(exception),
+            }
+        }
+
+        let created_paths: Vec<String> = scaffold_plans
+            .iter()
+            .flat_map(|scaffold_plan: &ScaffoldPlan| scaffold_plan.created_files.iter())
+            .map(|scaffold_file: &ScaffoldFile| scaffold_file.path.clone())
+            .collect();
+        for scaffold_plan in &scaffold_plans {
+            if let Some(within_path) = scaffold_plan.within_path.as_deref()
+                && !created_paths
+                    .iter()
+                    .any(|created_path: &String| created_path == within_path)
+                && !self
+                    .workspace_gateway
+                    .file_exists(workspace_directory, within_path)
+                    .await?
+            {
+                component_errors.push(format!(
+                    "{within_path} doesn't exist and isn't planned: a component lives within a component that does"
+                ));
+            }
+            for scaffold_file in &scaffold_plan.created_files {
+                if self
+                    .workspace_gateway
+                    .file_exists(workspace_directory, &scaffold_file.path)
+                    .await?
+                {
+                    component_errors.push(format!(
+                        "{} already exists: the component is there already",
+                        scaffold_file.path
+                    ));
+                }
+            }
+        }
+
+        self.work_plan_processor
+            .check(work_plan, stack_pack_layout, &created_paths, component_errors)
+    }
+
     // The InvalidToolCall-like refusal of a tool the agent's role may not call.
     fn check_tool_allowed(&self, agent_assignment: &AgentAssignment, tool_name: &str) -> ApplicationResult<()> {
         if self.tool_processor.is_tool_allowed(agent_assignment.role, tool_name) {
@@ -885,7 +1024,8 @@ impl AgentRunEngine {
                 | AgentRunEngineException::InvalidPatch
                 | AgentRunEngineException::ScaffoldNotApplicable
                 | AgentRunEngineException::ToolNotAllowed
-                | AgentRunEngineException::FileNotOwned => true,
+                | AgentRunEngineException::FileNotOwned
+                | AgentRunEngineException::InvalidWorkPlan => true,
                 AgentRunEngineException::MaxTurnsReached => false,
             },
             ExceptionKind::WorkspaceGateway(_) | ExceptionKind::CommandRunnerGateway(_) => true,
@@ -899,10 +1039,10 @@ impl AgentRunEngine {
         }
     }
 
-    // The agent as events name it: the lead is the session's own, so it is unnamed.
+    // The agent as events name it: the orchestrator is the session's own, so it is unnamed.
     fn to_agent(agent_assignment: &AgentAssignment) -> Option<String> {
         match agent_assignment.role {
-            AgentRole::Lead => None,
+            AgentRole::Orchestrator => None,
             AgentRole::Worker | AgentRole::Reviewer => Some(agent_assignment.lane_name.clone()),
         }
     }

@@ -2,12 +2,13 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::managers::data_layer::managers::gateways::stack_pack_store::resource_models::stack_pack_manifest_resource::{
-    CheckResource, DetectResource, LintResource, LintRuleResource, ProjectMapResource, ScaffoldResource,
-    StackPackManifestResource,
+    CheckResource, DetectResource, LayoutResource, LintResource, LintRuleResource, ProjectMapResource,
+    ScaffoldResource, StackPackManifestResource,
 };
 use crate::managers::models::lint_rule::LintRule;
 use crate::managers::models::stack_pack::StackPack;
 use crate::managers::models::stack_pack_check::StackPackCheck;
+use crate::managers::models::stack_pack_layout::StackPackLayout;
 use crate::managers::models::stack_pack_lint::StackPackLint;
 use crate::managers::models::scaffold_kind::ScaffoldKind;
 use crate::managers::models::stack_pack_project_map::StackPackProjectMap;
@@ -74,6 +75,12 @@ impl StackPackMapper {
                 format_command: scaffold
                     .format
                     .expect("validated by ValidatorStackPackManifestResource"),
+            }),
+            layout: manifest.layout.map(|layout: LayoutResource| StackPackLayout {
+                orchestrator_globs: layout
+                    .orchestrator
+                    .expect("validated by ValidatorStackPackManifestResource"),
+                worker_globs: layout.workers.expect("validated by ValidatorStackPackManifestResource"),
             }),
         }
     }

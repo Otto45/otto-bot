@@ -43,8 +43,8 @@ Everything language-specific is in a stack pack:
 
 ```
 stack_packs/<stack>/
-    pack.toml       detection (e.g. Cargo.toml), check commands, layout map (component kind -> path pattern),
-                    naming rules, rename map, example components to strip
+    pack.toml       detection (e.g. Cargo.toml), check commands, the project map and lint queries, scaffold kinds,
+                    the layout (the files only the orchestrator writes, and where a worker's files may be), rename map
     rules.md        the stack's architecture rules (the template's AGENTS.md)
     template/       the starting app: one example of every component kind
     scaffolds/      skeletons per component kind (processor, engine, gateway, data gateway, router, ...)
@@ -115,9 +115,9 @@ Output dominates the cost, which is why the speed levers below also cut cost.
   | `apply_patch` | native file edits |
   | `scaffold` | creates a component and its wiring, deterministically |
   | `run_checks` | runs the pack's check commands |
-  | `submit_plan` | the lead's work plan, checked by the harness (a rejected plan is the call's error) |
+  | `submit_plan` | the orchestrator's work plan, checked by the harness (a rejected plan is the call's error) |
   | `report` | a worker's or reviewer's structured, terse completion report |
-  | `request_contract_change` | (later) asks the lead to change a frozen interface mid fan-out |
+  | `request_contract_change` | (later) asks the orchestrator to change a frozen interface mid fan-out |
 
 - **Compaction** (`/responses/compact`, or `context_management`) only at wave boundaries, since it resets cache reuse.
 - **Service tier** comes from the session's options; the ledger records the tier each response actually ran at,
@@ -129,25 +129,25 @@ Output dominates the cost, which is why the speed levers below also cut cost.
 
 The manager keeps the order: each phase is one call to `AgentRunEngine`, which runs one agent (a lane) in a role.
 
-1. **Lead.** The session's agent, as in steps 1-3, with one more tool: `submit_plan`. A small job it does itself,
-   with no plan, so a small request pays nothing for the workflow. A bigger one it plans: new or changed models,
+1. **Orchestrator.** The session's agent, as in steps 1-3, with one more tool: `submit_plan`. A small job it does
+   itself, with no plan, so a small request pays nothing for the workflow. A bigger one it plans: new or changed models,
    exception variants and settings; the components to scaffold (kind, name, within); and work packages, each with the
-   files it owns and a brief. The `WorkPlanProcessor` checks the plan without a model: every path is legal for its
-   kind (the pack's `[layout]`), no file is owned twice, and no worker owns a wiring file (module files, the service
-   locator, the facade). A rejected plan is the tool call's error, so the lead fixes it in the same turn loop.
-   Ambiguities in the request are decided by the lead and recorded as assumptions in the plan.
-2. **Skeleton.** The harness scaffolds every component of the plan. The lead, on its still-warm lane, writes only
-   the contracts: models, exception variants, and signatures with placeholder bodies. The skeleton must pass every
+   files it owns and a brief. The `WorkPlanProcessor` checks the plan without a model: every path is legal for its kind
+   (the pack's `[layout]`), no file is owned twice, and no worker owns a wiring file (module files, the service locator,
+   the facade). A rejected plan is the tool call's error, so the orchestrator fixes it in the same turn loop.
+   Ambiguities in the request are decided by the orchestrator and recorded as assumptions in the plan.
+2. **Skeleton.** The harness scaffolds every component of the plan. The orchestrator, on its still-warm lane, writes
+   only the contracts: models, exception variants, and signatures with placeholder bodies. The skeleton must pass every
    check (the architecture lint catches a contract that breaks a dependency rule); then it is snapshotted and the
    contracts are frozen.
 3. **Fan out.** One worker per package, each in its own copy of the snapshot, on its own lane
    (`<session>/<package>`), with one more layer: the full text of the files it owns. A patch to a file it doesn't own
    fails, telling it why. A worker ends with `report` (done, or blocked with the reason). Workers run concurrently,
    at most `OTTO_BOT_MAX_WORKERS` at a time. A worker that needs a contract changed reports itself blocked, and the
-   lead settles it in the next phase.
-4. **Integrate.** Each worker's changed files are copied back (ownership is disjoint, so nothing is merged). The lead
-   writes the manager's coordinations and settles blocked packages; then the full checks run, and each error goes to
-   the owner of the file it is in, on its still-warm lane, now in the main workspace.
+   orchestrator settles it in the next phase.
+4. **Integrate.** Each worker's changed files are copied back (ownership is disjoint, so nothing is merged). The
+   orchestrator writes the manager's coordinations and settles blocked packages; then the full checks run, and each
+   error goes to the owner of the file it is in, on its still-warm lane, now in the main workspace.
 5. **Review.** A reviewer lane whose second layer is the diff, not the project map: read-only, focused on security,
    ending with `report`. High-severity findings go to their owners for one round of fixes; the rest are listed in
    the run's summary.

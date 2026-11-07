@@ -56,6 +56,17 @@ impl ValidatorStackPackManifestResource {
             }
         }
 
+        if let Some(layout) = manifest.layout.as_ref() {
+            errors.extend(ValidatorStackPackManifestResource::validate_globs(
+                "layout.orchestrator",
+                layout.orchestrator.as_ref(),
+            ));
+            errors.extend(ValidatorStackPackManifestResource::validate_globs(
+                "layout.workers",
+                layout.workers.as_ref(),
+            ));
+        }
+
         for (index, check) in manifest.checks.iter().flatten().enumerate() {
             errors.extend(ValidatorStackPackManifestResource::validate_check_resource(
                 check, index,

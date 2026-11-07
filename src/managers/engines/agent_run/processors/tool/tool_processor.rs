@@ -3,9 +3,12 @@ use serde_json::json;
 
 use crate::managers::engines::agent_run::processors::tool::redactors::secret_redactor::SecretRedactor;
 use crate::managers::engines::agent_run::processors::tool::tool_arguments::list_files_arguments::ListFilesArguments;
+use crate::managers::engines::agent_run::processors::tool::tool_arguments::planned_component_arguments::PlannedComponentArguments;
 use crate::managers::engines::agent_run::processors::tool::tool_arguments::read_files_arguments::ReadFilesArguments;
 use crate::managers::engines::agent_run::processors::tool::tool_arguments::scaffold_arguments::ScaffoldArguments;
 use crate::managers::engines::agent_run::processors::tool::tool_arguments::search_arguments::SearchArguments;
+use crate::managers::engines::agent_run::processors::tool::tool_arguments::submit_plan_arguments::SubmitPlanArguments;
+use crate::managers::engines::agent_run::processors::tool::tool_arguments::work_package_arguments::WorkPackageArguments;
 use crate::managers::exceptions::agent_run_engine_exception::AgentRunEngineException;
 use crate::managers::exceptions::application_base_exception::{ApplicationBaseException, ApplicationResult};
 use crate::managers::exceptions::contextual_data::ContextualData;
@@ -13,11 +16,14 @@ use crate::managers::models::agent_role::AgentRole;
 use crate::managers::models::check_result::CheckResult;
 use crate::managers::models::conversation_item::ConversationItem;
 use crate::managers::models::lint_violation::LintViolation;
+use crate::managers::models::planned_component::PlannedComponent;
 use crate::managers::models::search_match::SearchMatch;
 use crate::managers::models::tool_call_kind::ToolCallKind;
 use crate::managers::models::tool_call_reference::ToolCallReference;
 use crate::managers::models::tool_definition::ToolDefinition;
 use crate::managers::models::tool_request::ToolRequest;
+use crate::managers::models::work_package::WorkPackage;
+use crate::managers::models::work_plan::WorkPlan;
 use crate::managers::models::workspace_file::WorkspaceFile;
 
 const READ_FILES: &str = "read_files";
@@ -25,6 +31,7 @@ const LIST_FILES: &str = "list_files";
 const SEARCH: &str = "search";
 const RUN_CHECKS: &str = "run_checks";
 const SCAFFOLD: &str = "scaffold";
+const SUBMIT_PLAN: &str = "submit_plan";
 // The API's own tool, offered with the function tools to every role.
 const APPLY_PATCH: &str = "apply_patch";
 // What a failed check prints is cut to its end, where compilers and linters say what is wrong.
@@ -121,6 +128,66 @@ impl ToolProcessor {
                     "additionalProperties": false,
                 }),
             },
+            ToolDefinition {
+                name: SUBMIT_PLAN.to_string(),
+                description: "Plan a change too big to build well alone, instead of building it: the harness checks \
+                              the plan, scaffolds its components, has you write the contracts, then starts one worker \
+                              per package, all at the same time. Call it before you change any file."
+                    .to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "summary": { "type": "string", "description": "What the change does, in a few sentences" },
+                        "assumptions": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "What you decided where the request left it open",
+                        },
+                        "components": {
+                            "type": "array",
+                            "description": "Every new component, to be scaffolded before the workers start",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "kind": { "type": "string", "description": "One of the stack's scaffold kinds" },
+                                    "name": { "type": "string", "description": "snake_case" },
+                                    "within": {
+                                        "type": ["string", "null"],
+                                        "description": "For a kind that lives inside another component: its name",
+                                    },
+                                },
+                                "required": ["kind", "name", "within"],
+                                "additionalProperties": false,
+                            },
+                        },
+                        "packages": {
+                            "type": "array",
+                            "description": "At least two packages, each built by its own worker at the same time as \
+                                            the others; a package owns the files only it changes",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "name": { "type": "string", "description": "snake_case" },
+                                    "brief": {
+                                        "type": "string",
+                                        "description": "What the worker builds, and against which contracts: what \
+                                                        it needs to know beyond its files and the project map",
+                                    },
+                                    "owned_paths": {
+                                        "type": "array",
+                                        "items": { "type": "string" },
+                                        "description": "The files only this package changes, new or existing",
+                                    },
+                                },
+                                "required": ["name", "brief", "owned_paths"],
+                                "additionalProperties": false,
+                            },
+                        },
+                    },
+                    "required": ["summary", "assumptions", "components", "packages"],
+                    "additionalProperties": false,
+                }),
+            },
         ]
     }
 
@@ -128,7 +195,7 @@ impl ToolProcessor {
     /// cached prefix is shared, and restricted to these.
     pub fn get_allowed_tool_names(&self, agent_role: AgentRole) -> Option<Vec<String>> {
         let tool_names: &[&str] = match agent_role {
-            AgentRole::Lead => return None,
+            AgentRole::Orchestrator => return None,
             // A worker's components were scaffolded with the skeleton; it writes their logic.
             AgentRole::Worker => &[READ_FILES, LIST_FILES, SEARCH, RUN_CHECKS, APPLY_PATCH],
             AgentRole::Reviewer => &[READ_FILES, LIST_FILES, SEARCH],
@@ -190,6 +257,13 @@ impl ToolProcessor {
                     _ => Err(ToolProcessor::to_invalid_tool_call(name, "kind and name are required")),
                 }
             }
+            SUBMIT_PLAN => {
+                let submit_plan_arguments: SubmitPlanArguments = ToolProcessor::parse_arguments(name, arguments)?;
+                Ok(ToolRequest::SubmitPlan {
+                    work_plan: ToolProcessor::to_work_plan(submit_plan_arguments)
+                        .map_err(|reason: String| ToolProcessor::to_invalid_tool_call(name, &reason))?,
+                })
+            }
             _ => Err(ToolProcessor::to_invalid_tool_call(
                 name,
                 "there is no tool by that name",
@@ -249,7 +323,27 @@ impl ToolProcessor {
                 Some(within) => format!("{kind} {name} in {within}"),
                 None => format!("{kind} {name}"),
             },
+            ToolRequest::SubmitPlan { work_plan } => format!(
+                "{} packages: {}",
+                work_plan.packages.len(),
+                work_plan
+                    .packages
+                    .iter()
+                    .map(|work_package: &WorkPackage| work_package.name.as_str())
+                    .collect::<Vec<&str>>()
+                    .join(", ")
+            ),
         }
+    }
+
+    /// What the orchestrator is told when its plan is accepted.
+    pub fn format_plan_accepted(&self, work_plan: &WorkPlan) -> String {
+        format!(
+            "The plan is accepted: {} components to scaffold, {} packages. The harness scaffolds the components next; \
+             then you write the contracts.",
+            work_plan.components.len(),
+            work_plan.packages.len()
+        )
     }
 
     pub fn format_file(&self, workspace_file: &WorkspaceFile) -> String {
@@ -381,6 +475,49 @@ impl ToolProcessor {
             "[... {} characters before this]\n{kept}",
             char_count - MAX_CHECK_OUTPUT_CHARS
         )
+    }
+
+    // The plan as the model wrote it; what is missing is the reason the call is invalid. Whether the plan holds up is
+    // the WorkPlanProcessor's to check.
+    fn to_work_plan(submit_plan_arguments: SubmitPlanArguments) -> Result<WorkPlan, String> {
+        let components: Vec<PlannedComponent> = submit_plan_arguments
+            .components
+            .unwrap_or_default()
+            .into_iter()
+            .enumerate()
+            .map(
+                |(index, component): (usize, PlannedComponentArguments)| match (component.kind, component.name) {
+                    (Some(kind), Some(component_name)) => Ok(PlannedComponent {
+                        kind,
+                        name: component_name,
+                        within: component.within.filter(|within: &String| !within.trim().is_empty()),
+                    }),
+                    _ => Err(format!("components[{index}] needs a kind and a name")),
+                },
+            )
+            .collect::<Result<Vec<PlannedComponent>, String>>()?;
+        let packages: Vec<WorkPackage> = submit_plan_arguments
+            .packages
+            .unwrap_or_default()
+            .into_iter()
+            .enumerate()
+            .map(|(index, package): (usize, WorkPackageArguments)| {
+                match (package.name, package.brief, package.owned_paths) {
+                    (Some(package_name), Some(brief), Some(owned_paths)) => Ok(WorkPackage {
+                        name: package_name,
+                        brief,
+                        owned_paths,
+                    }),
+                    _ => Err(format!("packages[{index}] needs a name, a brief and owned_paths")),
+                }
+            })
+            .collect::<Result<Vec<WorkPackage>, String>>()?;
+        Ok(WorkPlan {
+            summary: submit_plan_arguments.summary.unwrap_or_default(),
+            assumptions: submit_plan_arguments.assumptions.unwrap_or_default(),
+            components,
+            packages,
+        })
     }
 
     fn parse_arguments<T: DeserializeOwned>(name: &str, arguments: &str) -> ApplicationResult<T> {

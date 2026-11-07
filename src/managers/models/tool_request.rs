@@ -1,3 +1,5 @@
+use crate::managers::models::work_plan::WorkPlan;
+
 /// A function tool call, read: what the model asked the harness to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolRequest {
@@ -16,5 +18,8 @@ pub enum ToolRequest {
         kind: String,
         name: String,
         within: Option<String>,
+    },
+    SubmitPlan {
+        work_plan: WorkPlan,
     },
 }

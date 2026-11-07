@@ -13,6 +13,7 @@ use crate::managers::engines::agent_run::processors::project_map::project_map_pr
 use crate::managers::engines::agent_run::processors::prompt::prompt_processor::PromptProcessor;
 use crate::managers::engines::agent_run::processors::scaffold::scaffold_processor::ScaffoldProcessor;
 use crate::managers::engines::agent_run::processors::tool::tool_processor::ToolProcessor;
+use crate::managers::engines::agent_run::processors::work_plan::work_plan_processor::WorkPlanProcessor;
 use crate::managers::exceptions::application_base_exception::{ApplicationBaseException, ApplicationResult};
 use crate::managers::exceptions::configuration_provider_exception::ConfigurationProviderException;
 use crate::managers::exceptions::contextual_data::ContextualData;
@@ -47,6 +48,7 @@ pub struct ServiceLocator {
     project_map_processor: Mutex<Option<Arc<ProjectMapProcessor>>>,
     architecture_lint_processor: Mutex<Option<Arc<ArchitectureLintProcessor>>>,
     scaffold_processor: Mutex<Option<Arc<ScaffoldProcessor>>>,
+    work_plan_processor: Mutex<Option<Arc<WorkPlanProcessor>>>,
     agent_run_engine: Mutex<Option<Arc<AgentRunEngine>>>,
     // The close() of every singleton created so far, in creation order.
     close_callbacks: Mutex<Vec<CloseCallback>>,
@@ -80,6 +82,7 @@ impl ServiceLocator {
             project_map_processor: Mutex::new(None),
             architecture_lint_processor: Mutex::new(None),
             scaffold_processor: Mutex::new(None),
+            work_plan_processor: Mutex::new(None),
             agent_run_engine: Mutex::new(None),
             close_callbacks: Mutex::new(Vec::new()),
         }
@@ -202,6 +205,10 @@ impl ServiceLocator {
         ServiceLocator::get_or_create(&self.scaffold_processor, || Ok(Arc::new(ScaffoldProcessor)))
     }
 
+    pub fn get_work_plan_processor(&self) -> ApplicationResult<Arc<WorkPlanProcessor>> {
+        ServiceLocator::get_or_create(&self.work_plan_processor, || Ok(Arc::new(WorkPlanProcessor)))
+    }
+
     pub fn get_agent_run_engine(&self) -> ApplicationResult<Arc<AgentRunEngine>> {
         ServiceLocator::get_or_create(&self.agent_run_engine, || {
             let configuration_provider: Arc<ConfigurationProvider> = self.get_configuration_provider()?;
@@ -230,6 +237,7 @@ impl ServiceLocator {
                 self.get_project_map_processor()?,
                 self.get_architecture_lint_processor()?,
                 self.get_scaffold_processor()?,
+                self.get_work_plan_processor()?,
                 agent_settings.max_turns,
                 check_timeout,
             )))

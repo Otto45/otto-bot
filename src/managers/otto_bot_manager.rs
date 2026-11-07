@@ -14,6 +14,7 @@ use crate::managers::exceptions::otto_bot_manager_exception::OttoBotManagerExcep
 use crate::managers::gateways::workspace::workspace_gateway::WorkspaceGateway;
 use crate::managers::logger::application_logger::ApplicationLogger;
 use crate::managers::logger::log_level::LogLevel;
+use crate::managers::models::agent_run_outcome::AgentRunOutcome;
 use crate::managers::models::run_summary::RunSummary;
 use crate::managers::models::session::Session;
 use crate::managers::models::session_event::SessionEvent;
@@ -158,9 +159,8 @@ impl OttoBotManager {
         events: broadcast::Sender<SessionEvent>,
         data_facade: Arc<DataFacade>,
     ) {
-        let ran: ApplicationResult<RunSummary> = agent_run_engine
-            .run(&session, &user_request, &events, &data_facade)
-            .await;
+        let ran: ApplicationResult<RunSummary> =
+            OttoBotManager::run_request(&agent_run_engine, &session, &user_request, &events, &data_facade).await;
         match ran {
             Ok(run_summary) => {
                 events.send(SessionEvent::RunCompleted { run_summary }).ok();
@@ -175,6 +175,23 @@ impl OttoBotManager {
                     .ok();
             }
         }
+    }
+
+    // The orchestrator runs on the request, and either does it or plans it; an accepted plan is kept and reported.
+    async fn run_request(
+        agent_run_engine: &AgentRunEngine,
+        session: &Session,
+        user_request: &UserRequest,
+        events: &broadcast::Sender<SessionEvent>,
+        data_facade: &DataFacade,
+    ) -> ApplicationResult<RunSummary> {
+        let agent_run_outcome: AgentRunOutcome =
+            agent_run_engine.run(session, user_request, events, data_facade).await?;
+        if let Some(work_plan) = agent_run_outcome.work_plan {
+            data_facade.append_work_plan(&session.id, &work_plan).await?;
+            events.send(SessionEvent::PlanAccepted { work_plan }).ok();
+        }
+        Ok(agent_run_outcome.run_summary)
     }
 
     // Reports the end of a run that could not report it itself: cancelled, or stopped by a panic (which the panic
