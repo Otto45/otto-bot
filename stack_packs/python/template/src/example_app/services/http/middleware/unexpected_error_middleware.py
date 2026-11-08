@@ -2,10 +2,11 @@ from http import HTTPStatus
 from typing import final
 
 from fastapi.responses import JSONResponse
-from starlette.types import ASGIApp, Message, Receive, Scope, Send
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from example_app.managers.exceptions.contextual_data import ContextualData
 from example_app.managers.logger.application_logger import ApplicationLogger
+from example_app.services.http.middleware.response_start_tracker import ResponseStartTracker
 from example_app.services.http.wire_models.error_response import ErrorResponse
 
 
@@ -24,18 +25,11 @@ class UnexpectedErrorMiddleware:
             await self._application(scope, receive, send)
             return
 
-        response_started: bool = False
-
-        async def send_and_track(message: Message) -> None:
-            nonlocal response_started
-            if message["type"] == "http.response.start":
-                response_started = True
-            await send(message)
-
+        response_start_tracker: ResponseStartTracker = ResponseStartTracker(send)
         try:
-            await self._application(scope, receive, send_and_track)
+            await self._application(scope, receive, response_start_tracker.send)
         except Exception as exception:
-            if response_started:
+            if response_start_tracker.started:
                 raise
             ApplicationLogger.error(
                 "A request failed unexpectedly",

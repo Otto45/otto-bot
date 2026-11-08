@@ -27,7 +27,7 @@ def main() -> int:
     try:
         current_contract: str | None = _CONTRACT_PATH.read_text(encoding="utf-8")
     except OSError:
-        current_contract = None
+        current_contract: str | None = None
     if current_contract != contract:
         print(f"{_CONTRACT_PATH} is out of date: run `uv run export-openapi`", file=sys.stderr)
         return 1

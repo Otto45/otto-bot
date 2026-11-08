@@ -33,9 +33,9 @@ class ValidatorJsonPlaceholder:
         # NaN is not positive either; an infinite timeout is no timeout.
         timeout_error: str | None = None
         if math.isnan(timeout_seconds) or timeout_seconds <= 0:
-            timeout_error = "timeout_seconds is not positive"
+            timeout_error: str | None = "timeout_seconds is not positive"
         elif math.isinf(timeout_seconds):
-            timeout_error = "timeout_seconds is not finite"
+            timeout_error: str | None = "timeout_seconds is not finite"
         if timeout_error is not None:
             raise InvalidConfigurationException(
                 "JSON Placeholder configuration is invalid",

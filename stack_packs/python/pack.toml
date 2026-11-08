@@ -1,0 +1,191 @@
+# The Python stack pack: everything the harness knows about building Domain Container apps in Python.
+
+name = "python"
+# The tree-sitter grammar, built into otto-bot, that parses the stack's source files (for the project map and the lint).
+language = "python"
+
+# The template app (one example of every component kind) and the rules every change to an app follows.
+template = "template"
+rules = "template/AGENTS.md"
+
+# The project map: every file of the workspace, and the public items of its source files (bodies left out), opening
+# every request so the agent knows the codebase's shape before it reads anything. The query's @item captures are
+# shown, and a @body or @omit inside one is left out.
+[project_map]
+sources = ["src/**/*.py"]
+query = "queries/project_map.scm"
+
+# The architecture lint: the rules of AGENTS.md a machine can check, run as the "architecture" check before the
+# commands below, so the agent learns of a rule it broke as it learns of a type error. Rule kinds:
+# - imports: a file whose path matches `files` imports nothing matching `forbid` (regular expressions, on the imported
+#   module as written). When both have a group named `name`, only an import of another one of the same kind breaks the
+#   rule. Paths and modules start with the app's package, whatever it is named (`[a-z0-9_]+`).
+# - query: what the query captures as @violation, except what it also captures as @allowed.
+# - named_after_file: one of the names the query captures as @name is the file's name in PascalCase.
+[lint]
+sources = ["src/**/*.py"]
+imports_query = "queries/imports.scm"
+
+[[lint.rules]]
+name = "manager-uses-manager"
+kind = "imports"
+message = "managers never call other managers; anything they share goes through the DataFacade, a processor or an engine"
+files = '^src/[a-z0-9_]+/managers/(?P<name>[a-z0-9_]+)_manager\.py$'
+forbid = ['^[a-z0-9_]+\.managers\.(?P<name>[a-z0-9_]+)_manager\b']
+
+[[lint.rules]]
+name = "engine-uses-engine"
+kind = "imports"
+message = "an engine never uses another engine"
+files = '^src/[a-z0-9_]+/managers/engines/(?P<name>[a-z0-9_]+)/'
+forbid = ['^[a-z0-9_]+\.managers\.engines\.(?P<name>[a-z0-9_]+)\b']
+
+[[lint.rules]]
+name = "engine-uses-manager-parts"
+kind = "imports"
+message = "an engine never uses a manager or a manager's processors; it is handed the DataFacade with each call"
+files = '^src/[a-z0-9_]+/managers/engines/'
+forbid = ['^[a-z0-9_]+\.managers\.processors\b', '^[a-z0-9_]+\.managers\.[a-z0-9_]+_manager\b']
+
+[[lint.rules]]
+name = "processor-does-io"
+kind = "imports"
+message = "a processor holds domain logic only: no gateways, data layer, engines, managers or service locator"
+files = '^src/[a-z0-9_]+/managers/processors/'
+forbid = ['^[a-z0-9_]+\.managers\.(gateways|data_layer|engines|service_locator)\b', '^[a-z0-9_]+\.managers\.[a-z0-9_]+_manager\b']
+
+[[lint.rules]]
+name = "engine-processor-does-io"
+kind = "imports"
+message = "an engine's processor holds domain logic only: no gateways, data layer or service locator"
+files = '^src/[a-z0-9_]+/managers/engines/[a-z0-9_]+/processors/'
+forbid = ['^[a-z0-9_]+\.managers\.(gateways|data_layer|service_locator)\b']
+
+[[lint.rules]]
+name = "gateway-uses-domain-parts"
+kind = "imports"
+message = "a gateway only talks to its system: no processors, engines, managers, data layer or service locator"
+files = '^src/[a-z0-9_]+/managers/gateways/'
+forbid = ['^[a-z0-9_]+\.managers\.(processors|engines|data_layer|service_locator)\b', '^[a-z0-9_]+\.managers\.[a-z0-9_]+_manager\b']
+
+# Python has no private modules, so a gateway's own parts are kept to it here: a file in one gateway's folder may
+# import its own; every other file (the first alternative doesn't match it, so it has no `name`) may import none.
+[[lint.rules]]
+name = "gateway-internals"
+kind = "imports"
+message = "a gateway's resource models, validators, mappers, query builders and request builders are its own: nothing outside its folder imports them"
+files = '^src/[a-z0-9_]+/(?:managers/(?:data_layer/managers/)?gateways/(?P<name>[a-z0-9_]+)/|.*)'
+forbid = ['\.gateways\.(?P<name>[a-z0-9_]+)\.(resource_models|validators|mappers|query_builders|request_builders)\b']
+
+[[lint.rules]]
+name = "common-helper-uses-components"
+kind = "imports"
+message = "a common helper is stateless and does no I/O: it uses no component"
+files = '^src/[a-z0-9_]+/managers/common/'
+forbid = ['^[a-z0-9_]+\.managers\.(gateways|data_layer|engines|processors|service_locator)\b', '^[a-z0-9_]+\.managers\.[a-z0-9_]+_manager\b']
+
+[[lint.rules]]
+name = "model-uses-components"
+kind = "imports"
+message = "a domain model is data: it uses other models only"
+files = '^src/[a-z0-9_]+/managers/models/'
+forbid = ['^[a-z0-9_]+\.managers\.(gateways|data_layer|engines|processors|service_locator|configuration_providers|logger)\b', '^[a-z0-9_]+\.managers\.[a-z0-9_]+_manager\b']
+
+[[lint.rules]]
+name = "service-bypasses-facade"
+kind = "imports"
+message = "a service calls only the domain facade: it never uses the domain container's components"
+files = '^src/[a-z0-9_]+/services/'
+forbid = ['^[a-z0-9_]+\.managers\.(gateways|data_layer|engines|processors|service_locator|configuration_providers|common)\b', '^[a-z0-9_]+\.managers\.[a-z0-9_]+_manager\b']
+
+[[lint.rules]]
+name = "untyped-variable"
+kind = "query"
+message = "every variable has its type annotation (a rebinding too)"
+query = "queries/lint/untyped_variable.scm"
+
+[[lint.rules]]
+name = "untyped-attribute"
+kind = "query"
+message = "every instance attribute has its type annotation where __init__ sets it"
+query = "queries/lint/untyped_attribute.scm"
+
+[[lint.rules]]
+name = "missing-final"
+kind = "query"
+message = "a class that nothing inherits from is marked @final (models, Protocols and exception families aside)"
+query = "queries/lint/missing_final.scm"
+
+[[lint.rules]]
+name = "protocol-with-body"
+kind = "query"
+message = "a Protocol declares method signatures only: each body is `...`, and it holds no fields"
+query = "queries/lint/protocol_body.scm"
+
+[[lint.rules]]
+name = "function-outside-class"
+kind = "query"
+message = "every function is a method of a class, except in an entry point's module"
+query = "queries/lint/function_outside_class.scm"
+exclude = ["**/main.py", "**/export_openapi.py"]
+
+[[lint.rules]]
+name = "relative-import"
+kind = "query"
+message = "imports are absolute (from example_app.managers... import ...)"
+query = "queries/lint/relative_import.scm"
+
+[[lint.rules]]
+name = "file-named-after-type"
+kind = "named_after_file"
+message = "a file holds the one class or type alias it is named after"
+query = "queries/lint/type_names.scm"
+exclude = ["**/__init__.py", "**/main.py", "**/export_openapi.py"]
+
+# The formatters: commands that rewrite files into the form the checks expect: the code's formatting, its imports
+# (sorted, and unused ones removed) and the generated OpenAPI contract. The harness runs them, in order, before every
+# run of the checks, so no agent formats code or regenerates the contract by hand (or spends a turn on a check of
+# either), and tells the agent which of the `sources` they changed.
+[format]
+commands = [
+    ["uv", "run", "ruff", "format"],
+    ["uv", "run", "ruff", "check", "--select", "I,F401", "--fix", "--quiet"],
+    ["uv", "run", "export-openapi"],
+]
+sources = ["src/**/*.py", "openapi.json"]
+
+[detect]
+# A project is a Python app when its root has all of these.
+files = ["pyproject.toml"]
+
+# The checks every change passes, run from the app's root, in order.
+[[checks]]
+name = "format"
+command = ["uv", "run", "ruff", "format", "--check"]
+
+[[checks]]
+name = "lint"
+command = ["uv", "run", "ruff", "check"]
+
+[[checks]]
+name = "types"
+command = ["uv", "run", "pyright"]
+
+[[checks]]
+name = "contract"
+command = ["uv", "run", "export-openapi", "--check"]
+
+# Tests are deferred; the slot is kept so adding them changes no harness code.
+[[checks]]
+name = "test"
+command = []
+
+# Starting an app: names in the template replaced by the app's own, in this order (AGENTS.md, "Starting an app
+# from the template"); they apply to paths too (src/example_app/).
+[rename]
+"example-app" = "{app_name_kebab}"
+"example_app" = "{app_name_snake}"
+"ExampleAppFacade" = "{app_name_pascal}Facade"
+"ExampleAppManager" = "{app_name_pascal}Manager"
+"EXAMPLE_APP_" = "{app_name_upper}_"
+"Example App" = "{app_name_title}"

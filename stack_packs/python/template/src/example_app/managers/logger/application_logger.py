@@ -98,7 +98,7 @@ class ApplicationLogger:
         # This function, _log, the public method, then the code that logged.
         frame: FrameType | None = inspect.currentframe()
         for _ in range(3):
-            frame = frame.f_back if frame is not None else None
+            frame: FrameType | None = frame.f_back if frame is not None else None
         if frame is None:
             return None
         return LogSource(

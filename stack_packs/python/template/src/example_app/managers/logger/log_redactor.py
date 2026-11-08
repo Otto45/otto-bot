@@ -38,5 +38,5 @@ class LogRedactor:
     def redact(text: str) -> str:
         redacted: str = text
         for pattern, replacement in _PATTERNS:
-            redacted = pattern.sub(replacement, redacted)
+            redacted: str = pattern.sub(replacement, redacted)
         return redacted

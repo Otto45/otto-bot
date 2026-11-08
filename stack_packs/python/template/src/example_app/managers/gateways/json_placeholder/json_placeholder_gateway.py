@@ -58,7 +58,9 @@ class JsonPlaceholderGateway:
     ) -> JsonPlaceholderRequestException:
         exception_context: ContextualData = context.with_value("error_type", type(http_error).__name__)
         if isinstance(http_error, httpx.HTTPStatusError):
-            exception_context = exception_context.with_value("status_code", http_error.response.status_code)
+            exception_context: ContextualData = exception_context.with_value(
+                "status_code", http_error.response.status_code
+            )
 
         return JsonPlaceholderRequestException(
             f"JSON Placeholder request failed while {operation_description}", exception_context

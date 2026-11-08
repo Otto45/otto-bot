@@ -148,12 +148,14 @@ impl ProjectMapProcessor {
             .collect())
     }
 
-    // The item's text without the left-out ranges inside it (sorted by start; one inside another is skipped).
+    // The item's text without the left-out ranges inside it (sorted by start; one inside another is skipped). A range
+    // that is the whole item is another item's body that holds only this one (a Python class with a single field), so
+    // it isn't left out of this item.
     fn without(source: &str, item: &Range<usize>, left_out: &[Range<usize>]) -> String {
         let mut text: String = String::new();
         let mut cursor: usize = item.start;
         for range in left_out {
-            if range.start >= cursor && range.end <= item.end {
+            if range.start >= cursor && range.end <= item.end && range != item {
                 text.push_str(&source[cursor..range.start]);
                 cursor = range.end;
             }

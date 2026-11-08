@@ -33,8 +33,8 @@ pyproject.toml                  dependencies, the entry points ([project.scripts
 ```
 
 ## Code
-- every variable has its type annotation (`pool: asyncpg.Pool = ...`), and so does every function's parameters and return; pyright (strict) checks what is annotated, and the annotations are checked by reading
-  - exception: the targets of `for`, `with ... as`, `except ... as` and comprehensions, and `match` captures, which Python does not allow to be annotated
+- every variable has its type annotation (`pool: asyncpg.Pool = ...`), a rebinding too (`redacted: str = pattern.sub(...)`), and so does every instance attribute where `__init__` sets it (`self._pool: asyncpg.Pool = pool`) and every function's parameters and return; pyright (strict) checks the types, and the architecture lint checks that they are written
+  - exception: the targets of `for`, `with ... as`, `except ... as`, comprehensions and tuple unpacking, `match` captures, a `nonlocal` name, and an enum's members, which Python does not allow to be annotated (rather than rebind a `nonlocal`, keep the state on an object, e.g. `ResponseStartTracker`)
   - nothing is typed `Any` unless a library hands it over as `Any` (a FastAPI error, asyncio's exception handler context, the OpenAPI document), and the code says so where it does
 - every function is a method of a class, except in an entry point's module (`main.py`, `export_openapi.py`)
 - a Protocol is a `typing.Protocol`, and a class that implements one inherits from it explicitly (`class ServiceLocatorSeams(ServiceLocatorSeamsProtocol):`)

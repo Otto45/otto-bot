@@ -121,6 +121,8 @@ class RelationalDatabaseGateway:
         )
         # Only set when the error comes from Postgres itself (e.g. not for a refused connection): its SQLSTATE code.
         if isinstance(driver_error, asyncpg.PostgresError):
-            exception_context = exception_context.with_value("postgres_error_code", driver_error.sqlstate)
+            exception_context: ContextualData = exception_context.with_value(
+                "postgres_error_code", driver_error.sqlstate
+            )
 
         return PostgresQueryException(f"Postgres query failed while {operation_description}", exception_context)
