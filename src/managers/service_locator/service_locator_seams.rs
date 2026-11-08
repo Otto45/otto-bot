@@ -23,7 +23,8 @@ impl ServiceLocatorSeamsProtocol for ServiceLocatorSeams {
         &self,
         openai_responses_settings: &OpenAiResponsesSettings,
     ) -> ApplicationResult<reqwest::Client> {
-        let timeout: Duration = ServiceLocatorSeams::to_timeout(openai_responses_settings)?;
+        let timeout: Duration =
+            ServiceLocatorSeams::to_timeout(openai_responses_settings.timeout_seconds, "timeout_seconds")?;
 
         reqwest::Client::builder()
             .timeout(timeout)
@@ -45,24 +46,23 @@ impl ServiceLocatorSeamsProtocol for ServiceLocatorSeams {
         Ok(ResponsesWebSocketConnector::new(
             &openai_responses_settings.base_url,
             openai_responses_settings.api_key.clone(),
-            ServiceLocatorSeams::to_timeout(openai_responses_settings)?,
+            ServiceLocatorSeams::to_timeout(openai_responses_settings.timeout_seconds, "timeout_seconds")?,
+            ServiceLocatorSeams::to_timeout(openai_responses_settings.idle_timeout_seconds, "idle_timeout_seconds")?,
         ))
     }
 }
 
 impl ServiceLocatorSeams {
-    // The validator keeps the timeout positive and finite; one too long for a Duration is refused here.
-    fn to_timeout(openai_responses_settings: &OpenAiResponsesSettings) -> ApplicationResult<Duration> {
-        Duration::try_from_secs_f64(openai_responses_settings.timeout_seconds).map_err(
-            |_: std::time::TryFromFloatSecsError| {
-                ApplicationBaseException::new(
-                    ConfigurationProviderException::InvalidConfiguration,
-                    "OpenAI configuration is invalid",
-                    ContextualData::new()
-                        .with("setting_name", "openai_responses")
-                        .with("errors", "timeout_seconds is too long"),
-                )
-            },
-        )
+    // The validator keeps a timeout positive and finite; one too long for a Duration is refused here.
+    fn to_timeout(seconds: f64, setting_name: &str) -> ApplicationResult<Duration> {
+        Duration::try_from_secs_f64(seconds).map_err(|_: std::time::TryFromFloatSecsError| {
+            ApplicationBaseException::new(
+                ConfigurationProviderException::InvalidConfiguration,
+                "OpenAI configuration is invalid",
+                ContextualData::new()
+                    .with("setting_name", "openai_responses")
+                    .with("errors", format!("{setting_name} is too long")),
+            )
+        })
     }
 }

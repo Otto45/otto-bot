@@ -63,6 +63,12 @@ impl ConfigurationSourceProviderProtocol for ConfigurationSourceProviderEnvironm
                 "OTTO_BOT_OPENAI_TIMEOUT_SECONDS",
                 "600",
             )?),
+            // A response streams events as it goes (the longest silence measured, while reasoning at max effort, was
+            // under 8 seconds), so one silent this long has stalled.
+            idle_timeout_seconds: Some(ConfigurationSourceProviderEnvironment::get_float(
+                "OTTO_BOT_OPENAI_IDLE_TIMEOUT_SECONDS",
+                "120",
+            )?),
             transport: Some(ConfigurationSourceProviderEnvironment::get_string(
                 "OTTO_BOT_OPENAI_TRANSPORT",
                 "websocket",

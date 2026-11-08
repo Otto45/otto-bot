@@ -23,14 +23,17 @@ pub struct ResponsesWebSocketConnection {
     web_socket: WebSocket,
     opened_on: Instant,
     response_timeout: Duration,
+    // How long the response may go without an event: it streams them as it goes, so a silence this long is a stall.
+    idle_timeout: Duration,
 }
 
 impl ResponsesWebSocketConnection {
-    pub fn new(web_socket: WebSocket, response_timeout: Duration) -> Self {
+    pub fn new(web_socket: WebSocket, response_timeout: Duration, idle_timeout: Duration) -> Self {
         ResponsesWebSocketConnection {
             web_socket,
             opened_on: Instant::now(),
             response_timeout,
+            idle_timeout,
         }
     }
 
@@ -41,7 +44,8 @@ impl ResponsesWebSocketConnection {
     /// Sends a `response.create` event with `body` and waits for the response to end. Returns the response object's
     /// JSON text. An error event is an exception: PreviousResponseNotFound when the response the body continues isn't
     /// held any more, OpenAiRequest for anything else the API refused; a connection that is lost (or a response that
-    /// takes too long) is an OpenAiConnection, and the connection can't be used again.
+    /// takes too long, or goes silent for the idle timeout) is an OpenAiConnection, and the connection can't be used
+    /// again.
     pub async fn create_response(&mut self, body: &Value) -> ApplicationResult<String> {
         let mut event: Value = body.clone();
         event["type"] = Value::from("response.create");
@@ -69,7 +73,21 @@ impl ResponsesWebSocketConnection {
     }
 
     async fn receive_response(&mut self) -> ApplicationResult<String> {
-        while let Some(message) = self.web_socket.next().await {
+        loop {
+            let Some(message) = tokio::time::timeout(self.idle_timeout, self.web_socket.next())
+                .await
+                .map_err(|_: tokio::time::error::Elapsed| {
+                    ApplicationBaseException::new(
+                        OpenAiResponsesGatewayException::OpenAiConnection,
+                        "The OpenAI API stopped sending the response's events",
+                        ContextualData::new()
+                            .with("error_type", "IdleTimeout")
+                            .with("idle_timeout_seconds", self.idle_timeout.as_secs_f64()),
+                    )
+                })?
+            else {
+                break;
+            };
             let message: Message = message.map_err(|exception: tokio_tungstenite::tungstenite::Error| {
                 ResponsesWebSocketConnection::to_connection_lost(Some(exception))
             })?;

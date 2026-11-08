@@ -72,6 +72,9 @@ impl ConfigurationProvider {
             api_key: config.api_key.expect("validated by ValidatorOpenAiResponses"),
             model: config.model.expect("validated by ValidatorOpenAiResponses"),
             timeout_seconds: config.timeout_seconds.expect("validated by ValidatorOpenAiResponses"),
+            idle_timeout_seconds: config
+                .idle_timeout_seconds
+                .expect("validated by ValidatorOpenAiResponses"),
             transport: OpenAiTransport::from_name(&config.transport.expect("validated by ValidatorOpenAiResponses"))
                 .expect("validated by ValidatorOpenAiResponses"),
         })

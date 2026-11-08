@@ -24,6 +24,9 @@ impl ValidatorOpenAiResponses {
         if config.timeout_seconds.is_none() {
             errors.push("timeout_seconds is missing".to_string());
         }
+        if config.idle_timeout_seconds.is_none() {
+            errors.push("idle_timeout_seconds is missing".to_string());
+        }
 
         if !errors.is_empty() {
             return Err(ApplicationBaseException::new(
@@ -47,12 +50,18 @@ impl ValidatorOpenAiResponses {
             ));
         }
 
-        if let Some(timeout_seconds) = config.timeout_seconds {
+        for (setting_name, seconds) in [
+            ("timeout_seconds", config.timeout_seconds),
+            ("idle_timeout_seconds", config.idle_timeout_seconds),
+        ] {
+            let Some(seconds) = seconds else {
+                continue;
+            };
             // NaN is not positive either; an infinite timeout is no timeout.
-            let error: Option<&str> = if timeout_seconds.is_nan() || timeout_seconds <= 0.0 {
-                Some("timeout_seconds is not positive")
-            } else if timeout_seconds.is_infinite() {
-                Some("timeout_seconds is not finite")
+            let error: Option<String> = if seconds.is_nan() || seconds <= 0.0 {
+                Some(format!("{setting_name} is not positive"))
+            } else if seconds.is_infinite() {
+                Some(format!("{setting_name} is not finite"))
             } else {
                 None
             };

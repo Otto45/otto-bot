@@ -19,12 +19,13 @@ pub struct ResponsesWebSocketConnector {
     // Sent in the handshake's Authorization header; never logged, never put in a context.
     api_key: String,
     response_timeout: Duration,
+    idle_timeout: Duration,
 }
 
 impl ResponsesWebSocketConnector {
     /// `base_url` is the API's HTTP base URL (e.g. https://api.openai.com/v1); the connector speaks to its
     /// /responses endpoint over wss (ws for an http URL).
-    pub fn new(base_url: &str, api_key: String, response_timeout: Duration) -> Self {
+    pub fn new(base_url: &str, api_key: String, response_timeout: Duration, idle_timeout: Duration) -> Self {
         let base_url: &str = base_url.trim_end_matches('/');
         let web_socket_base_url: String = match base_url.strip_prefix("https://") {
             Some(rest) => format!("wss://{rest}"),
@@ -37,6 +38,7 @@ impl ResponsesWebSocketConnector {
             url: format!("{web_socket_base_url}/responses"),
             api_key,
             response_timeout,
+            idle_timeout,
         }
     }
 
@@ -73,7 +75,11 @@ impl ResponsesWebSocketConnector {
                 .map_err(|exception: tokio_tungstenite::tungstenite::Error| {
                     ResponsesWebSocketConnector::to_connection_exception(exception, &context)
                 })?;
-        Ok(ResponsesWebSocketConnection::new(web_socket, self.response_timeout))
+        Ok(ResponsesWebSocketConnection::new(
+            web_socket,
+            self.response_timeout,
+            self.idle_timeout,
+        ))
     }
 
     fn to_connection_exception(
@@ -101,6 +107,7 @@ impl fmt::Debug for ResponsesWebSocketConnector {
             .field("url", &self.url)
             .field("api_key", &"[REDACTED]")
             .field("response_timeout", &self.response_timeout)
+            .field("idle_timeout", &self.idle_timeout)
             .finish()
     }
 }

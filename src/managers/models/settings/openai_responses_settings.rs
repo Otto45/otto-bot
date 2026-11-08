@@ -8,6 +8,7 @@ pub struct OpenAiResponsesSettings {
     pub api_key: String,
     pub model: String,
     pub timeout_seconds: f64,
+    pub idle_timeout_seconds: f64,
     pub transport: OpenAiTransport,
 }
 
@@ -21,6 +22,7 @@ impl fmt::Debug for OpenAiResponsesSettings {
             .field("api_key", &"[REDACTED]")
             .field("model", &self.model)
             .field("timeout_seconds", &self.timeout_seconds)
+            .field("idle_timeout_seconds", &self.idle_timeout_seconds)
             .field("transport", &self.transport)
             .finish()
     }
