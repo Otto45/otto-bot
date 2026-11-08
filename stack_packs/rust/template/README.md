@@ -17,7 +17,7 @@ Building needs no database. Only running the app does.
 
 ```sh
 export DATABASE_URL="postgresql://previews:previews@localhost:5433/example_app?sslmode=disable"
-dbmate --no-dump-schema up            # create the app's database and apply migrations/ (again after adding one)
+dbmate --migrations-dir migrations --no-dump-schema up   # create the app's database and apply migrations/ (again after adding one)
 
 cargo run --bin example-app           # run the app once: it saves, greets and onboards a customer, and prints what happened
 cargo run --bin example-app-http      # serve the HTTP API on http://127.0.0.1:8000

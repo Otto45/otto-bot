@@ -1,0 +1,45 @@
+[project]
+name = "example-app"
+version = "0.1.0"
+description = "Template for Domain Container architecture Python applications"
+authors = [{ name = "Otto45", email = "austino45@gmail.com" }]
+requires-python = ">=3.14"
+dependencies = [
+    "asyncpg>=0.32.0",
+    "fastapi>=0.162.2",
+    "httpx>=0.28.1",
+    "pydantic>=2.14.3",
+    "uvicorn>=0.54.0",
+]
+
+[project.scripts]
+example-app = "example_app.main:main"
+example-app-http = "example_app.services.http.main:main"
+export-openapi = "example_app.services.http.export_openapi:main"
+
+[build-system]
+requires = ["uv_build>=0.11.14,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "asyncpg-stubs>=0.32.0",
+    "pyright>=1.1.414",
+    "ruff>=0.17.4",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "ANN", "RUF"]
+
+[tool.pyright]
+include = ["src"]
+venvPath = "."
+venv = ".venv"
+pythonVersion = "3.14"
+typeCheckingMode = "strict"
+# A match that names every family of exceptions (ExceptionFamily) fails until a new family is decided there.
+reportMatchNotExhaustive = "error"

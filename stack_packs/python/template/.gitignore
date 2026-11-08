@@ -1,0 +1,5 @@
+.venv/
+__pycache__/
+.ruff_cache/
+# uv.lock names its package, so an app made from this template locks its own dependencies.
+uv.lock
