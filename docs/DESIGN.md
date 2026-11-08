@@ -3,8 +3,10 @@
 otto-bot is a coding agent harness, written in Rust, that builds and changes apps following the Domain Container
 architecture, in Rust, Python and TypeScript. It is itself a Domain Container app.
 
-Status: build steps 1-3 are done (a single agent with the layered cache, WebSocket lanes, the project map, the
-architecture lint and scaffold); step 4, the multi-agent workflow, is under way.
+Status: build steps 1-4 are done: the layered cache, WebSocket lanes, the project map, the architecture lint and
+scaffold (steps 1-3), and the three roles (step 4): the orchestrator, which makes a small change itself and plans a
+bigger one; the implementor, which builds the plan; and the reviewer, whose high-severity findings the implementor
+fixes. The Python and TypeScript packs (step 5) are next.
 
 ## Goals
 
@@ -116,7 +118,8 @@ Output dominates the cost, which is why the speed levers below also cut cost.
   | `scaffold` | creates a component and its wiring, deterministically |
   | `run_checks` | runs the pack's check commands |
   | `submit_plan` | the orchestrator's work plan, checked by the harness (a rejected plan is the call's error) |
-  | `report` | the implementor's or reviewer's structured, terse completion report |
+  | `report` | the implementor's structured, terse completion report |
+  | `submit_review` | the reviewer's findings, graded high, medium or low |
 
 - **Compaction** (`/responses/compact`, or `context_management`) only at wave boundaries, since it resets cache reuse.
 - **Service tier** comes from the session's options; the ledger records the tier each response actually ran at,
@@ -139,8 +142,12 @@ agent (a lane) in a role.
    the change from the plan: the only role that changes files under a plan, in the session's own workspace. It ends
    with `report` (done, or blocked with what it needs); once it reports done, the harness runs every check itself and
    sends it what fails, for up to three rounds.
-3. **Reviewer.** A read-only lane, focused on security, ending with `report`; high-severity findings go back to the
-   implementor for one round of fixes, and the rest are listed in the run's summary.
+3. **Reviewer.** Once the implementor reports the change done with every check passing, the reviewer, on a read-only
+   lane at high reasoning effort, is given its diff (from snapshots of the workspace before and after) and reads what
+   else it needs; it looks for security problems first, then the architecture's rules, then whether the change does
+   what the plan says, and ends with `submit_review`. High-severity findings go back to the implementor for one round
+   of fixes (held to the checks again); every finding is listed in the run's result. The orchestrator's own small
+   changes aren't reviewed.
 
 One implementor keeps the workflow simple: no file ownership, no copies of the workspace, nothing to merge. Building a
 plan's parts in parallel (an implementor per part, each in a copy-on-write copy of the workspace, with ownership or a

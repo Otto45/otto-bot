@@ -31,6 +31,7 @@ tree-sitter-rust = "0.24.2"
 globset = "0.4.21"
 tokio-tungstenite = { version = "0.28", features = ["rustls-tls-native-roots"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink"] }
+similar = "2"
 
 [lints.rust]
 unsafe_code = "forbid"

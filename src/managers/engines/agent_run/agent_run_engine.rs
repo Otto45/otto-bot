@@ -9,6 +9,7 @@ use tokio::sync::broadcast;
 use crate::managers::common::matchers::path_glob_matcher::PathGlobMatcher;
 use crate::managers::data_layer::data_facade::DataFacade;
 use crate::managers::engines::agent_run::processors::architecture_lint::architecture_lint_processor::ArchitectureLintProcessor;
+use crate::managers::engines::agent_run::processors::diff::diff_processor::DiffProcessor;
 use crate::managers::engines::agent_run::processors::patch::patch_processor::PatchProcessor;
 use crate::managers::engines::agent_run::processors::project_map::project_map_processor::ProjectMapProcessor;
 use crate::managers::engines::agent_run::processors::prompt::prompt_processor::PromptProcessor;
@@ -31,6 +32,7 @@ use crate::managers::models::agent_role::AgentRole;
 use crate::managers::models::agent_run_outcome::AgentRunOutcome;
 use crate::managers::models::check_result::CheckResult;
 use crate::managers::models::conversation_item::ConversationItem;
+use crate::managers::models::finding_severity::FindingSeverity;
 use crate::managers::models::format_result::FormatResult;
 use crate::managers::models::implementation_result::ImplementationResult;
 use crate::managers::models::lane_ending::LaneEnding;
@@ -44,6 +46,8 @@ use crate::managers::models::planned_component::PlannedComponent;
 use crate::managers::models::project_map_role::ProjectMapRole;
 use crate::managers::models::prompt_layer::PromptLayer;
 use crate::managers::models::report_status::ReportStatus;
+use crate::managers::models::review::Review;
+use crate::managers::models::review_finding::ReviewFinding;
 use crate::managers::models::run_context::RunContext;
 use crate::managers::models::run_summary::RunSummary;
 use crate::managers::models::scaffold_file::ScaffoldFile;
@@ -68,9 +72,10 @@ const SCAFFOLD: &str = "scaffold";
 // How many times the implementor, once it reports a plan done, is sent the checks that fail, before the build ends as
 // it is.
 const IMPLEMENTOR_ROUNDS: i64 = 3;
-// The lanes of the session's own agent, and of the implementor of its plans.
+// The lanes of the session's own agent, and of the implementor and the reviewer of its plans.
 const ORCHESTRATOR_LANE_NAME: &str = "orchestrator";
 const IMPLEMENTOR_LANE_NAME: &str = "implementor";
+const REVIEWER_LANE_NAME: &str = "reviewer";
 // The check the harness runs itself, before the pack's commands.
 const ARCHITECTURE_CHECK: &str = "architecture";
 
@@ -89,6 +94,7 @@ pub struct AgentRunEngine {
     architecture_lint_processor: Arc<ArchitectureLintProcessor>,
     scaffold_processor: Arc<ScaffoldProcessor>,
     work_plan_processor: Arc<WorkPlanProcessor>,
+    diff_processor: Arc<DiffProcessor>,
     max_turns: i64,
     check_timeout: Duration,
 }
@@ -106,6 +112,7 @@ impl AgentRunEngine {
         architecture_lint_processor: Arc<ArchitectureLintProcessor>,
         scaffold_processor: Arc<ScaffoldProcessor>,
         work_plan_processor: Arc<WorkPlanProcessor>,
+        diff_processor: Arc<DiffProcessor>,
         max_turns: i64,
         check_timeout: Duration,
     ) -> Self {
@@ -120,6 +127,7 @@ impl AgentRunEngine {
             architecture_lint_processor,
             scaffold_processor,
             work_plan_processor,
+            diff_processor,
             max_turns,
             check_timeout,
         }
@@ -158,7 +166,8 @@ impl AgentRunEngine {
 
     /// Builds the orchestrator's accepted plan: the harness scaffolds its components, then the implementor, on a lane of
     /// its own, builds the change. Once the implementor reports it done, the harness runs every check itself and sends
-    /// it what fails, for a few rounds; a blocked report ends the build as it is.
+    /// it what fails, for a few rounds; a blocked report ends the build as it is. A change that is done, with every
+    /// check passing, is reviewed, and what the review says must be fixed goes back to the implementor, once.
     pub async fn implement_plan(
         &self,
         session: &Session,
@@ -172,6 +181,8 @@ impl AgentRunEngine {
             workspace_directory: session.workspace_directory.clone(),
         };
         let workspace_directory: &Path = &agent_assignment.workspace_directory;
+        // The workspace before the change, which the review's diff is made against.
+        let before_change: Vec<WorkspaceFile> = self.snapshot_workspace(workspace_directory).await?;
         let (stack_pack, _): (Option<StackPack>, Option<String>) =
             self.detect_stack_pack(workspace_directory, data_facade).await?;
         let scaffold_outputs: Vec<String> = match stack_pack.as_ref() {
@@ -183,9 +194,8 @@ impl AgentRunEngine {
         };
 
         // The map is built after scaffolding, so what the scaffolds added shows in the note.
-        let (run_context, project_map_note): (RunContext, Option<ConversationItem>) = self
-            .prepare_implementor(session, &agent_assignment, data_facade)
-            .await?;
+        let (run_context, project_map_note): (RunContext, Option<ConversationItem>) =
+            self.prepare_assignment(session, &agent_assignment, data_facade).await?;
         let mut opening_items: Vec<ConversationItem> = Vec::with_capacity(2);
         opening_items.extend(project_map_note);
         opening_items.push(ConversationItem::UserMessage {
@@ -193,7 +203,81 @@ impl AgentRunEngine {
                 .tool_processor
                 .format_implementor_brief(work_plan, &scaffold_outputs),
         });
+        let (mut report, mut checks_passed, mut run_summary): (Option<AgentReport>, bool, RunSummary) = self
+            .run_implementor(
+                session,
+                &agent_assignment,
+                &run_context,
+                opening_items,
+                events,
+                data_facade,
+            )
+            .await?;
 
+        let done: bool = checks_passed
+            && report
+                .as_ref()
+                .is_some_and(|agent_report: &AgentReport| agent_report.status == ReportStatus::Done);
+        let diff: String = if done {
+            let after_change: Vec<WorkspaceFile> = self.snapshot_workspace(workspace_directory).await?;
+            self.diff_processor.diff(&before_change, &after_change)
+        } else {
+            String::new()
+        };
+        if diff.is_empty() {
+            return Ok(ImplementationResult {
+                report,
+                checks_passed,
+                review: None,
+                fixed_after_review: false,
+                run_summary,
+            });
+        }
+
+        let (review, review_summary): (Option<Review>, RunSummary) = self
+            .review_change(session, work_plan, &diff, events, data_facade)
+            .await?;
+        run_summary = run_summary.plus(review_summary);
+        let must_fix: bool = review.as_ref().is_some_and(|review: &Review| {
+            review
+                .findings
+                .iter()
+                .any(|finding: &ReviewFinding| finding.severity == FindingSeverity::High)
+        });
+        if must_fix && let Some(review) = review.as_ref() {
+            let fixes: Vec<ConversationItem> = vec![ConversationItem::HarnessNote {
+                text: self.tool_processor.format_review_fixes(review),
+            }];
+            let (fixed_report, fixed_checks_passed, fix_summary): (Option<AgentReport>, bool, RunSummary) = self
+                .run_implementor(session, &agent_assignment, &run_context, fixes, events, data_facade)
+                .await?;
+            report = fixed_report;
+            checks_passed = fixed_checks_passed;
+            run_summary = run_summary.plus(fix_summary);
+        }
+        Ok(ImplementationResult {
+            report,
+            checks_passed,
+            review,
+            fixed_after_review: must_fix,
+            run_summary,
+        })
+    }
+
+    // The implementor's rounds: it builds until it reports, then the harness runs every check, and sends it what fails,
+    // until every check passes, it reports itself blocked, or the rounds run out. Its last report, whether the checks
+    // passed, and what the rounds cost.
+    async fn run_implementor(
+        &self,
+        session: &Session,
+        agent_assignment: &AgentAssignment,
+        run_context: &RunContext,
+        opening_items: Vec<ConversationItem>,
+        events: &broadcast::Sender<SessionEvent>,
+        data_facade: &DataFacade,
+    ) -> ApplicationResult<(Option<AgentReport>, bool, RunSummary)> {
+        let workspace_directory: &Path = &agent_assignment.workspace_directory;
+        let mut opening_items: Vec<ConversationItem> = opening_items;
         let mut run_summary: Option<RunSummary> = None;
         let mut report: Option<AgentReport> = None;
         let mut checks_passed: bool = false;
@@ -201,8 +285,8 @@ impl AgentRunEngine {
             let agent_run_outcome: AgentRunOutcome = self
                 .run_lane(
                     session,
-                    &agent_assignment,
-                    &run_context,
+                    agent_assignment,
+                    run_context,
                     opening_items,
                     events,
                     data_facade,
@@ -214,7 +298,7 @@ impl AgentRunEngine {
             });
             report = match agent_run_outcome.lane_ending {
                 Some(LaneEnding::Reported(agent_report)) => Some(agent_report),
-                Some(LaneEnding::PlanAccepted(_)) | None => None,
+                Some(LaneEnding::PlanAccepted(_)) | Some(LaneEnding::Reviewed(_)) | None => None,
             };
 
             let Some(stack_pack) = run_context.stack_pack.as_ref() else {
@@ -238,11 +322,69 @@ impl AgentRunEngine {
                     .format_implementor_failures(&format_result, &check_results),
             }];
         }
-        Ok(ImplementationResult {
-            report,
-            checks_passed,
-            run_summary: run_summary.expect("the first round always runs"),
-        })
+        Ok((report, checks_passed, run_summary.expect("the first round always runs")))
+    }
+
+    // The reviewer, on a lane of its own, reads the change (its diff, and whatever else it needs) and ends with its
+    // review; none if it ended without one.
+    async fn review_change(
+        &self,
+        session: &Session,
+        work_plan: &WorkPlan,
+        diff: &str,
+        events: &broadcast::Sender<SessionEvent>,
+        data_facade: &DataFacade,
+    ) -> ApplicationResult<(Option<Review>, RunSummary)> {
+        let agent_assignment: AgentAssignment = AgentAssignment {
+            lane_name: REVIEWER_LANE_NAME.to_string(),
+            role: AgentRole::Reviewer,
+            workspace_directory: session.workspace_directory.clone(),
+        };
+        let (run_context, project_map_note): (RunContext, Option<ConversationItem>) =
+            self.prepare_assignment(session, &agent_assignment, data_facade).await?;
+        let mut opening_items: Vec<ConversationItem> = Vec::with_capacity(2);
+        opening_items.extend(project_map_note);
+        opening_items.push(ConversationItem::UserMessage {
+            text: self.tool_processor.format_review_brief(work_plan, diff),
+        });
+        let agent_run_outcome: AgentRunOutcome = self
+            .run_lane(
+                session,
+                &agent_assignment,
+                &run_context,
+                opening_items,
+                events,
+                data_facade,
+            )
+            .await?;
+        let review: Option<Review> = match agent_run_outcome.lane_ending {
+            Some(LaneEnding::Reviewed(review)) => Some(review),
+            Some(LaneEnding::PlanAccepted(_)) | Some(LaneEnding::Reported(_)) | None => None,
+        };
+        Ok((review, agent_run_outcome.run_summary))
+    }
+
+    // Every text file of the workspace (what .gitignore ignores left out), as it is now. A file that isn't text, or is
+    // protected (.env files), isn't part of it.
+    async fn snapshot_workspace(&self, workspace_directory: &Path) -> ApplicationResult<Vec<WorkspaceFile>> {
+        let paths: Vec<String> = self.workspace_gateway.list_files(workspace_directory, ".").await?;
+        let mut workspace_files: Vec<WorkspaceFile> = Vec::with_capacity(paths.len());
+        for path in &paths {
+            match self.workspace_gateway.read_file(workspace_directory, path).await {
+                Ok(workspace_file) => workspace_files.push(workspace_file),
+                Err(exception)
+                    if matches!(
+                        exception.kind(),
+                        ExceptionKind::WorkspaceGateway(
+                            WorkspaceGatewayException::NotTextFile
+                                | WorkspaceGatewayException::ProtectedFile
+                                | WorkspaceGatewayException::FileNotFound
+                        )
+                    ) => {}
+                Err(exception) => return Err(exception),
+            }
+        }
+        Ok(workspace_files)
     }
 
     // Scaffolds the plan's components, and reports each as the harness's own use of the scaffold tool. A component that can't be scaffolded after all (its plan checked out) is
@@ -333,11 +475,11 @@ impl AgentRunEngine {
         Ok((run_context, project_map_note))
     }
 
-    // The implementor's run context. Its requests open with the orchestrator's kept map, whose layer is cached already,
-    // and a note of what changed since it was built (the plan's scaffolds, for one), unless there is so much that a map
-    // of the workspace as it is now is the better layer. Nothing is kept: the orchestrator's notes still start from its
-    // own last run.
-    async fn prepare_implementor(
+    // The implementor's or the reviewer's run context. Its requests open with the orchestrator's kept map, whose layer is
+    // cached already, and a note of what changed since it was built (the plan's scaffolds and change, for one), unless
+    // there is so much that a map of the workspace as it is now is the better layer. Nothing is kept: the orchestrator's
+    // notes still start from its own last run.
+    async fn prepare_assignment(
         &self,
         session: &Session,
         agent_assignment: &AgentAssignment,
@@ -674,6 +816,7 @@ impl AgentRunEngine {
                                 Some(LaneEnding::PlanAccepted(work_plan.clone()))
                             }
                             ToolRequest::Report { agent_report } => Some(LaneEnding::Reported(agent_report.clone())),
+                            ToolRequest::SubmitReview { review } => Some(LaneEnding::Reviewed(review.clone())),
                             _ => None,
                         };
                         (
@@ -804,6 +947,7 @@ impl AgentRunEngine {
                 }
             }
             ToolRequest::Report { .. } => Ok(("Reported.".to_string(), true)),
+            ToolRequest::SubmitReview { .. } => Ok(("Review received.".to_string(), true)),
             ToolRequest::SubmitPlan { work_plan } => {
                 match self.check_work_plan(agent_assignment, run_context, work_plan).await {
                     Ok(()) => Ok((self.tool_processor.format_plan_accepted(work_plan), true)),

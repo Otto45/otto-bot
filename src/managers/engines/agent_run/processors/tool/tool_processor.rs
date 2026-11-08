@@ -6,9 +6,11 @@ use crate::managers::engines::agent_run::processors::tool::tool_arguments::list_
 use crate::managers::engines::agent_run::processors::tool::tool_arguments::planned_component_arguments::PlannedComponentArguments;
 use crate::managers::engines::agent_run::processors::tool::tool_arguments::read_files_arguments::ReadFilesArguments;
 use crate::managers::engines::agent_run::processors::tool::tool_arguments::report_arguments::ReportArguments;
+use crate::managers::engines::agent_run::processors::tool::tool_arguments::review_finding_arguments::ReviewFindingArguments;
 use crate::managers::engines::agent_run::processors::tool::tool_arguments::scaffold_arguments::ScaffoldArguments;
 use crate::managers::engines::agent_run::processors::tool::tool_arguments::search_arguments::SearchArguments;
 use crate::managers::engines::agent_run::processors::tool::tool_arguments::submit_plan_arguments::SubmitPlanArguments;
+use crate::managers::engines::agent_run::processors::tool::tool_arguments::submit_review_arguments::SubmitReviewArguments;
 use crate::managers::exceptions::agent_run_engine_exception::AgentRunEngineException;
 use crate::managers::exceptions::application_base_exception::{ApplicationBaseException, ApplicationResult};
 use crate::managers::exceptions::contextual_data::ContextualData;
@@ -16,10 +18,13 @@ use crate::managers::models::agent_report::AgentReport;
 use crate::managers::models::agent_role::AgentRole;
 use crate::managers::models::check_result::CheckResult;
 use crate::managers::models::conversation_item::ConversationItem;
+use crate::managers::models::finding_severity::FindingSeverity;
 use crate::managers::models::format_result::FormatResult;
 use crate::managers::models::lint_violation::LintViolation;
 use crate::managers::models::planned_component::PlannedComponent;
 use crate::managers::models::report_status::ReportStatus;
+use crate::managers::models::review::Review;
+use crate::managers::models::review_finding::ReviewFinding;
 use crate::managers::models::search_match::SearchMatch;
 use crate::managers::models::tool_call_kind::ToolCallKind;
 use crate::managers::models::tool_call_reference::ToolCallReference;
@@ -35,6 +40,7 @@ const RUN_CHECKS: &str = "run_checks";
 const SCAFFOLD: &str = "scaffold";
 const SUBMIT_PLAN: &str = "submit_plan";
 const REPORT: &str = "report";
+const SUBMIT_REVIEW: &str = "submit_review";
 // The API's own tool, offered with the function tools to every role.
 const APPLY_PATCH: &str = "apply_patch";
 // What a failed check prints is cut to its end, where compilers and linters say what is wrong.
@@ -197,6 +203,39 @@ impl ToolProcessor {
                     "additionalProperties": false,
                 }),
             },
+            ToolDefinition {
+                name: SUBMIT_REVIEW.to_string(),
+                description: "End your review with what you found wrong with the change, most severe first; no \
+                              findings when it is sound."
+                    .to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "summary": { "type": "string", "description": "Your verdict, in a line or two" },
+                        "findings": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "severity": {
+                                        "type": "string",
+                                        "enum": ["high", "medium", "low"],
+                                        "description": "high: must be fixed before it ships (a security hole, a broken \
+                                                        architecture rule, a bug); medium or low: worth fixing later",
+                                    },
+                                    "path": { "type": "string", "description": "The file it is in" },
+                                    "problem": { "type": "string" },
+                                    "fix": { "type": "string", "description": "What would put it right" },
+                                },
+                                "required": ["severity", "path", "problem", "fix"],
+                                "additionalProperties": false,
+                            },
+                        },
+                    },
+                    "required": ["summary", "findings"],
+                    "additionalProperties": false,
+                }),
+            },
         ]
     }
 
@@ -204,7 +243,7 @@ impl ToolProcessor {
     /// cached prefix is shared, and restricted to these.
     pub fn get_allowed_tool_names(&self, agent_role: AgentRole) -> Vec<String> {
         let tool_names: &[&str] = match agent_role {
-            // Everything but report, which ends the implementor's and the reviewer's assignments.
+            // Everything but report and submit_review, which end the implementor's and the reviewer's assignments.
             AgentRole::Orchestrator => &[
                 READ_FILES,
                 LIST_FILES,
@@ -214,7 +253,7 @@ impl ToolProcessor {
                 SUBMIT_PLAN,
                 APPLY_PATCH,
             ],
-            // Everything but submit_plan: it builds the plan it was given.
+            // It builds the plan it was given, and reports on it.
             AgentRole::Implementor => &[
                 READ_FILES,
                 LIST_FILES,
@@ -224,7 +263,7 @@ impl ToolProcessor {
                 APPLY_PATCH,
                 REPORT,
             ],
-            AgentRole::Reviewer => &[READ_FILES, LIST_FILES, SEARCH, REPORT],
+            AgentRole::Reviewer => &[READ_FILES, LIST_FILES, SEARCH, SUBMIT_REVIEW],
         };
         tool_names
             .iter()
@@ -301,6 +340,13 @@ impl ToolProcessor {
                     )),
                 }
             }
+            SUBMIT_REVIEW => {
+                let submit_review_arguments: SubmitReviewArguments = ToolProcessor::parse_arguments(name, arguments)?;
+                Ok(ToolRequest::SubmitReview {
+                    review: ToolProcessor::to_review(submit_review_arguments)
+                        .map_err(|reason: String| ToolProcessor::to_invalid_tool_call(name, &reason))?,
+                })
+            }
             SUBMIT_PLAN => {
                 let submit_plan_arguments: SubmitPlanArguments = ToolProcessor::parse_arguments(name, arguments)?;
                 Ok(ToolRequest::SubmitPlan {
@@ -368,6 +414,7 @@ impl ToolProcessor {
                 None => format!("{kind} {name}"),
             },
             ToolRequest::Report { agent_report } => agent_report.status.name().to_string(),
+            ToolRequest::SubmitReview { review } => format!("{} findings", review.findings.len()),
             ToolRequest::SubmitPlan { work_plan } => format!(
                 "{} components, {} steps",
                 work_plan.components.len(),
@@ -413,6 +460,34 @@ impl ToolProcessor {
             "The change isn't done: not every check passes:\n\n{}\n\nFix it, run the checks again, and report \
              again.",
             self.format_checks_run(format_result, check_results)
+        )
+    }
+
+    /// What the reviewer is asked: the change's plan, and what it did to the workspace.
+    pub fn format_review_brief(&self, work_plan: &WorkPlan, diff: &str) -> String {
+        format!(
+            "Review this change. Its plan: {}\n\nWhat it did to the workspace:\n\n```diff\n{}```\n\nRead whatever else you \
+             need to judge it, in one call. Look, most severe first, for: security (secrets in code or logs, injection, \
+             unchecked input, an error that leaks internals to a client), the architecture's rules, and whether it does \
+             what the plan says. The checks (formatting, lint, the architecture lint, the contract) already pass, so \
+             don't report what they catch. End with submit_review.",
+            work_plan.summary.trim(),
+            diff
+        )
+    }
+
+    /// What the implementor is told to fix: the review's findings that must be fixed before the change ships.
+    pub fn format_review_fixes(&self, review: &Review) -> String {
+        let high_findings: Vec<String> = review
+            .findings
+            .iter()
+            .filter(|finding: &&ReviewFinding| finding.severity == FindingSeverity::High)
+            .map(|finding: &ReviewFinding| format!("{}: {} Fix: {}", finding.path, finding.problem, finding.fix))
+            .collect();
+        format!(
+            "The reviewer found what must be fixed before the change ships:\n{}\n\nFix these, run the checks, and report \
+             again.",
+            ToolProcessor::to_bullets(&high_findings)
         )
     }
 
@@ -589,6 +664,41 @@ impl ToolProcessor {
             "[... {} characters before this]\n{kept}",
             char_count - MAX_CHECK_OUTPUT_CHARS
         )
+    }
+
+    // The review as the model wrote it, most severe findings first; what is missing is the reason the call is invalid.
+    fn to_review(submit_review_arguments: SubmitReviewArguments) -> Result<Review, String> {
+        let mut findings: Vec<ReviewFinding> = submit_review_arguments
+            .findings
+            .unwrap_or_default()
+            .into_iter()
+            .enumerate()
+            .map(|(index, finding): (usize, ReviewFindingArguments)| {
+                match (
+                    finding.severity.as_deref().and_then(FindingSeverity::from_name),
+                    finding.problem,
+                ) {
+                    (Some(severity), Some(problem)) => Ok(ReviewFinding {
+                        severity,
+                        path: finding.path.unwrap_or_default(),
+                        problem,
+                        fix: finding.fix.unwrap_or_default(),
+                    }),
+                    _ => Err(format!(
+                        "findings[{index}] needs a severity (high, medium or low) and a problem"
+                    )),
+                }
+            })
+            .collect::<Result<Vec<ReviewFinding>, String>>()?;
+        findings.sort_by_key(|finding: &ReviewFinding| match finding.severity {
+            FindingSeverity::High => 0,
+            FindingSeverity::Medium => 1,
+            FindingSeverity::Low => 2,
+        });
+        Ok(Review {
+            summary: submit_review_arguments.summary.unwrap_or_default(),
+            findings,
+        })
     }
 
     // The plan as the model wrote it; what is missing is the reason the call is invalid. Whether the plan holds up is

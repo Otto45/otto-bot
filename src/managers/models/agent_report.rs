@@ -1,6 +1,6 @@
 use crate::managers::models::report_status::ReportStatus;
 
-/// What the implementor or the reviewer says when its assignment ends: terse, for the person and the orchestrator.
+/// What the implementor says when its build of a plan ends: terse, for the person and the orchestrator.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentReport {
     pub status: ReportStatus,

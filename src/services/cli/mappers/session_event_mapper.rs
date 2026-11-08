@@ -83,6 +83,20 @@ impl SessionEventMapper {
         {
             output.push_str(&format!("  needs: {need}\n"));
         }
+        if let Some(review) = implementation_result.review.as_ref() {
+            output.push_str(&format!("reviewer: {}\n", review.summary.trim()));
+            for finding in &review.findings {
+                output.push_str(&format!(
+                    "  [{}] {}: {}\n",
+                    finding.severity.name(),
+                    finding.path,
+                    finding.problem.trim()
+                ));
+            }
+            if implementation_result.fixed_after_review {
+                output.push_str("  (the implementor was sent the high-severity findings to fix)\n");
+            }
+        }
         output
     }
 
