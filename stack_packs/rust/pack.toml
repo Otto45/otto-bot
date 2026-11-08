@@ -131,53 +131,17 @@ exclude = ["**/mod.rs", "src/lib.rs", "**/main.rs", "src/bin/**"]
 [scaffold]
 kinds = "scaffolds"
 
-# The formatter. The harness runs it before every run of the checks and after a scaffold, so no agent formats code by
-# hand (or spends a turn on a format check), and tells the agent which of the `sources` it changed.
+# The formatters: commands that rewrite files into the form the checks expect, the code's formatting and the generated
+# OpenAPI contract. The harness runs them, in order, before every run of the checks and after a scaffold, so no agent
+# formats code or regenerates the contract by hand (or spends a turn on a check of either), and tells the agent which of
+# the `sources` they changed.
 [format]
-command = ["cargo", "fmt"]
-sources = ["src/**/*.rs"]
+commands = [["cargo", "fmt"], ["cargo", "run", "--quiet", "--bin", "export-openapi"]]
+sources = ["src/**/*.rs", "openapi.json"]
 
 [detect]
 # A project is a Rust app when its root has all of these.
 files = ["Cargo.toml"]
-
-# How an app divides among agents (docs/DESIGN.md, "Implementing a feature"): a work plan gives each worker files that
-# match `workers` and not `orchestrator`. The orchestrator writes everything `orchestrator` matches: the wiring every
-# component is registered in (module files, the service locator, the facades, the data manager), the contracts the
-# workers build against (models, exceptions, settings), and the managers, whose methods are short coordinations of the
-# workers' components.
-[layout]
-orchestrator = [
-    "Cargo.toml",
-    "Cargo.lock",
-    "src/lib.rs",
-    "src/main.rs",
-    "src/bin/**",
-    "src/**/mod.rs",
-    "src/*_facade.rs",
-    "src/managers/*_manager.rs",
-    "src/managers/service_locator/**",
-    "src/managers/models/**",
-    "src/managers/exceptions/**",
-    "src/managers/configuration_providers/**",
-    "src/managers/logger/**",
-    "src/managers/data_layer/data_facade.rs",
-    "src/managers/data_layer/managers/data_manager.rs",
-]
-workers = [
-    "src/managers/processors/**",
-    "src/managers/engines/**",
-    "src/managers/gateways/**",
-    "src/managers/common/**",
-    "src/managers/runtime/**",
-    "src/managers/data_layer/managers/gateways/**",
-    "src/services/**",
-    "migrations/*.sql",
-    "openapi.json",
-]
-# How the skeleton writes a function a package is to build, so that it passes every check before it is built: what
-# only a body would use is dead code until the body is written, which fails the lint.
-placeholder = "a body of `todo!()`, with each parameter named with a leading underscore (`_customer_id`), since an unused parameter fails the lint; the worker removes the underscores as it writes the body. Leave out what only a body would use (a private helper, a struct field, an enum variant or a query no signature needs): it is dead code until the body is written, which fails the lint, so the package's worker adds it"
 
 # The checks every change passes, run from the app's root, in order.
 [[checks]]

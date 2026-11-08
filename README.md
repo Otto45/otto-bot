@@ -9,11 +9,9 @@ works in a workspace: it reads, lists and searches files, edits them with `apply
 checks, remembering the whole session. Every request opens with cached layers (the stack's rules, then the workspace's
 project map), and goes over a WebSocket connection that sends only what is new. The checks include an architecture lint
 of the stack pack's rules, and new components (processors, engines, models) are scaffolded and wired in without the
-model. Agents run in roles (the orchestrator, workers that own files, a reviewer) on lanes of their own. The
-orchestrator plans a change too big to build alone (`submit_plan`, checked against the stack pack's layout) and does a
-small one itself. For a plan, the harness scaffolds its components and the orchestrator writes the contracts, until
-every check passes (the skeleton); the workers, integration and review are being built (step 4), and the other stack
-packs come next.
+model. Agents run in roles on lanes of their own: the orchestrator (the session's own agent) makes a small change
+itself and plans a bigger one (`submit_plan`); the harness scaffolds the plan's components and the implementor builds
+it, until every check passes. The reviewer is being built (step 4), and the other stack packs come next.
 
 ## What you need
 
@@ -55,6 +53,7 @@ cargo clippy --all-targets -- -D warnings
 | `OTTO_BOT_SERVICE_TIER` | `standard` (`standard`, `fast` or `ultrafast`; `--service-tier` overrides it) |
 | `OTTO_BOT_OPENAI_BASE_URL` | `https://api.openai.com/v1` |
 | `OTTO_BOT_OPENAI_TIMEOUT_SECONDS` | `600` |
+| `OTTO_BOT_OPENAI_IDLE_TIMEOUT_SECONDS` | `120` (WebSocket: a response silent this long has stalled, and is sent again on a fresh connection) |
 | `OTTO_BOT_OPENAI_TRANSPORT` | `websocket` (a connection per session that sends only what's new each turn; or `http`) |
 | `OTTO_BOT_HOME` | `~/.otto-bot` |
 | `OTTO_BOT_STACK_PACKS_DIRECTORY` | this checkout's `stack_packs/` |

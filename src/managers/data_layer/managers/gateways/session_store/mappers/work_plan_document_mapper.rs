@@ -1,10 +1,8 @@
 use chrono::{DateTime, SecondsFormat, Utc};
 
 use crate::managers::data_layer::managers::gateways::session_store::resource_models::planned_component_document::PlannedComponentDocument;
-use crate::managers::data_layer::managers::gateways::session_store::resource_models::work_package_document::WorkPackageDocument;
 use crate::managers::data_layer::managers::gateways::session_store::resource_models::work_plan_document::WorkPlanDocument;
 use crate::managers::models::planned_component::PlannedComponent;
-use crate::managers::models::work_package::WorkPackage;
 use crate::managers::models::work_plan::WorkPlan;
 
 pub struct WorkPlanDocumentMapper;
@@ -25,17 +23,7 @@ impl WorkPlanDocumentMapper {
                     })
                     .collect(),
             ),
-            packages: Some(
-                work_plan
-                    .packages
-                    .iter()
-                    .map(|work_package: &WorkPackage| WorkPackageDocument {
-                        name: Some(work_package.name.clone()),
-                        brief: Some(work_package.brief.clone()),
-                        owned_paths: Some(work_package.owned_paths.clone()),
-                    })
-                    .collect(),
-            ),
+            steps: Some(work_plan.steps.clone()),
             accepted_on: Some(accepted_on.to_rfc3339_opts(SecondsFormat::Millis, true)),
         }
     }

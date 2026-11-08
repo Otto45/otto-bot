@@ -2,10 +2,10 @@
 /// restricted by which of them it may call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentRole {
-    /// The session's agent: does a small job itself, and plans, skeletons and integrates a bigger one.
+    /// The session's agent: makes a small change itself, and plans a bigger one for the implementor.
     Orchestrator,
-    /// Builds one work package, patching only the files it owns.
-    Worker,
+    /// Builds the orchestrator's plan: the only role that changes files under a plan.
+    Implementor,
     /// Reads the change and reports what is wrong with it; changes nothing.
     Reviewer,
 }
@@ -14,7 +14,7 @@ impl AgentRole {
     pub fn name(self) -> &'static str {
         match self {
             AgentRole::Orchestrator => "orchestrator",
-            AgentRole::Worker => "worker",
+            AgentRole::Implementor => "implementor",
             AgentRole::Reviewer => "reviewer",
         }
     }

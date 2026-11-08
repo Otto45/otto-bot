@@ -52,16 +52,8 @@ pub struct ScaffoldResource {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct FormatResource {
-    pub command: Option<Vec<String>>,
+    pub commands: Option<Vec<Vec<String>>>,
     pub sources: Option<Vec<String>>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default)]
-pub struct LayoutResource {
-    pub orchestrator: Option<Vec<String>>,
-    pub workers: Option<Vec<String>>,
-    pub placeholder: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -76,5 +68,4 @@ pub struct StackPackManifestResource {
     pub project_map: Option<ProjectMapResource>,
     pub lint: Option<LintResource>,
     pub scaffold: Option<ScaffoldResource>,
-    pub layout: Option<LayoutResource>,
 }

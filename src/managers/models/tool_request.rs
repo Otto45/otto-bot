@@ -1,3 +1,4 @@
+use crate::managers::models::agent_report::AgentReport;
 use crate::managers::models::work_plan::WorkPlan;
 
 /// A function tool call, read: what the model asked the harness to do.
@@ -21,5 +22,8 @@ pub enum ToolRequest {
     },
     SubmitPlan {
         work_plan: WorkPlan,
+    },
+    Report {
+        agent_report: AgentReport,
     },
 }

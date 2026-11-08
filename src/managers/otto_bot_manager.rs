@@ -15,6 +15,8 @@ use crate::managers::gateways::workspace::workspace_gateway::WorkspaceGateway;
 use crate::managers::logger::application_logger::ApplicationLogger;
 use crate::managers::logger::log_level::LogLevel;
 use crate::managers::models::agent_run_outcome::AgentRunOutcome;
+use crate::managers::models::implementation_result::ImplementationResult;
+use crate::managers::models::lane_ending::LaneEnding;
 use crate::managers::models::run_summary::RunSummary;
 use crate::managers::models::session::Session;
 use crate::managers::models::session_event::SessionEvent;
@@ -178,7 +180,7 @@ impl OttoBotManager {
     }
 
     // The orchestrator runs on the request, and either does it or plans it. An accepted plan is kept and reported, and
-    // carried out: its skeleton first.
+    // built by the implementor.
     async fn run_request(
         agent_run_engine: &AgentRunEngine,
         session: &Session,
@@ -188,7 +190,7 @@ impl OttoBotManager {
     ) -> ApplicationResult<RunSummary> {
         let agent_run_outcome: AgentRunOutcome =
             agent_run_engine.run(session, user_request, events, data_facade).await?;
-        let Some(work_plan) = agent_run_outcome.work_plan else {
+        let Some(LaneEnding::PlanAccepted(work_plan)) = agent_run_outcome.lane_ending else {
             return Ok(agent_run_outcome.run_summary);
         };
         data_facade.append_work_plan(&session.id, &work_plan).await?;
@@ -198,11 +200,14 @@ impl OttoBotManager {
             })
             .ok();
 
-        let skeleton_summary: RunSummary = agent_run_engine
-            .build_skeleton(session, &work_plan, events, data_facade)
+        let implementation_result: ImplementationResult = agent_run_engine
+            .implement_plan(session, &work_plan, events, data_facade)
             .await?;
-        events.send(SessionEvent::SkeletonBuilt).ok();
-        Ok(agent_run_outcome.run_summary.plus(skeleton_summary))
+        let run_summary: RunSummary = agent_run_outcome.run_summary.plus(implementation_result.run_summary);
+        events
+            .send(SessionEvent::PlanImplemented { implementation_result })
+            .ok();
+        Ok(run_summary)
     }
 
     // Reports the end of a run that could not report it itself: cancelled, or stopped by a panic (which the panic

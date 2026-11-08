@@ -1,4 +1,4 @@
-/// A component a work plan has the harness scaffold before the workers start: one of the stack's scaffold kinds.
+/// A component a work plan has the harness scaffold before the implementor starts: one of the stack's scaffold kinds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlannedComponent {
     pub kind: String,

@@ -1,3 +1,5 @@
+use crate::managers::models::agent_report::AgentReport;
+use crate::managers::models::implementation_result::ImplementationResult;
 use crate::managers::models::run_summary::RunSummary;
 use crate::managers::models::service_tier::ServiceTier;
 use crate::managers::models::session_event::SessionEvent;
@@ -29,7 +31,9 @@ impl SessionEventMapper {
                 ))
             }
             SessionEvent::PlanAccepted { work_plan } => Some(SessionEventMapper::to_plan_output(work_plan)),
-            SessionEvent::SkeletonBuilt => Some("\nskeleton ready: every check passes\n".to_string()),
+            SessionEvent::PlanImplemented { implementation_result } => {
+                Some(SessionEventMapper::to_implementation_output(implementation_result))
+            }
             SessionEvent::RunCompleted { run_summary } => {
                 Some(format!("\n{}\n\n", SessionEventMapper::to_summary_line(run_summary)))
             }
@@ -52,13 +56,32 @@ impl SessionEventMapper {
                 None => output.push_str(&format!("  + {} {}\n", planned_component.kind, planned_component.name)),
             }
         }
-        for work_package in &work_plan.packages {
-            output.push_str(&format!(
-                "  [{}] {}\n      {}\n",
-                work_package.name,
-                work_package.brief.trim(),
-                work_package.owned_paths.join(", ")
-            ));
+        for (index, step) in work_plan.steps.iter().enumerate() {
+            output.push_str(&format!("  {}. {}\n", index + 1, step.trim()));
+        }
+        output
+    }
+
+    fn to_implementation_output(implementation_result: &ImplementationResult) -> String {
+        let checks: &str = if implementation_result.checks_passed {
+            "checks pass"
+        } else {
+            "checks fail"
+        };
+        let mut output: String = match implementation_result.report.as_ref() {
+            Some(agent_report) => format!(
+                "\nimplementor: {} ({checks}): {}\n",
+                agent_report.status.name(),
+                agent_report.summary.trim()
+            ),
+            None => format!("\nimplementor: ended without a report ({checks})\n"),
+        };
+        for need in implementation_result
+            .report
+            .iter()
+            .flat_map(|agent_report: &AgentReport| agent_report.needs.iter())
+        {
+            output.push_str(&format!("  needs: {need}\n"));
         }
         output
     }

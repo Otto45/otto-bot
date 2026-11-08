@@ -5,25 +5,26 @@ use crate::managers::engines::agent_run::processors::tool::redactors::secret_red
 use crate::managers::engines::agent_run::processors::tool::tool_arguments::list_files_arguments::ListFilesArguments;
 use crate::managers::engines::agent_run::processors::tool::tool_arguments::planned_component_arguments::PlannedComponentArguments;
 use crate::managers::engines::agent_run::processors::tool::tool_arguments::read_files_arguments::ReadFilesArguments;
+use crate::managers::engines::agent_run::processors::tool::tool_arguments::report_arguments::ReportArguments;
 use crate::managers::engines::agent_run::processors::tool::tool_arguments::scaffold_arguments::ScaffoldArguments;
 use crate::managers::engines::agent_run::processors::tool::tool_arguments::search_arguments::SearchArguments;
 use crate::managers::engines::agent_run::processors::tool::tool_arguments::submit_plan_arguments::SubmitPlanArguments;
-use crate::managers::engines::agent_run::processors::tool::tool_arguments::work_package_arguments::WorkPackageArguments;
 use crate::managers::exceptions::agent_run_engine_exception::AgentRunEngineException;
 use crate::managers::exceptions::application_base_exception::{ApplicationBaseException, ApplicationResult};
 use crate::managers::exceptions::contextual_data::ContextualData;
+use crate::managers::models::agent_report::AgentReport;
 use crate::managers::models::agent_role::AgentRole;
 use crate::managers::models::check_result::CheckResult;
 use crate::managers::models::conversation_item::ConversationItem;
 use crate::managers::models::format_result::FormatResult;
 use crate::managers::models::lint_violation::LintViolation;
 use crate::managers::models::planned_component::PlannedComponent;
+use crate::managers::models::report_status::ReportStatus;
 use crate::managers::models::search_match::SearchMatch;
 use crate::managers::models::tool_call_kind::ToolCallKind;
 use crate::managers::models::tool_call_reference::ToolCallReference;
 use crate::managers::models::tool_definition::ToolDefinition;
 use crate::managers::models::tool_request::ToolRequest;
-use crate::managers::models::work_package::WorkPackage;
 use crate::managers::models::work_plan::WorkPlan;
 use crate::managers::models::workspace_file::WorkspaceFile;
 
@@ -33,6 +34,7 @@ const SEARCH: &str = "search";
 const RUN_CHECKS: &str = "run_checks";
 const SCAFFOLD: &str = "scaffold";
 const SUBMIT_PLAN: &str = "submit_plan";
+const REPORT: &str = "report";
 // The API's own tool, offered with the function tools to every role.
 const APPLY_PATCH: &str = "apply_patch";
 // What a failed check prints is cut to its end, where compilers and linters say what is wrong.
@@ -131,9 +133,9 @@ impl ToolProcessor {
             },
             ToolDefinition {
                 name: SUBMIT_PLAN.to_string(),
-                description: "Plan a change too big to build well alone, instead of building it: the harness checks \
-                              the plan, scaffolds its components, has you write the contracts, then starts one worker \
-                              per package, all at the same time. Call it before you change any file."
+                description: "Plan a change too big to make well yourself, instead of making it: the harness checks \
+                              the plan and scaffolds its components, then the implementor builds it. Call it before you \
+                              change any file."
                     .to_string(),
                 parameters: json!({
                     "type": "object",
@@ -146,7 +148,7 @@ impl ToolProcessor {
                         },
                         "components": {
                             "type": "array",
-                            "description": "Every new component, to be scaffolded before the workers start",
+                            "description": "Every new component, to be scaffolded before the implementor starts",
                             "items": {
                                 "type": "object",
                                 "properties": {
@@ -161,31 +163,37 @@ impl ToolProcessor {
                                 "additionalProperties": false,
                             },
                         },
-                        "packages": {
+                        "steps": {
                             "type": "array",
-                            "description": "At least two packages, each built by its own worker at the same time as \
-                                            the others; a package owns the files only it changes",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "name": { "type": "string", "description": "snake_case" },
-                                    "brief": {
-                                        "type": "string",
-                                        "description": "What the worker builds, and against which contracts: what \
-                                                        it needs to know beyond its files and the project map",
-                                    },
-                                    "owned_paths": {
-                                        "type": "array",
-                                        "items": { "type": "string" },
-                                        "description": "The files only this package changes, new or existing",
-                                    },
-                                },
-                                "required": ["name", "brief", "owned_paths"],
-                                "additionalProperties": false,
-                            },
+                            "items": { "type": "string" },
+                            "description": "How the implementor builds the change, in order: each step what to build, \
+                                            where, and against what (signatures, fields, the files it touches)",
                         },
                     },
-                    "required": ["summary", "assumptions", "components", "packages"],
+                    "required": ["summary", "assumptions", "components", "steps"],
+                    "additionalProperties": false,
+                }),
+            },
+            ToolDefinition {
+                name: REPORT.to_string(),
+                description: "End your assignment with a terse report: done (your part is built and run_checks \
+                              passes), or blocked (it can't be finished without a change you may not make)."
+                    .to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "status": { "type": "string", "enum": ["done", "blocked"] },
+                        "summary": {
+                            "type": "string",
+                            "description": "What you built and anything you decided on your own, in a few lines",
+                        },
+                        "needs": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "Each change you need but may not make: which file, what, and why",
+                        },
+                    },
+                    "required": ["status", "summary", "needs"],
                     "additionalProperties": false,
                 }),
             },
@@ -194,28 +202,41 @@ impl ToolProcessor {
 
     /// The tools the role may call, by name; none when it may call every tool. Every role is sent every tool, so the
     /// cached prefix is shared, and restricted to these.
-    pub fn get_allowed_tool_names(&self, agent_role: AgentRole, may_plan: bool) -> Option<Vec<String>> {
+    pub fn get_allowed_tool_names(&self, agent_role: AgentRole) -> Vec<String> {
         let tool_names: &[&str] = match agent_role {
-            AgentRole::Orchestrator if may_plan => return None,
-            // Carrying its plan out: the plan's components are scaffolded, and it writes the contracts and the
-            // coordinations.
-            AgentRole::Orchestrator => &[READ_FILES, LIST_FILES, SEARCH, RUN_CHECKS, APPLY_PATCH],
-            // A worker's components were scaffolded with the skeleton; it writes their logic.
-            AgentRole::Worker => &[READ_FILES, LIST_FILES, SEARCH, RUN_CHECKS, APPLY_PATCH],
-            AgentRole::Reviewer => &[READ_FILES, LIST_FILES, SEARCH],
+            // Everything but report, which ends the implementor's and the reviewer's assignments.
+            AgentRole::Orchestrator => &[
+                READ_FILES,
+                LIST_FILES,
+                SEARCH,
+                RUN_CHECKS,
+                SCAFFOLD,
+                SUBMIT_PLAN,
+                APPLY_PATCH,
+            ],
+            // Everything but submit_plan: it builds the plan it was given.
+            AgentRole::Implementor => &[
+                READ_FILES,
+                LIST_FILES,
+                SEARCH,
+                RUN_CHECKS,
+                SCAFFOLD,
+                APPLY_PATCH,
+                REPORT,
+            ],
+            AgentRole::Reviewer => &[READ_FILES, LIST_FILES, SEARCH, REPORT],
         };
-        Some(
-            tool_names
-                .iter()
-                .map(|tool_name: &&str| tool_name.to_string())
-                .collect(),
-        )
+        tool_names
+            .iter()
+            .map(|tool_name: &&str| tool_name.to_string())
+            .collect()
     }
 
     /// Whether the role may call the tool: the model is told which it may, and the harness holds it to that too.
-    pub fn is_tool_allowed(&self, agent_role: AgentRole, may_plan: bool, tool_name: &str) -> bool {
-        self.get_allowed_tool_names(agent_role, may_plan)
-            .is_none_or(|tool_names: Vec<String>| tool_names.iter().any(|allowed: &String| allowed == tool_name))
+    pub fn is_tool_allowed(&self, agent_role: AgentRole, tool_name: &str) -> bool {
+        self.get_allowed_tool_names(agent_role)
+            .iter()
+            .any(|allowed: &String| allowed == tool_name)
     }
 
     /// What a function tool call asks for. An unknown tool or arguments that don't fit are an InvalidToolCall, whose
@@ -259,6 +280,25 @@ impl ToolProcessor {
                             .filter(|within: &String| !within.trim().is_empty()),
                     }),
                     _ => Err(ToolProcessor::to_invalid_tool_call(name, "kind and name are required")),
+                }
+            }
+            REPORT => {
+                let report_arguments: ReportArguments = ToolProcessor::parse_arguments(name, arguments)?;
+                match (
+                    report_arguments.status.as_deref().and_then(ReportStatus::from_name),
+                    report_arguments.summary,
+                ) {
+                    (Some(status), Some(summary)) => Ok(ToolRequest::Report {
+                        agent_report: AgentReport {
+                            status,
+                            summary,
+                            needs: report_arguments.needs.unwrap_or_default(),
+                        },
+                    }),
+                    _ => Err(ToolProcessor::to_invalid_tool_call(
+                        name,
+                        "status (done or blocked) and summary are required",
+                    )),
                 }
             }
             SUBMIT_PLAN => {
@@ -327,49 +367,51 @@ impl ToolProcessor {
                 Some(within) => format!("{kind} {name} in {within}"),
                 None => format!("{kind} {name}"),
             },
+            ToolRequest::Report { agent_report } => agent_report.status.name().to_string(),
             ToolRequest::SubmitPlan { work_plan } => format!(
-                "{} packages: {}",
-                work_plan.packages.len(),
-                work_plan
-                    .packages
-                    .iter()
-                    .map(|work_package: &WorkPackage| work_package.name.as_str())
-                    .collect::<Vec<&str>>()
-                    .join(", ")
+                "{} components, {} steps",
+                work_plan.components.len(),
+                work_plan.steps.len()
             ),
         }
     }
 
-    /// What the orchestrator is told once the harness has scaffolded its plan's components: what they are, as they are,
-    /// and how to write the skeleton. `scaffold_outputs` are what each scaffold reported (its files' contents).
-    pub fn format_skeleton_brief(&self, scaffold_outputs: &[String], placeholder: &str) -> String {
-        let mut brief: String = String::from("The harness scaffolded the plan's components");
-        if scaffold_outputs.is_empty() {
-            brief.push_str(": the plan has none.\n");
-        } else {
-            brief.push_str(", as they are now:\n\n");
-            brief.push_str(&scaffold_outputs.join("\n\n"));
-            brief.push('\n');
+    /// What the implementor is asked: the plan, and the components the harness scaffolded for it (`scaffold_outputs`,
+    /// each with its files' contents, so it patches them without reading them).
+    pub fn format_implementor_brief(&self, work_plan: &WorkPlan, scaffold_outputs: &[String]) -> String {
+        let mut brief: String = format!("Build this plan.\n\n{}\n", work_plan.summary.trim());
+        if !work_plan.assumptions.is_empty() {
+            brief.push_str(&format!(
+                "\nDecided where the request left it open:\n{}\n",
+                ToolProcessor::to_bullets(&work_plan.assumptions)
+            ));
         }
-        brief.push_str(&format!(
-            "\nNow write the skeleton: the contracts every package builds against, and nothing more.\n\
-             - the models (their fields), the exception variants and any settings the plan needs;\n\
-             - in each file a package owns, the public types and signatures it is to build, each function with a \
-             placeholder body: {placeholder};\n\
-             - the wiring the scaffolds didn't write: what is new in the service locator, module declarations, the \
-             facade's and the managers' signatures.\n\
-             Don't write the logic of a package's files, or the managers' coordinations: the workers build the \
-             packages, then you write the coordinations. The workers start when every check passes, so run \
-             run_checks and fix what fails; then say in one line that the skeleton is ready."
-        ));
+        let steps: Vec<String> = work_plan
+            .steps
+            .iter()
+            .enumerate()
+            .map(|(index, step): (usize, &String)| format!("{}. {}", index + 1, step.trim()))
+            .collect();
+        brief.push_str(&format!("\nSteps:\n{}\n", steps.join("\n")));
+        if !scaffold_outputs.is_empty() {
+            brief.push_str(&format!(
+                "\nThe harness scaffolded the plan's components, as they are now:\n\n{}\n",
+                scaffold_outputs.join("\n\n")
+            ));
+        }
+        brief.push_str(
+            "\nWhen the change is built and run_checks passes, call report with status done. If the plan can't be \
+             built as it is, build what you can, then call report with status blocked, and say in needs what is \
+             missing or wrong.",
+        );
         brief
     }
 
-    /// What the orchestrator is told when the skeleton fails a check after it finished.
-    pub fn format_skeleton_failures(&self, format_result: &FormatResult, check_results: &[CheckResult]) -> String {
+    /// What the implementor is told when it reported the plan done but a check fails.
+    pub fn format_implementor_failures(&self, format_result: &FormatResult, check_results: &[CheckResult]) -> String {
         format!(
-            "The skeleton doesn't pass every check yet, and the workers start only once it does:\n\n{}\n\nFix it, \
-             and run the checks again.",
+            "The change isn't done: not every check passes:\n\n{}\n\nFix it, run the checks again, and report \
+             again.",
             self.format_checks_run(format_result, check_results)
         )
     }
@@ -377,10 +419,8 @@ impl ToolProcessor {
     /// What the orchestrator is told when its plan is accepted.
     pub fn format_plan_accepted(&self, work_plan: &WorkPlan) -> String {
         format!(
-            "The plan is accepted: {} components to scaffold, {} packages. The harness scaffolds the components next; \
-             then you write the contracts.",
-            work_plan.components.len(),
-            work_plan.packages.len()
+            "The plan is accepted: the harness scaffolds its {} components, and the implementor builds it.",
+            work_plan.components.len()
         )
     }
 
@@ -427,7 +467,7 @@ impl ToolProcessor {
         let mut output: String = self.format_check_results(check_results);
         if !format_result.reformatted_paths.is_empty() {
             output.push_str(&format!(
-                "\n\nThe formatter ran first and reformatted these files, so read them again before you patch them:\n{}",
+                "\n\nThe formatters ran first and rewrote these files, so read them again before you patch them:\n{}",
                 ToolProcessor::to_bullets(&format_result.reformatted_paths)
             ));
         }
@@ -492,11 +532,11 @@ impl ToolProcessor {
         let mut format_note: String = if format_result.succeeded {
             "Formatted.".to_string()
         } else {
-            "The formatter failed on a file that doesn't parse; run_checks says which.".to_string()
+            "A formatter failed (on code that doesn't parse or compile); run_checks says why.".to_string()
         };
         if !other_reformatted_paths.is_empty() {
             format_note.push_str(&format!(
-                " The formatter also reformatted these, so read them again before you patch them:\n{}",
+                " The formatters also rewrote these, so read them again before you patch them:\n{}",
                 ToolProcessor::to_bullets(&other_reformatted_paths)
             ));
         }
@@ -570,27 +610,11 @@ impl ToolProcessor {
                 },
             )
             .collect::<Result<Vec<PlannedComponent>, String>>()?;
-        let packages: Vec<WorkPackage> = submit_plan_arguments
-            .packages
-            .unwrap_or_default()
-            .into_iter()
-            .enumerate()
-            .map(|(index, package): (usize, WorkPackageArguments)| {
-                match (package.name, package.brief, package.owned_paths) {
-                    (Some(package_name), Some(brief), Some(owned_paths)) => Ok(WorkPackage {
-                        name: package_name,
-                        brief,
-                        owned_paths,
-                    }),
-                    _ => Err(format!("packages[{index}] needs a name, a brief and owned_paths")),
-                }
-            })
-            .collect::<Result<Vec<WorkPackage>, String>>()?;
         Ok(WorkPlan {
             summary: submit_plan_arguments.summary.unwrap_or_default(),
             assumptions: submit_plan_arguments.assumptions.unwrap_or_default(),
             components,
-            packages,
+            steps: submit_plan_arguments.steps.unwrap_or_default(),
         })
     }
 

@@ -26,11 +26,14 @@ use crate::managers::gateways::workspace::workspace_gateway::WorkspaceGateway;
 use crate::managers::logger::application_logger::ApplicationLogger;
 use crate::managers::logger::log_level::LogLevel;
 use crate::managers::models::agent_assignment::AgentAssignment;
+use crate::managers::models::agent_report::AgentReport;
 use crate::managers::models::agent_role::AgentRole;
 use crate::managers::models::agent_run_outcome::AgentRunOutcome;
 use crate::managers::models::check_result::CheckResult;
 use crate::managers::models::conversation_item::ConversationItem;
 use crate::managers::models::format_result::FormatResult;
+use crate::managers::models::implementation_result::ImplementationResult;
+use crate::managers::models::lane_ending::LaneEnding;
 use crate::managers::models::lint_violation::LintViolation;
 use crate::managers::models::model_request::ModelRequest;
 use crate::managers::models::model_response::ModelResponse;
@@ -40,6 +43,7 @@ use crate::managers::models::patch_operation_kind::PatchOperationKind;
 use crate::managers::models::planned_component::PlannedComponent;
 use crate::managers::models::project_map_role::ProjectMapRole;
 use crate::managers::models::prompt_layer::PromptLayer;
+use crate::managers::models::report_status::ReportStatus;
 use crate::managers::models::run_context::RunContext;
 use crate::managers::models::run_summary::RunSummary;
 use crate::managers::models::scaffold_file::ScaffoldFile;
@@ -49,7 +53,6 @@ use crate::managers::models::session_event::SessionEvent;
 use crate::managers::models::session_project_maps::SessionProjectMaps;
 use crate::managers::models::stack_pack::StackPack;
 use crate::managers::models::stack_pack_format::StackPackFormat;
-use crate::managers::models::stack_pack_layout::StackPackLayout;
 use crate::managers::models::stack_pack_lint::StackPackLint;
 use crate::managers::models::stack_pack_project_map::StackPackProjectMap;
 use crate::managers::models::stack_pack_scaffold::StackPackScaffold;
@@ -62,10 +65,12 @@ use crate::managers::models::workspace_file::WorkspaceFile;
 
 const APPLY_PATCH: &str = "apply_patch";
 const SCAFFOLD: &str = "scaffold";
-// How many times the orchestrator is sent the skeleton's failed checks before the run gives up on the plan.
-const SKELETON_ROUNDS: i64 = 3;
-// The lane of the session's own agent.
+// How many times the implementor, once it reports a plan done, is sent the checks that fail, before the build ends as
+// it is.
+const IMPLEMENTOR_ROUNDS: i64 = 3;
+// The lanes of the session's own agent, and of the implementor of its plans.
 const ORCHESTRATOR_LANE_NAME: &str = "orchestrator";
+const IMPLEMENTOR_LANE_NAME: &str = "implementor";
 // The check the harness runs itself, before the pack's commands.
 const ARCHITECTURE_CHECK: &str = "architecture";
 
@@ -130,7 +135,7 @@ impl AgentRunEngine {
         events: &broadcast::Sender<SessionEvent>,
         data_facade: &DataFacade,
     ) -> ApplicationResult<AgentRunOutcome> {
-        let agent_assignment: AgentAssignment = AgentRunEngine::to_orchestrator_assignment(session, true);
+        let agent_assignment: AgentAssignment = AgentRunEngine::to_orchestrator_assignment(session);
         let (run_context, project_map_note): (RunContext, Option<ConversationItem>) = self
             .prepare_orchestrator(session, &agent_assignment, data_facade)
             .await?;
@@ -151,52 +156,48 @@ impl AgentRunEngine {
         .await
     }
 
-    /// Builds the skeleton of the orchestrator's accepted plan: the harness scaffolds the plan's components, then the
-    /// orchestrator, on its still-warm lane, writes the contracts the packages build against. The skeleton is done when
-    /// every check passes, which the harness checks itself; the orchestrator gets a few rounds to fix what fails.
-    pub async fn build_skeleton(
+    /// Builds the orchestrator's accepted plan: the harness scaffolds its components, then the implementor, on a lane of
+    /// its own, builds the change. Once the implementor reports it done, the harness runs every check itself and sends
+    /// it what fails, for a few rounds; a blocked report ends the build as it is.
+    pub async fn implement_plan(
         &self,
         session: &Session,
         work_plan: &WorkPlan,
         events: &broadcast::Sender<SessionEvent>,
         data_facade: &DataFacade,
-    ) -> ApplicationResult<RunSummary> {
-        let agent_assignment: AgentAssignment = AgentRunEngine::to_orchestrator_assignment(session, false);
+    ) -> ApplicationResult<ImplementationResult> {
+        let agent_assignment: AgentAssignment = AgentAssignment {
+            lane_name: IMPLEMENTOR_LANE_NAME.to_string(),
+            role: AgentRole::Implementor,
+            workspace_directory: session.workspace_directory.clone(),
+        };
         let workspace_directory: &Path = &agent_assignment.workspace_directory;
         let (stack_pack, _): (Option<StackPack>, Option<String>) =
             self.detect_stack_pack(workspace_directory, data_facade).await?;
-        // The plan was checked against the pack's layout, so the workspace's stack has one.
-        let Some((stack_pack, stack_pack_layout)) = stack_pack.as_ref().and_then(|stack_pack: &StackPack| {
-            stack_pack
-                .layout
-                .as_ref()
-                .map(|stack_pack_layout: &StackPackLayout| (stack_pack, stack_pack_layout))
-        }) else {
-            return Err(ApplicationBaseException::new(
-                AgentRunEngineException::InvalidWorkPlan,
-                "The workspace's stack can't be divided among workers",
-                ContextualData::new().with("session_id", session.id.as_str()),
-            ));
+        let scaffold_outputs: Vec<String> = match stack_pack.as_ref() {
+            Some(stack_pack) => {
+                self.scaffold_components(workspace_directory, stack_pack, &work_plan.components, events)
+                    .await?
+            }
+            None => Vec::new(),
         };
 
-        let scaffold_outputs: Vec<String> = self
-            .scaffold_components(workspace_directory, stack_pack, &work_plan.components, events)
-            .await?;
-
-        // The map is built after scaffolding, so the change shows in the note on the orchestrator's kept map.
+        // The map is built after scaffolding, so what the scaffolds added shows in the note.
         let (run_context, project_map_note): (RunContext, Option<ConversationItem>) = self
-            .prepare_orchestrator(session, &agent_assignment, data_facade)
+            .prepare_implementor(session, &agent_assignment, data_facade)
             .await?;
         let mut opening_items: Vec<ConversationItem> = Vec::with_capacity(2);
         opening_items.extend(project_map_note);
-        opening_items.push(ConversationItem::HarnessNote {
+        opening_items.push(ConversationItem::UserMessage {
             text: self
                 .tool_processor
-                .format_skeleton_brief(&scaffold_outputs, &stack_pack_layout.placeholder),
+                .format_implementor_brief(work_plan, &scaffold_outputs),
         });
 
         let mut run_summary: Option<RunSummary> = None;
-        for round in 1..=SKELETON_ROUNDS {
+        let mut report: Option<AgentReport> = None;
+        let mut checks_passed: bool = false;
+        for round in 1..=IMPLEMENTOR_ROUNDS {
             let agent_run_outcome: AgentRunOutcome = self
                 .run_lane(
                     session,
@@ -211,40 +212,37 @@ impl AgentRunEngine {
                 Some(run_summary) => run_summary.plus(agent_run_outcome.run_summary),
                 None => agent_run_outcome.run_summary,
             });
+            report = match agent_run_outcome.lane_ending {
+                Some(LaneEnding::Reported(agent_report)) => Some(agent_report),
+                Some(LaneEnding::PlanAccepted(_)) | None => None,
+            };
 
+            let Some(stack_pack) = run_context.stack_pack.as_ref() else {
+                checks_passed = true;
+                break;
+            };
             let (format_result, check_results): (FormatResult, Vec<CheckResult>) =
                 self.format_and_check(workspace_directory, stack_pack).await?;
-            if check_results
+            checks_passed = check_results
                 .iter()
-                .all(|check_result: &CheckResult| check_result.passed)
-            {
-                return Ok(run_summary.expect("set by the round that just ran"));
-            }
-            if round == SKELETON_ROUNDS {
-                let failed_checks: Vec<&str> = check_results
-                    .iter()
-                    .filter(|check_result: &&CheckResult| !check_result.passed)
-                    .map(|check_result: &CheckResult| check_result.name.as_str())
-                    .collect();
-                return Err(ApplicationBaseException::new(
-                    AgentRunEngineException::SkeletonChecksFailed,
-                    format!(
-                        "The plan's skeleton still fails {} after {SKELETON_ROUNDS} rounds of fixes, so the workers \
-                         can't start",
-                        failed_checks.join(", ")
-                    ),
-                    ContextualData::new()
-                        .with("session_id", session.id.as_str())
-                        .with("failed_checks", failed_checks.join(", ")),
-                ));
+                .all(|check_result: &CheckResult| check_result.passed);
+            let blocked: bool = report
+                .as_ref()
+                .is_some_and(|agent_report: &AgentReport| agent_report.status == ReportStatus::Blocked);
+            if checks_passed || blocked || round == IMPLEMENTOR_ROUNDS {
+                break;
             }
             opening_items = vec![ConversationItem::HarnessNote {
                 text: self
                     .tool_processor
-                    .format_skeleton_failures(&format_result, &check_results),
+                    .format_implementor_failures(&format_result, &check_results),
             }];
         }
-        unreachable!("the last round returns")
+        Ok(ImplementationResult {
+            report,
+            checks_passed,
+            run_summary: run_summary.expect("the first round always runs"),
+        })
     }
 
     // Scaffolds the plan's components, and reports each as the harness's own use of the scaffold tool. A component that can't be scaffolded after all (its plan checked out) is
@@ -330,82 +328,59 @@ impl AgentRunEngine {
                 }
                 None => (None, None),
             };
-        let run_context: RunContext = self.build_run_context(
-            agent_assignment,
-            stack_pack,
-            rules.as_deref(),
-            project_map.as_deref(),
-            &[],
-        );
+        let run_context: RunContext =
+            self.build_run_context(agent_assignment, stack_pack, rules.as_deref(), project_map.as_deref());
         Ok((run_context, project_map_note))
     }
 
-    // The session's own agent: it may plan until its plan is accepted, then carries the plan out.
-    fn to_orchestrator_assignment(session: &Session, may_plan: bool) -> AgentAssignment {
+    // The implementor's run context. Its requests open with the orchestrator's kept map, whose layer is cached already,
+    // and a note of what changed since it was built (the plan's scaffolds, for one), unless there is so much that a map
+    // of the workspace as it is now is the better layer. Nothing is kept: the orchestrator's notes still start from its
+    // own last run.
+    async fn prepare_implementor(
+        &self,
+        session: &Session,
+        agent_assignment: &AgentAssignment,
+        data_facade: &DataFacade,
+    ) -> ApplicationResult<(RunContext, Option<ConversationItem>)> {
+        let (stack_pack, rules): (Option<StackPack>, Option<String>) = self
+            .detect_stack_pack(&agent_assignment.workspace_directory, data_facade)
+            .await?;
+        let (project_map, project_map_note): (Option<String>, Option<ConversationItem>) =
+            match AgentRunEngine::get_project_map_source(stack_pack.as_ref()) {
+                Some((language_name, stack_pack_project_map)) => {
+                    let current_map: String = self
+                        .build_project_map(
+                            &agent_assignment.workspace_directory,
+                            language_name,
+                            stack_pack_project_map,
+                        )
+                        .await?;
+                    let session_project_maps: SessionProjectMaps =
+                        data_facade.get_session_project_maps(&session.id).await?;
+                    match session_project_maps.layer_map {
+                        Some(layer_map) if layer_map == current_map => (Some(layer_map), None),
+                        Some(layer_map) if !self.project_map_processor.should_rebuild(&layer_map, &current_map) => {
+                            let changes: String = self.project_map_processor.describe_changes(&layer_map, &current_map);
+                            (Some(layer_map), Some(ConversationItem::HarnessNote { text: changes }))
+                        }
+                        Some(_) | None => (Some(current_map), None),
+                    }
+                }
+                None => (None, None),
+            };
+        let run_context: RunContext =
+            self.build_run_context(agent_assignment, stack_pack, rules.as_deref(), project_map.as_deref());
+        Ok((run_context, project_map_note))
+    }
+
+    // The session's own agent.
+    fn to_orchestrator_assignment(session: &Session) -> AgentAssignment {
         AgentAssignment {
             lane_name: ORCHESTRATOR_LANE_NAME.to_string(),
             role: AgentRole::Orchestrator,
             workspace_directory: session.workspace_directory.clone(),
-            owned_paths: None,
-            may_plan,
         }
-    }
-
-    /// Runs an agent other than the orchestrator on its assignment, with `brief` as what it is asked; a lane that has
-    /// run before continues where it stopped. Its requests open with the map of its own workspace as it is now, and its
-    /// owned files as they are now, so agents that start on identical copies share every layer but their own.
-    pub async fn run_assignment(
-        &self,
-        session: &Session,
-        agent_assignment: &AgentAssignment,
-        brief: &str,
-        events: &broadcast::Sender<SessionEvent>,
-        data_facade: &DataFacade,
-    ) -> ApplicationResult<RunSummary> {
-        let workspace_directory: &Path = &agent_assignment.workspace_directory;
-        let (stack_pack, rules): (Option<StackPack>, Option<String>) =
-            self.detect_stack_pack(workspace_directory, data_facade).await?;
-        let project_map: Option<String> = match AgentRunEngine::get_project_map_source(stack_pack.as_ref()) {
-            Some((language_name, stack_pack_project_map)) => Some(
-                self.build_project_map(workspace_directory, language_name, stack_pack_project_map)
-                    .await?,
-            ),
-            None => None,
-        };
-
-        // A file it owns that doesn't exist yet is one it creates.
-        let mut owned_files: Vec<WorkspaceFile> = Vec::new();
-        for owned_path in agent_assignment.owned_paths.iter().flatten() {
-            match self.workspace_gateway.read_file(workspace_directory, owned_path).await {
-                Ok(owned_file) => owned_files.push(owned_file),
-                Err(exception)
-                    if exception.kind() == ExceptionKind::WorkspaceGateway(WorkspaceGatewayException::FileNotFound) => {
-                }
-                Err(exception) => return Err(exception),
-            }
-        }
-        let run_context: RunContext = self.build_run_context(
-            agent_assignment,
-            stack_pack,
-            rules.as_deref(),
-            project_map.as_deref(),
-            &owned_files,
-        );
-
-        let opening_items: Vec<ConversationItem> = vec![ConversationItem::UserMessage {
-            text: brief.to_string(),
-        }];
-        let agent_run_outcome: AgentRunOutcome = self
-            .run_lane(
-                session,
-                agent_assignment,
-                &run_context,
-                opening_items,
-                events,
-                data_facade,
-            )
-            .await?;
-        Ok(agent_run_outcome.run_summary)
     }
 
     // One agent's turns on its lane, to completion. Each turn sends the lane's whole conversation (the API keeps
@@ -490,27 +465,27 @@ impl AgentRunEngine {
             if model_response.tool_calls.is_empty() {
                 return Ok(AgentRunOutcome {
                     run_summary,
-                    work_plan: None,
+                    lane_ending: None,
                 });
             }
 
             let mut tool_outputs: Vec<ConversationItem> = Vec::with_capacity(model_response.tool_calls.len());
-            let mut accepted_work_plan: Option<WorkPlan> = None;
+            let mut lane_ending: Option<LaneEnding> = None;
             for tool_call in &model_response.tool_calls {
-                let (tool_output, work_plan): (ConversationItem, Option<WorkPlan>) =
+                let (tool_output, tool_lane_ending): (ConversationItem, Option<LaneEnding>) =
                     self.use_tool(agent_assignment, run_context, tool_call, events).await?;
                 tool_outputs.push(tool_output);
-                accepted_work_plan = accepted_work_plan.or(work_plan);
+                lane_ending = lane_ending.or(tool_lane_ending);
             }
             data_facade
                 .append_conversation_items(&session.id, lane_name, &tool_outputs)
                 .await?;
             conversation_items.extend(tool_outputs);
-            // An accepted plan ends the orchestrator's run here; the workflow carries on from it.
-            if accepted_work_plan.is_some() {
+            // An accepted plan or a report ends the lane here; the workflow carries on from it.
+            if lane_ending.is_some() {
                 return Ok(AgentRunOutcome {
                     run_summary,
-                    work_plan: accepted_work_plan,
+                    lane_ending,
                 });
             }
         }
@@ -547,24 +522,15 @@ impl AgentRunEngine {
         stack_pack: Option<StackPack>,
         rules: Option<&str>,
         project_map: Option<&str>,
-        owned_files: &[WorkspaceFile],
     ) -> RunContext {
-        let mut prompt_layers: Vec<PromptLayer> = self.prompt_processor.build_prompt_layers(
-            &agent_assignment.workspace_directory,
-            stack_pack.as_ref(),
-            rules,
-            project_map,
-        );
-        prompt_layers.extend(
+        let mut prompt_layers: Vec<PromptLayer> =
             self.prompt_processor
-                .build_assignment_layer(agent_assignment.role, owned_files),
-        );
+                .build_prompt_layers(stack_pack.as_ref(), rules, project_map);
+        prompt_layers.extend(self.prompt_processor.build_assignment_layer(agent_assignment.role));
         RunContext {
             prompt_layers,
             tools: self.tool_processor.get_tool_definitions(),
-            allowed_tool_names: self
-                .tool_processor
-                .get_allowed_tool_names(agent_assignment.role, agent_assignment.may_plan),
+            allowed_tool_names: Some(self.tool_processor.get_allowed_tool_names(agent_assignment.role)),
             stack_pack,
         }
     }
@@ -688,35 +654,37 @@ impl AgentRunEngine {
         run_context: &RunContext,
         tool_call: &ToolCall,
         events: &broadcast::Sender<SessionEvent>,
-    ) -> ApplicationResult<(ConversationItem, Option<WorkPlan>)> {
+    ) -> ApplicationResult<(ConversationItem, Option<LaneEnding>)> {
         match tool_call {
             ToolCall::Function {
                 call_id,
                 name,
                 arguments,
             } => {
-                let (target, output, succeeded, accepted_work_plan): (String, String, bool, Option<WorkPlan>) =
-                    match self
-                        .check_tool_allowed(agent_assignment, name)
-                        .and_then(|(): ()| self.tool_processor.to_tool_request(name, arguments))
-                    {
-                        Ok(tool_request) => {
-                            let (output, succeeded): (String, bool) = self
-                                .use_function_tool(agent_assignment, run_context, &tool_request)
-                                .await?;
-                            let accepted_work_plan: Option<WorkPlan> = match &tool_request {
-                                ToolRequest::SubmitPlan { work_plan } if succeeded => Some(work_plan.clone()),
-                                _ => None,
-                            };
-                            (
-                                self.tool_processor.describe_target(&tool_request),
-                                output,
-                                succeeded,
-                                accepted_work_plan,
-                            )
-                        }
-                        Err(exception) => (String::new(), self.to_tool_error(exception)?, false, None),
-                    };
+                let (target, output, succeeded, lane_ending): (String, String, bool, Option<LaneEnding>) = match self
+                    .check_tool_allowed(agent_assignment, name)
+                    .and_then(|(): ()| self.tool_processor.to_tool_request(name, arguments))
+                {
+                    Ok(tool_request) => {
+                        let (output, succeeded): (String, bool) = self
+                            .use_function_tool(agent_assignment, run_context, &tool_request)
+                            .await?;
+                        let lane_ending: Option<LaneEnding> = match &tool_request {
+                            ToolRequest::SubmitPlan { work_plan } if succeeded => {
+                                Some(LaneEnding::PlanAccepted(work_plan.clone()))
+                            }
+                            ToolRequest::Report { agent_report } => Some(LaneEnding::Reported(agent_report.clone())),
+                            _ => None,
+                        };
+                        (
+                            self.tool_processor.describe_target(&tool_request),
+                            output,
+                            succeeded,
+                            lane_ending,
+                        )
+                    }
+                    Err(exception) => (String::new(), self.to_tool_error(exception)?, false, None),
+                };
                 events
                     .send(SessionEvent::ToolUsed {
                         agent: AgentRunEngine::to_agent(agent_assignment),
@@ -730,7 +698,7 @@ impl AgentRunEngine {
                         call_id: call_id.clone(),
                         output,
                     },
-                    accepted_work_plan,
+                    lane_ending,
                 ))
             }
             ToolCall::ApplyPatch {
@@ -738,7 +706,7 @@ impl AgentRunEngine {
                 patch_operation,
             } => {
                 let (output, succeeded): (String, bool) =
-                    match self.apply_owned_patch(agent_assignment, patch_operation).await {
+                    match self.apply_allowed_patch(agent_assignment, patch_operation).await {
                         Ok(output) => (output, true),
                         // The model knows this error format from the reference applier.
                         Err(exception) => (format!("Error: {}", self.to_tool_error_message(exception)?), false),
@@ -835,6 +803,7 @@ impl AgentRunEngine {
                     }
                 }
             }
+            ToolRequest::Report { .. } => Ok(("Reported.".to_string(), true)),
             ToolRequest::SubmitPlan { work_plan } => {
                 match self.check_work_plan(agent_assignment, run_context, work_plan).await {
                     Ok(()) => Ok((self.tool_processor.format_plan_accepted(work_plan), true)),
@@ -957,9 +926,9 @@ impl AgentRunEngine {
             .format_scaffold(&created_files, &updated_paths, &format_result))
     }
 
-    // Runs the stack's formatter, and finds which of its source files it changed (by reading them before and after),
-    // so the agent reads those again before it patches them. A formatter that fails (a file that doesn't parse) is
-    // reported as such; the format check says why.
+    // Runs the stack's formatters, and finds which of their files they changed (by reading them before and after), so
+    // the agent reads those again before it patches them. A formatter that fails (on code that doesn't parse or
+    // compile) is reported as such; the checks say why. Each runs even if one before it failed.
     async fn format_workspace(
         &self,
         workspace_directory: &Path,
@@ -974,17 +943,20 @@ impl AgentRunEngine {
         let (_, before): (Vec<String>, Vec<WorkspaceFile>) = self
             .read_source_files(workspace_directory, &stack_pack_format.source_globs)
             .await?;
-        let succeeded: bool = match self
-            .command_runner_gateway
-            .run(workspace_directory, &stack_pack_format.command, self.check_timeout)
-            .await
-        {
-            Ok(command_result) => command_result.exit_code == Some(0),
-            Err(exception) => {
-                self.to_tool_error_message(exception)?;
-                false
-            }
-        };
+        let mut succeeded: bool = true;
+        for command in &stack_pack_format.commands {
+            succeeded &= match self
+                .command_runner_gateway
+                .run(workspace_directory, command, self.check_timeout)
+                .await
+            {
+                Ok(command_result) => command_result.exit_code == Some(0),
+                Err(exception) => {
+                    self.to_tool_error_message(exception)?;
+                    false
+                }
+            };
+        }
         let (_, after): (Vec<String>, Vec<WorkspaceFile>) = self
             .read_source_files(workspace_directory, &stack_pack_format.source_globs)
             .await?;
@@ -1065,7 +1037,7 @@ impl AgentRunEngine {
 
     // Checks a plan against the workspace and the stack: each component is scaffolded on paper (its kind exists, the
     // component it lives within exists or is planned too, none of its files exists yet), then the WorkPlanProcessor
-    // checks the packages' files. Every problem is reported in one InvalidWorkPlan.
+    // checks the rest. Every problem is reported in one InvalidWorkPlan.
     async fn check_work_plan(
         &self,
         agent_assignment: &AgentAssignment,
@@ -1073,18 +1045,11 @@ impl AgentRunEngine {
         work_plan: &WorkPlan,
     ) -> ApplicationResult<()> {
         let workspace_directory: &Path = &agent_assignment.workspace_directory;
-        let Some((stack_pack, stack_pack_layout)) =
-            run_context.stack_pack.as_ref().and_then(|stack_pack: &StackPack| {
-                stack_pack
-                    .layout
-                    .as_ref()
-                    .map(|stack_pack_layout: &StackPackLayout| (stack_pack, stack_pack_layout))
-            })
-        else {
+        let Some(stack_pack) = run_context.stack_pack.as_ref() else {
             return Err(ApplicationBaseException::new(
                 AgentRunEngineException::InvalidWorkPlan,
-                "The workspace's stack can't be divided among workers, so there is no plan to submit: build the \
-                 change yourself",
+                "No stack pack matches the workspace, so there is nothing to check a plan against: make the change \
+                 yourself",
                 ContextualData::new(),
             ));
         };
@@ -1148,22 +1113,15 @@ impl AgentRunEngine {
             }
         }
 
-        self.work_plan_processor
-            .check(work_plan, stack_pack_layout, &created_paths, component_errors)
+        self.work_plan_processor.check(work_plan, component_errors)
     }
 
     // The InvalidToolCall-like refusal of a tool the agent's role may not call.
     fn check_tool_allowed(&self, agent_assignment: &AgentAssignment, tool_name: &str) -> ApplicationResult<()> {
-        if self
-            .tool_processor
-            .is_tool_allowed(agent_assignment.role, agent_assignment.may_plan, tool_name)
-        {
+        if self.tool_processor.is_tool_allowed(agent_assignment.role, tool_name) {
             return Ok(());
         }
-        let allowed_tool_names: Vec<String> = self
-            .tool_processor
-            .get_allowed_tool_names(agent_assignment.role, agent_assignment.may_plan)
-            .unwrap_or_default();
+        let allowed_tool_names: Vec<String> = self.tool_processor.get_allowed_tool_names(agent_assignment.role);
         Err(ApplicationBaseException::new(
             AgentRunEngineException::ToolNotAllowed,
             format!(
@@ -1177,32 +1135,13 @@ impl AgentRunEngine {
         ))
     }
 
-    // A patch's file operation, if the agent may patch and owns the file.
-    async fn apply_owned_patch(
+    // A patch's file operation, if the agent's role may patch.
+    async fn apply_allowed_patch(
         &self,
         agent_assignment: &AgentAssignment,
         patch_operation: &PatchOperation,
     ) -> ApplicationResult<String> {
         self.check_tool_allowed(agent_assignment, APPLY_PATCH)?;
-        if let Some(owned_paths) = agent_assignment.owned_paths.as_ref() {
-            let path: String = self
-                .workspace_gateway
-                .normalize_path(&agent_assignment.workspace_directory, &patch_operation.path)
-                .await?;
-            if !owned_paths.contains(&path) {
-                return Err(ApplicationBaseException::new(
-                    AgentRunEngineException::FileNotOwned,
-                    format!(
-                        "You don't own {path}, so you may not change it; you own {}. If your package needs it \
-                         changed, stop and say which change and why.",
-                        owned_paths.join(", ")
-                    ),
-                    ContextualData::new()
-                        .with("lane_name", agent_assignment.lane_name.as_str())
-                        .with("path", path.as_str()),
-                ));
-            }
-        }
         self.apply_patch(&agent_assignment.workspace_directory, patch_operation)
             .await
     }
@@ -1268,9 +1207,8 @@ impl AgentRunEngine {
                 | AgentRunEngineException::InvalidPatch
                 | AgentRunEngineException::ScaffoldNotApplicable
                 | AgentRunEngineException::ToolNotAllowed
-                | AgentRunEngineException::FileNotOwned
                 | AgentRunEngineException::InvalidWorkPlan => true,
-                AgentRunEngineException::SkeletonChecksFailed | AgentRunEngineException::MaxTurnsReached => false,
+                AgentRunEngineException::MaxTurnsReached => false,
             },
             ExceptionKind::WorkspaceGateway(_) | ExceptionKind::CommandRunnerGateway(_) => true,
             ExceptionKind::ConfigurationProvider(_)
@@ -1287,7 +1225,7 @@ impl AgentRunEngine {
     fn to_agent(agent_assignment: &AgentAssignment) -> Option<String> {
         match agent_assignment.role {
             AgentRole::Orchestrator => None,
-            AgentRole::Worker | AgentRole::Reviewer => Some(agent_assignment.lane_name.clone()),
+            AgentRole::Implementor | AgentRole::Reviewer => Some(agent_assignment.lane_name.clone()),
         }
     }
 

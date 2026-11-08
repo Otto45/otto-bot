@@ -1,3 +1,4 @@
+use crate::managers::models::implementation_result::ImplementationResult;
 use crate::managers::models::run_summary::RunSummary;
 use crate::managers::models::work_plan::WorkPlan;
 
@@ -19,12 +20,14 @@ pub enum SessionEvent {
         target: String,
         succeeded: bool,
     },
-    /// The orchestrator's plan passed the harness's checks; the workflow carries on from it.
+    /// The orchestrator's plan passed the harness's checks; the implementor builds it.
     PlanAccepted {
         work_plan: WorkPlan,
     },
-    /// The plan's skeleton (its components, and the contracts the packages build against) passes every check.
-    SkeletonBuilt,
+    /// The implementor finished building the accepted plan.
+    PlanImplemented {
+        implementation_result: ImplementationResult,
+    },
     RunCompleted {
         run_summary: RunSummary,
     },

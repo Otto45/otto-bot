@@ -9,12 +9,8 @@ pub enum AgentRunEngineException {
     ScaffoldNotApplicable,
     /// A tool the agent's role may not call: told to the model, which was told which it may.
     ToolNotAllowed,
-    /// A change to a file the agent doesn't own: told to the model, which says what it needs instead.
-    FileNotOwned,
     /// A work plan that fails the harness's checks: told to the model, which fixes the plan and submits it again.
     InvalidWorkPlan,
-    /// The skeleton still failed a check after the orchestrator's last round of fixes: the workers can't start.
-    SkeletonChecksFailed,
     MaxTurnsReached,
 }
 
@@ -25,9 +21,7 @@ impl AgentRunEngineException {
             AgentRunEngineException::InvalidPatch => "InvalidPatchException",
             AgentRunEngineException::ScaffoldNotApplicable => "ScaffoldNotApplicableException",
             AgentRunEngineException::ToolNotAllowed => "ToolNotAllowedException",
-            AgentRunEngineException::FileNotOwned => "FileNotOwnedException",
             AgentRunEngineException::InvalidWorkPlan => "InvalidWorkPlanException",
-            AgentRunEngineException::SkeletonChecksFailed => "SkeletonChecksFailedException",
             AgentRunEngineException::MaxTurnsReached => "MaxTurnsReachedException",
         }
     }

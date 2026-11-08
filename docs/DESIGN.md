@@ -20,7 +20,7 @@ The architecture is what makes these reachable. Every file's role follows from i
   contract exports are fixed patterns the harness writes itself (49 of the Rust template's 138 source files are
   `mod.rs`);
 - **compute context instead of exploring**: for any task it knows which files an agent needs, and sends them up front;
-- **compute the division of work**: component boundaries and dependency rules split a feature into packages with
+- **compute the division of work**: component boundaries and dependency rules split a feature into components with
   disjoint files that can be built in parallel.
 
 ## Decisions
@@ -43,8 +43,8 @@ Everything language-specific is in a stack pack:
 
 ```
 stack_packs/<stack>/
-    pack.toml       detection (e.g. Cargo.toml), check commands, the project map and lint queries, scaffold kinds,
-                    the layout (the files only the orchestrator writes, and where a worker's files may be), rename map
+    pack.toml       detection (e.g. Cargo.toml), check commands, formatters, the project map and lint queries,
+                    scaffold kinds, rename map
     rules.md        the stack's architecture rules (the template's AGENTS.md)
     template/       the starting app: one example of every component kind
     scaffolds/      skeletons per component kind (processor, engine, gateway, data gateway, router, ...)
@@ -71,7 +71,7 @@ block of a developer message):
 | --- | --- | --- | --- |
 | BP1: stack prefix | the fixed tool set, harness instructions, `rules.md`, the pack's template code | 12h | every agent and project of the stack |
 | BP2: project map | tree; signatures of the facade, service locator and DataFacade; models; exception kinds; settings | 12h / 30m | every agent in the session |
-| BP3: work package | full text of the files the agent owns; signatures of what it calls | 30m | one agent |
+| BP3: role | what the agent's role is (the implementor's, the reviewer's); the orchestrator has none | 30m | one agent |
 | conversation | append-only items, a breakpoint after each tool result | 30m | one agent |
 
 Rules that keep the cache hitting:
@@ -85,8 +85,8 @@ Rules that keep the cache hitting:
 - **The project map is never rewritten mid-wave.** Changes are appended as "changes since the map was built"; the
   map is rebuilt only between waves, as a deliberate cache break. (Built in step 3: a session keeps its map from run
   to run and notes the changes as developer messages; it is rebuilt when the notes would exceed a quarter of it.)
-- **Fan out together.** After the skeleton step all workers start at once: concurrent requests on a cold prefix
-  share one cache write (see Verified), so no prewarm request is needed.
+- **The implementor shares the orchestrator's prefix.** Its requests open with the orchestrator's kept project map,
+  already cached, and a note of what changed since (the plan's scaffolds), rather than a map of its own.
 - **Measure.** Every call records `cached_tokens`, `cache_write_tokens` and its details in the usage ledger.
 
 Rough cost on `gpt-6.1-sol` ($2 / $10 per million input / output tokens; cached reads 0.05x; 12h writes 2.5x): the
@@ -116,8 +116,7 @@ Output dominates the cost, which is why the speed levers below also cut cost.
   | `scaffold` | creates a component and its wiring, deterministically |
   | `run_checks` | runs the pack's check commands |
   | `submit_plan` | the orchestrator's work plan, checked by the harness (a rejected plan is the call's error) |
-  | `report` | a worker's or reviewer's structured, terse completion report |
-  | `request_contract_change` | (later) asks the orchestrator to change a frozen interface mid fan-out |
+  | `report` | the implementor's or reviewer's structured, terse completion report |
 
 - **Compaction** (`/responses/compact`, or `context_management`) only at wave boundaries, since it resets cache reuse.
 - **Service tier** comes from the session's options; the ledger records the tier each response actually ran at,
@@ -127,36 +126,26 @@ Output dominates the cost, which is why the speed levers below also cut cost.
 
 ### Implementing a feature
 
-The manager keeps the order: each phase is one call to `AgentRunEngine`, which runs one agent (a lane) in a role.
+There are three roles, and the manager keeps the order: each phase is one call to `AgentRunEngine`, which runs one
+agent (a lane) in a role.
 
-1. **Orchestrator.** The session's agent, as in steps 1-3, with one more tool: `submit_plan`. A small job it does
-   itself, with no plan, so a small request pays nothing for the workflow. A bigger one it plans: new or changed models,
-   exception variants and settings; the components to scaffold (kind, name, within); and work packages, each with the
-   files it owns and a brief. The `WorkPlanProcessor` checks the plan without a model: every path is legal for its kind
-   (the pack's `[layout]`), no file is owned twice, and no worker owns a wiring file (module files, the service locator,
-   the facade). A rejected plan is the tool call's error, so the orchestrator fixes it in the same turn loop.
-   Ambiguities in the request are decided by the orchestrator and recorded as assumptions in the plan.
-2. **Skeleton.** The harness scaffolds every component of the plan. The orchestrator, on its still-warm lane (it may
-   no longer plan or scaffold), writes only the contracts: models, exception variants, and signatures with the pack's
-   placeholder bodies (`[layout] placeholder`; in Rust, `todo!()` with underscored parameters, since an unused
-   parameter fails the lint). The harness then runs every check itself (the architecture lint catches a contract that
-   breaks a dependency rule) and sends the orchestrator what fails, for up to three rounds. The workers' copies are
-   made from the skeleton, which freezes the contracts.
-3. **Fan out.** One worker per package, each in its own copy of the skeleton, on its own lane
-   (`<session>/<package>`), with one more layer: the full text of the files it owns. A patch to a file it doesn't own
-   fails, telling it why. A worker ends with `report` (done, or blocked with the reason). Workers run concurrently,
-   at most `OTTO_BOT_MAX_WORKERS` at a time. A worker that needs a contract changed reports itself blocked, and the
-   orchestrator settles it in the next phase.
-4. **Integrate.** Each worker's changed files are copied back (ownership is disjoint, so nothing is merged). The
-   orchestrator writes the manager's coordinations and settles blocked packages; then the full checks run, and each
-   error goes to the owner of the file it is in, on its still-warm lane, now in the main workspace.
-5. **Review.** A reviewer lane whose second layer is the diff, not the project map: read-only, focused on security,
-   ending with `report`. High-severity findings go to their owners for one round of fixes; the rest are listed in
-   the run's summary.
+1. **Orchestrator.** The session's agent, with one more tool than steps 1-3 gave it: `submit_plan`. A small change it
+   makes itself, so a small request pays nothing for the workflow. A bigger one it plans, before it changes any file:
+   a summary, the assumptions it made where the request left things open, the components to scaffold (kind, name,
+   within), and the steps that build the change. The `WorkPlanProcessor` checks the plan without a model (each
+   component scaffolded on paper, the plan has steps); a rejected plan is the tool call's error, so the orchestrator
+   fixes it in the same turn loop.
+2. **Implementor.** The harness scaffolds the plan's components, then the implementor, on a lane of its own, builds
+   the change from the plan: the only role that changes files under a plan, in the session's own workspace. It ends
+   with `report` (done, or blocked with what it needs); once it reports done, the harness runs every check itself and
+   sends it what fails, for up to three rounds.
+3. **Reviewer.** A read-only lane, focused on security, ending with `report`; high-severity findings go back to the
+   implementor for one round of fixes, and the rest are listed in the run's summary.
 
-Workers' copies are copy-on-write clones of the workspace (`cp -c` on APFS, `--reflink=auto` on Linux), build output
-included, so each worker's builds start warm. They need no git: the workspace needn't be a repository, and nothing is
-committed to its branch. (On a file system without reflinks the build output is copied in full.)
+One implementor keeps the workflow simple: no file ownership, no copies of the workspace, nothing to merge. Building a
+plan's parts in parallel (an implementor per part, each in a copy-on-write copy of the workspace, with ownership or a
+merge to keep them apart) was built and measured (step 4, part 5) and set aside for now: the parts were cut along file
+boundaries the plan couldn't foresee, and most of them blocked on a file another part owned.
 
 ### Starting a project
 
@@ -169,21 +158,21 @@ In order of expected impact:
 
 1. Generate instead of infer (scaffolds, wiring, renames, contract exports).
 2. Pre-load context, so no turn is spent exploring.
-3. Parallel workers sharing the cached BP1 and BP2.
+3. Every role sharing the cached BP1 and BP2.
 4. Small output: diffs, `text.verbosity: low`, structured reports, reasoning effort matched to the role.
-5. Checks run after each patch batch and their results come back in the same tool result, filtered to the worker's
-   files and deduplicated.
+5. The harness formats code and regenerates generated files itself, before every run of the checks, and holds the
+   implementor to the checks passing.
 6. WebSocket transport, and `fast` / `ultrafast` when speed is worth the price.
-7. Warm incremental builds in every worktree.
+7. Warm incremental builds.
 
 ## Security
 
 The sandbox VM the harness runs in is the security boundary: its isolation and outbound network policy contain what
 an agent does. Inside it, the harness keeps what protects the work and what keeps secrets from leaving:
 
-- **Workspace confinement and file ownership**: paths resolve to their real location, symlinks can't escape, and
-  every patch is checked against its worker's files.
-- **Declared commands only**: workers run the pack's check commands, not a general shell.
+- **Workspace confinement and roles**: paths resolve to their real location, symlinks can't escape, and each role
+  may call only its own tools (the reviewer changes nothing).
+- **Declared commands only**: agents run the pack's check commands, not a general shell.
 - **Secret redaction** before anything is sent to the model; `.env` files are never read.
 - **File contents are data, never instructions.**
 - **The architecture's own rules**: bound SQL parameters, generic answers to 5xx errors, redaction in logs, all
@@ -200,20 +189,20 @@ src/
     otto_bot_facade.rs              start_session, submit, subscribe, cancel, close
     services/cli/                   interactive CLI (first client); later e.g. services/stdio/, services/http/
     managers/
-        otto_bot_manager.rs         coordinates plan -> skeleton -> fan out -> integrate -> review
+        otto_bot_manager.rs         coordinates orchestrator -> (plan ->) implementor -> reviewer
         processors/
-            work_plan/              checks a plan against the pack's layout, ownership and dependency rules; orders waves
+            work_plan/              checks a plan: its components scaffold, it has steps
             prompt_assembly/        builds the layered prompt, renders it deterministically, places breakpoints
             architecture_map/       the project map, from tree-sitter parses
             architecture_lint/      deterministic rule checks
             scaffold/               renders component skeletons and wiring edits from pack scaffolds
         engines/
             agent_run/              runs one agent to completion: model turn -> tool calls -> results; applies
-                                    patches, enforces ownership
+                                    patches, holds each role to its tools
             project_bootstrap/      copies, renames and strips a pack's template (no model)
         gateways/
             openai_responses/       WebSocket and HTTP transport, lanes, replay from the session log
-            workspace/              reads many files, applies V4A patches, lists the tree; workers' copy-on-write copies
+            workspace/              reads many files, applies V4A patches, lists the tree
             command_runner/         runs a pack's declared commands
         data_layer/
             data_facade.rs, managers/data_manager.rs
@@ -228,7 +217,7 @@ stack_packs/rust/, stack_packs/python/, stack_packs/typescript/
 - **One engine talks to the model.** An engine never uses another engine, so `agent_run` is the only one, and the
   manager calls it for every role.
 - **The facade works for any client.** `submit` runs to completion on its own in a background task. Progress is a
-  stream of `SessionEvent`, a domain enum: plan proposed, package started, patch applied, check result, usage, done.
+  stream of `SessionEvent`, a domain enum: plan accepted, tool used, plan implemented, usage, done.
   Each service maps the events to its own wire format.
 - **Any client can resume any session**, because the session log is the whole record of it.
 - **Session options** (such as the service tier) are passed to `start_session` and override configured defaults,
@@ -240,8 +229,9 @@ stack_packs/rust/, stack_packs/python/, stack_packs/typescript/
 2. A single-agent loop over HTTP, replaying the item list from the session log; the usage ledger; `--service-tier`.
 3. WebSocket lanes with replay; layered breakpoints; the project map; `scaffold`; the architecture lint.
 4. The multi-agent workflow, in parts: (1) API probes: `allowed_tools` with `apply_patch`, per-role reasoning effort,
-   prewarm, concurrent lanes; (2) lanes and roles in the engine; (3) the plan; (4) the skeleton; (5) fan out;
-   (6) integrate; (7) review.
+   prewarm, concurrent lanes; (2) lanes and roles in the engine; (3) the plan; (4) the skeleton; (5) fan out (set
+   aside: the roles are now the orchestrator, one implementor and the reviewer, and the implementor builds the plan
+   with no skeleton step); (6) review.
 5. The Python pack, then the TypeScript pack, ported by the harness; starting new projects.
 6. Resume, compaction, a second client.
 
