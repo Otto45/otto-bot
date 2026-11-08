@@ -3,8 +3,8 @@
 otto-bot is a coding agent harness, written in Rust, that builds and changes apps following the Domain Container
 architecture, in Rust, Python and TypeScript. It is itself a Domain Container app.
 
-Status: build steps 1-4 are done: the layered cache, WebSocket lanes, the project map, the architecture lint and
-scaffold (steps 1-3), and the three roles (step 4): the orchestrator, which makes a small change itself and plans a
+Status: build steps 1-4 are done: the layered cache, WebSocket lanes, the project map, the architecture lint
+(steps 1-3), and the three roles (step 4): the orchestrator, which makes a small change itself and plans a
 bigger one; the implementor, which builds the plan; and the reviewer, whose high-severity findings the implementor
 fixes. The Python and TypeScript packs (step 5) are next.
 
@@ -46,10 +46,9 @@ Everything language-specific is in a stack pack:
 ```
 stack_packs/<stack>/
     pack.toml       detection (e.g. Cargo.toml), check commands, formatters, the project map and lint queries,
-                    scaffold kinds, rename map
+                    rename map
     rules.md        the stack's architecture rules (the template's AGENTS.md)
     template/       the starting app: one example of every component kind
-    scaffolds/      skeletons per component kind (processor, engine, gateway, data gateway, router, ...)
     queries/        tree-sitter queries that extract public signatures, imports and component declarations
 ```
 
@@ -88,7 +87,7 @@ Rules that keep the cache hitting:
   map is rebuilt only between waves, as a deliberate cache break. (Built in step 3: a session keeps its map from run
   to run and notes the changes as developer messages; it is rebuilt when the notes would exceed a quarter of it.)
 - **The implementor shares the orchestrator's prefix.** Its requests open with the orchestrator's kept project map,
-  already cached, and a note of what changed since (the plan's scaffolds), rather than a map of its own.
+  already cached, and a note of what changed since it was built, rather than a map of its own.
 - **Measure.** Every call records `cached_tokens`, `cache_write_tokens` and its details in the usage ledger.
 
 Rough cost on `gpt-6.1-sol` ($2 / $10 per million input / output tokens; cached reads 0.05x; 12h writes 2.5x): the
@@ -115,7 +114,6 @@ Output dominates the cost, which is why the speed levers below also cut cost.
   | `read_files` | many paths, globs or component names in one call |
   | `search` | text search across the project |
   | `apply_patch` | native file edits |
-  | `scaffold` | creates a component and its wiring, deterministically |
   | `run_checks` | runs the pack's check commands |
   | `submit_plan` | the orchestrator's work plan, checked by the harness (a rejected plan is the call's error) |
   | `report` | the implementor's structured, terse completion report |
@@ -134,12 +132,12 @@ agent (a lane) in a role.
 
 1. **Orchestrator.** The session's agent, with one more tool than steps 1-3 gave it: `submit_plan`. A small change it
    makes itself, so a small request pays nothing for the workflow. A bigger one it plans, before it changes any file:
-   a summary, the assumptions it made where the request left things open, the components to scaffold (kind, name,
-   within), and the steps that build the change. The `WorkPlanProcessor` checks the plan without a model (each
-   component scaffolded on paper, the plan has steps); a rejected plan is the tool call's error, so the orchestrator
+   a summary, the assumptions it made where the request left things open, and the steps that build the change. The
+   `WorkPlanProcessor` checks the plan without a model; a rejected plan is the tool call's error, so the orchestrator
    fixes it in the same turn loop.
-2. **Implementor.** The harness scaffolds the plan's components, then the implementor, on a lane of its own, builds
-   the change from the plan: the only role that changes files under a plan, in the session's own workspace. It ends
+2. **Implementor.** On a lane of its own, the implementor builds the change from the plan: the only role that
+   changes files under a plan, in the session's own workspace. A new component follows the template's example of its
+   kind; the formatters and the checks catch what wiring it gets wrong. It ends
    with `report` (done, or blocked with what it needs); once it reports done, the harness runs every check itself and
    sends it what fails, for up to three rounds.
 3. **Reviewer.** Once the implementor reports the change done with every check passing, the reviewer, on a read-only
@@ -148,6 +146,11 @@ agent (a lane) in a role.
    what the plan says, and ends with `submit_review`. High-severity findings go back to the implementor for one round
    of fixes (held to the checks again); every finding is listed in the run's result. The orchestrator's own small
    changes aren't reviewed.
+
+Scaffolding (the harness creating a planned component and its wiring from the pack's templates, without a model) was
+built in step 3 and removed after measuring it: the implementor never called it, it wrote about a tenth of a plan's
+lines, its per-component formatting cost 16-18 seconds a plan, and each pack would have had to keep templates and anchor
+lines in step with its template. The model wires components correctly on its own, and the checks catch what it doesn't.
 
 One implementor keeps the workflow simple: no file ownership, no copies of the workspace, nothing to merge. Building a
 plan's parts in parallel (an implementor per part, each in a copy-on-write copy of the workspace, with ownership or a
@@ -163,7 +166,7 @@ The planner then designs the domain from the description, and the feature workfl
 
 In order of expected impact:
 
-1. Generate instead of infer (scaffolds, wiring, renames, contract exports).
+1. Generate instead of infer (formatting, contract exports, renames).
 2. Pre-load context, so no turn is spent exploring.
 3. Every role sharing the cached BP1 and BP2.
 4. Small output: diffs, `text.verbosity: low`, structured reports, reasoning effort matched to the role.
@@ -198,11 +201,10 @@ src/
     managers/
         otto_bot_manager.rs         coordinates orchestrator -> (plan ->) implementor -> reviewer
         processors/
-            work_plan/              checks a plan: its components scaffold, it has steps
+            work_plan/              checks a plan: it has a summary and steps
             prompt_assembly/        builds the layered prompt, renders it deterministically, places breakpoints
             architecture_map/       the project map, from tree-sitter parses
             architecture_lint/      deterministic rule checks
-            scaffold/               renders component skeletons and wiring edits from pack scaffolds
         engines/
             agent_run/              runs one agent to completion: model turn -> tool calls -> results; applies
                                     patches, holds each role to its tools
@@ -234,7 +236,7 @@ stack_packs/rust/, stack_packs/python/, stack_packs/typescript/
 
 1. The harness skeleton from the Rust template; the Rust pack; the facade's session and event API; the CLI service.
 2. A single-agent loop over HTTP, replaying the item list from the session log; the usage ledger; `--service-tier`.
-3. WebSocket lanes with replay; layered breakpoints; the project map; `scaffold`; the architecture lint.
+3. WebSocket lanes with replay; layered breakpoints; the project map; `scaffold` (since removed); the architecture lint.
 4. The multi-agent workflow, in parts: (1) API probes: `allowed_tools` with `apply_patch`, per-role reasoning effort,
    prewarm, concurrent lanes; (2) lanes and roles in the engine; (3) the plan; (4) the skeleton; (5) fan out (set
    aside: the roles are now the orchestrator, one implementor and the reviewer, and the implementor builds the plan

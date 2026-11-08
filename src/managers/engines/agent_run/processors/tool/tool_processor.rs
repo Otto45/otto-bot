@@ -3,11 +3,9 @@ use serde_json::json;
 
 use crate::managers::engines::agent_run::processors::tool::redactors::secret_redactor::SecretRedactor;
 use crate::managers::engines::agent_run::processors::tool::tool_arguments::list_files_arguments::ListFilesArguments;
-use crate::managers::engines::agent_run::processors::tool::tool_arguments::planned_component_arguments::PlannedComponentArguments;
 use crate::managers::engines::agent_run::processors::tool::tool_arguments::read_files_arguments::ReadFilesArguments;
 use crate::managers::engines::agent_run::processors::tool::tool_arguments::report_arguments::ReportArguments;
 use crate::managers::engines::agent_run::processors::tool::tool_arguments::review_finding_arguments::ReviewFindingArguments;
-use crate::managers::engines::agent_run::processors::tool::tool_arguments::scaffold_arguments::ScaffoldArguments;
 use crate::managers::engines::agent_run::processors::tool::tool_arguments::search_arguments::SearchArguments;
 use crate::managers::engines::agent_run::processors::tool::tool_arguments::submit_plan_arguments::SubmitPlanArguments;
 use crate::managers::engines::agent_run::processors::tool::tool_arguments::submit_review_arguments::SubmitReviewArguments;
@@ -21,7 +19,6 @@ use crate::managers::models::conversation_item::ConversationItem;
 use crate::managers::models::finding_severity::FindingSeverity;
 use crate::managers::models::format_result::FormatResult;
 use crate::managers::models::lint_violation::LintViolation;
-use crate::managers::models::planned_component::PlannedComponent;
 use crate::managers::models::report_status::ReportStatus;
 use crate::managers::models::review::Review;
 use crate::managers::models::review_finding::ReviewFinding;
@@ -37,7 +34,6 @@ const READ_FILES: &str = "read_files";
 const LIST_FILES: &str = "list_files";
 const SEARCH: &str = "search";
 const RUN_CHECKS: &str = "run_checks";
-const SCAFFOLD: &str = "scaffold";
 const SUBMIT_PLAN: &str = "submit_plan";
 const REPORT: &str = "report";
 const SUBMIT_REVIEW: &str = "submit_review";
@@ -117,31 +113,9 @@ impl ToolProcessor {
                 }),
             },
             ToolDefinition {
-                name: SCAFFOLD.to_string(),
-                description: "Create a new component and wire it in (its files, its module declarations, the service \
-                              locator), without writing it by hand; then read what it created and write the logic. \
-                              The stack's kinds are listed in the instructions."
-                    .to_string(),
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "kind": { "type": "string", "description": "One of the stack's scaffold kinds" },
-                        "name": { "type": "string", "description": "The component's name, snake_case" },
-                        "within": {
-                            "type": ["string", "null"],
-                            "description": "For a kind that lives inside another component: that component's name; \
-                                            otherwise null",
-                        },
-                    },
-                    "required": ["kind", "name", "within"],
-                    "additionalProperties": false,
-                }),
-            },
-            ToolDefinition {
                 name: SUBMIT_PLAN.to_string(),
                 description: "Plan a change too big to make well yourself, instead of making it: the harness checks \
-                              the plan and scaffolds its components, then the implementor builds it. Call it before you \
-                              change any file."
+                              the plan, then the implementor builds it. Call it before you change any file."
                     .to_string(),
                 parameters: json!({
                     "type": "object",
@@ -152,23 +126,6 @@ impl ToolProcessor {
                             "items": { "type": "string" },
                             "description": "What you decided where the request left it open",
                         },
-                        "components": {
-                            "type": "array",
-                            "description": "Every new component, to be scaffolded before the implementor starts",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "kind": { "type": "string", "description": "One of the stack's scaffold kinds" },
-                                    "name": { "type": "string", "description": "snake_case" },
-                                    "within": {
-                                        "type": ["string", "null"],
-                                        "description": "For a kind that lives inside another component: its name",
-                                    },
-                                },
-                                "required": ["kind", "name", "within"],
-                                "additionalProperties": false,
-                            },
-                        },
                         "steps": {
                             "type": "array",
                             "items": { "type": "string" },
@@ -176,7 +133,7 @@ impl ToolProcessor {
                                             where, and against what (signatures, fields, the files it touches)",
                         },
                     },
-                    "required": ["summary", "assumptions", "components", "steps"],
+                    "required": ["summary", "assumptions", "steps"],
                     "additionalProperties": false,
                 }),
             },
@@ -244,25 +201,9 @@ impl ToolProcessor {
     pub fn get_allowed_tool_names(&self, agent_role: AgentRole) -> Vec<String> {
         let tool_names: &[&str] = match agent_role {
             // Everything but report and submit_review, which end the implementor's and the reviewer's assignments.
-            AgentRole::Orchestrator => &[
-                READ_FILES,
-                LIST_FILES,
-                SEARCH,
-                RUN_CHECKS,
-                SCAFFOLD,
-                SUBMIT_PLAN,
-                APPLY_PATCH,
-            ],
+            AgentRole::Orchestrator => &[READ_FILES, LIST_FILES, SEARCH, RUN_CHECKS, SUBMIT_PLAN, APPLY_PATCH],
             // It builds the plan it was given, and reports on it.
-            AgentRole::Implementor => &[
-                READ_FILES,
-                LIST_FILES,
-                SEARCH,
-                RUN_CHECKS,
-                SCAFFOLD,
-                APPLY_PATCH,
-                REPORT,
-            ],
+            AgentRole::Implementor => &[READ_FILES, LIST_FILES, SEARCH, RUN_CHECKS, APPLY_PATCH, REPORT],
             AgentRole::Reviewer => &[READ_FILES, LIST_FILES, SEARCH, SUBMIT_REVIEW],
         };
         tool_names
@@ -308,19 +249,6 @@ impl ToolProcessor {
                 }
             }
             RUN_CHECKS => Ok(ToolRequest::RunChecks),
-            SCAFFOLD => {
-                let scaffold_arguments: ScaffoldArguments = ToolProcessor::parse_arguments(name, arguments)?;
-                match (scaffold_arguments.kind, scaffold_arguments.name) {
-                    (Some(kind), Some(component_name)) => Ok(ToolRequest::Scaffold {
-                        kind,
-                        name: component_name,
-                        within: scaffold_arguments
-                            .within
-                            .filter(|within: &String| !within.trim().is_empty()),
-                    }),
-                    _ => Err(ToolProcessor::to_invalid_tool_call(name, "kind and name are required")),
-                }
-            }
             REPORT => {
                 let report_arguments: ReportArguments = ToolProcessor::parse_arguments(name, arguments)?;
                 match (
@@ -409,23 +337,14 @@ impl ToolProcessor {
                 None => format!("/{pattern}/"),
             },
             ToolRequest::RunChecks => String::new(),
-            ToolRequest::Scaffold { kind, name, within } => match within {
-                Some(within) => format!("{kind} {name} in {within}"),
-                None => format!("{kind} {name}"),
-            },
             ToolRequest::Report { agent_report } => agent_report.status.name().to_string(),
             ToolRequest::SubmitReview { review } => format!("{} findings", review.findings.len()),
-            ToolRequest::SubmitPlan { work_plan } => format!(
-                "{} components, {} steps",
-                work_plan.components.len(),
-                work_plan.steps.len()
-            ),
+            ToolRequest::SubmitPlan { work_plan } => format!("{} steps", work_plan.steps.len()),
         }
     }
 
-    /// What the implementor is asked: the plan, and the components the harness scaffolded for it (`scaffold_outputs`,
-    /// each with its files' contents, so it patches them without reading them).
-    pub fn format_implementor_brief(&self, work_plan: &WorkPlan, scaffold_outputs: &[String]) -> String {
+    /// What the implementor is asked: the plan, and how to end its build.
+    pub fn format_implementor_brief(&self, work_plan: &WorkPlan) -> String {
         let mut brief: String = format!("Build this plan.\n\n{}\n", work_plan.summary.trim());
         if !work_plan.assumptions.is_empty() {
             brief.push_str(&format!(
@@ -440,12 +359,6 @@ impl ToolProcessor {
             .map(|(index, step): (usize, &String)| format!("{}. {}", index + 1, step.trim()))
             .collect();
         brief.push_str(&format!("\nSteps:\n{}\n", steps.join("\n")));
-        if !scaffold_outputs.is_empty() {
-            brief.push_str(&format!(
-                "\nThe harness scaffolded the plan's components, as they are now:\n\n{}\n",
-                scaffold_outputs.join("\n\n")
-            ));
-        }
         brief.push_str(
             "\nWhen the change is built and run_checks passes, call report with status done. If the plan can't be \
              built as it is, build what you can, then call report with status blocked, and say in needs what is \
@@ -494,8 +407,8 @@ impl ToolProcessor {
     /// What the orchestrator is told when its plan is accepted.
     pub fn format_plan_accepted(&self, work_plan: &WorkPlan) -> String {
         format!(
-            "The plan is accepted: the harness scaffolds its {} components, and the implementor builds it.",
-            work_plan.components.len()
+            "The plan is accepted ({} steps), and the implementor builds it.",
+            work_plan.steps.len()
         )
     }
 
@@ -577,49 +490,6 @@ impl ToolProcessor {
             })
             .collect::<Vec<String>>()
             .join("\n")
-    }
-
-    /// What a scaffold did: the files it created, whole (as they are now), so the model can patch them without reading
-    /// them; the files it wired the component into; and how formatting went.
-    pub fn format_scaffold(
-        &self,
-        created_files: &[WorkspaceFile],
-        updated_paths: &[String],
-        format_result: &FormatResult,
-    ) -> String {
-        let created: String = created_files
-            .iter()
-            .map(|created_file: &WorkspaceFile| self.format_file(created_file))
-            .collect::<Vec<String>>()
-            .join("\n\n");
-        // The files it created and wired into are named below; any other the formatter changed is too.
-        let other_reformatted_paths: Vec<String> = format_result
-            .reformatted_paths
-            .iter()
-            .filter(|path: &&String| {
-                !updated_paths.contains(path)
-                    && !created_files
-                        .iter()
-                        .any(|created_file: &WorkspaceFile| &created_file.path == *path)
-            })
-            .cloned()
-            .collect();
-        let mut format_note: String = if format_result.succeeded {
-            "Formatted.".to_string()
-        } else {
-            "A formatter failed (on code that doesn't parse or compile); run_checks says why.".to_string()
-        };
-        if !other_reformatted_paths.is_empty() {
-            format_note.push_str(&format!(
-                " The formatters also rewrote these, so read them again before you patch them:\n{}",
-                ToolProcessor::to_bullets(&other_reformatted_paths)
-            ));
-        }
-        format!(
-            "{format_note}\nWired into (module declarations and the service locator; no need to read them for \
-             that):\n{}\n\nCreated, as they are now: write the component's logic in them.\n\n{created}",
-            ToolProcessor::to_bullets(updated_paths)
-        )
     }
 
     pub fn format_error(&self, message: &str) -> String {
@@ -704,26 +574,9 @@ impl ToolProcessor {
     // The plan as the model wrote it; what is missing is the reason the call is invalid. Whether the plan holds up is
     // the WorkPlanProcessor's to check.
     fn to_work_plan(submit_plan_arguments: SubmitPlanArguments) -> Result<WorkPlan, String> {
-        let components: Vec<PlannedComponent> = submit_plan_arguments
-            .components
-            .unwrap_or_default()
-            .into_iter()
-            .enumerate()
-            .map(
-                |(index, component): (usize, PlannedComponentArguments)| match (component.kind, component.name) {
-                    (Some(kind), Some(component_name)) => Ok(PlannedComponent {
-                        kind,
-                        name: component_name,
-                        within: component.within.filter(|within: &String| !within.trim().is_empty()),
-                    }),
-                    _ => Err(format!("components[{index}] needs a kind and a name")),
-                },
-            )
-            .collect::<Result<Vec<PlannedComponent>, String>>()?;
         Ok(WorkPlan {
             summary: submit_plan_arguments.summary.unwrap_or_default(),
             assumptions: submit_plan_arguments.assumptions.unwrap_or_default(),
-            components,
             steps: submit_plan_arguments.steps.unwrap_or_default(),
         })
     }

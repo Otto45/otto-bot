@@ -39,8 +39,8 @@ impl PromptProcessor {
         let assignment_layer: &str = match agent_role {
             AgentRole::Orchestrator => return None,
             AgentRole::Implementor => {
-                "You are the implementor: you build the orchestrator's plan, which you are given, and only that. The \
-                 harness has scaffolded the plan's components. Follow the plan's steps; read what you need first, in \
+                "You are the implementor: you build the orchestrator's plan, which you are given, and only that. \
+                 Follow the plan's steps; read what you need first, in \
                  one call. End with the report tool, never with a message.\n"
             }
             AgentRole::Reviewer => {
@@ -100,23 +100,13 @@ impl PromptProcessor {
             );
         }
 
-        if let Some(stack_pack_scaffold) = stack_pack.and_then(|stack_pack: &StackPack| stack_pack.scaffold.as_ref()) {
-            stack_layer.push_str(
-                "\nTo add a component of one of these kinds, call scaffold first; it creates the files and wires them \
-                 in, so you write only the logic:\n",
-            );
-            for scaffold_kind in &stack_pack_scaffold.kinds {
-                stack_layer.push_str(&format!("- {}: {}\n", scaffold_kind.name, scaffold_kind.description));
-            }
-        }
-
         if stack_pack.is_some() {
             stack_layer.push_str(
                 "\nThe session's own agent, the orchestrator, makes a small change itself. A change too big to make \
                  well in a few turns (several new components, or many files) it plans instead, with submit_plan, \
-                 before it changes any file: a summary, the components to scaffold, and the steps. The harness \
-                 scaffolds the components, then the implementor builds the change from the plan alone, so each step \
-                 says what to build, where, and against what (signatures, fields, the files it touches).\n",
+                 before it changes any file: a summary and the steps. The implementor builds the change from the \
+                 plan alone, so each step says what to build, where, and against what (signatures, fields, the files \
+                 it touches). A new component follows the example of its kind in the app.\n",
             );
         }
 

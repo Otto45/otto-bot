@@ -1,2 +1,1 @@
-pub mod validator_scaffold_kind_resource;
 pub mod validator_stack_pack_manifest_resource;

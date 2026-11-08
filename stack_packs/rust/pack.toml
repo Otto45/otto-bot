@@ -123,16 +123,8 @@ message = "a file holds the one struct, enum or trait it is named after"
 query = "queries/lint/type_names.scm"
 exclude = ["**/mod.rs", "src/lib.rs", "**/main.rs", "src/bin/**"]
 
-# Scaffolds: a component created and wired in without a model, so the agent writes only its logic. Each kind is a
-# file in scaffolds/ (its name is the kind's): templates to create, and insertions into files that exist, each placed
-# before an anchor line (or at the end). Templates use {name} (snake_case), {Name} (PascalCase), and for a kind that
-# lives inside another component, {within} and {Within}. The formatter ([format]) runs afterwards and sorts the new
-# lines in.
-[scaffold]
-kinds = "scaffolds"
-
 # The formatters: commands that rewrite files into the form the checks expect, the code's formatting and the generated
-# OpenAPI contract. The harness runs them, in order, before every run of the checks and after a scaffold, so no agent
+# OpenAPI contract. The harness runs them, in order, before every run of the checks, so no agent
 # formats code or regenerates the contract by hand (or spends a turn on a check of either), and tells the agent which of
 # the `sources` they changed.
 [format]

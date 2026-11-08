@@ -47,15 +47,6 @@ impl SessionEventMapper {
         for assumption in &work_plan.assumptions {
             output.push_str(&format!("  assumed: {assumption}\n"));
         }
-        for planned_component in &work_plan.components {
-            match planned_component.within.as_deref() {
-                Some(within) => output.push_str(&format!(
-                    "  + {} {} in {within}\n",
-                    planned_component.kind, planned_component.name
-                )),
-                None => output.push_str(&format!("  + {} {}\n", planned_component.kind, planned_component.name)),
-            }
-        }
         for (index, step) in work_plan.steps.iter().enumerate() {
             output.push_str(&format!("  {}. {}\n", index + 1, step.trim()));
         }

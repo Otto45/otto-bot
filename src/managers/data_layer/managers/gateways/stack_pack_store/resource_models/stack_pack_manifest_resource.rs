@@ -45,12 +45,6 @@ pub struct LintResource {
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
-pub struct ScaffoldResource {
-    pub kinds: Option<String>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default)]
 pub struct FormatResource {
     pub commands: Option<Vec<Vec<String>>>,
     pub sources: Option<Vec<String>>,
@@ -67,5 +61,4 @@ pub struct StackPackManifestResource {
     pub format: Option<FormatResource>,
     pub project_map: Option<ProjectMapResource>,
     pub lint: Option<LintResource>,
-    pub scaffold: Option<ScaffoldResource>,
 }

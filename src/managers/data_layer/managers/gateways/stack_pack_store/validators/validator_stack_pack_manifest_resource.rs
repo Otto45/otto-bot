@@ -47,12 +47,6 @@ impl ValidatorStackPackManifestResource {
             errors.extend(ValidatorStackPackManifestResource::validate_lint_resource(lint));
         }
 
-        if let Some(scaffold) = manifest.scaffold.as_ref()
-            && let Some(error) = ValidatorString::validate("scaffold.kinds", scaffold.kinds.as_deref())
-        {
-            errors.push(error);
-        }
-
         if let Some(format) = manifest.format.as_ref() {
             match format.commands.as_ref() {
                 Some(commands)

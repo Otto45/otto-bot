@@ -13,7 +13,6 @@ use crate::managers::engines::agent_run::processors::diff::diff_processor::DiffP
 use crate::managers::engines::agent_run::processors::patch::patch_processor::PatchProcessor;
 use crate::managers::engines::agent_run::processors::project_map::project_map_processor::ProjectMapProcessor;
 use crate::managers::engines::agent_run::processors::prompt::prompt_processor::PromptProcessor;
-use crate::managers::engines::agent_run::processors::scaffold::scaffold_processor::ScaffoldProcessor;
 use crate::managers::engines::agent_run::processors::tool::tool_processor::ToolProcessor;
 use crate::managers::engines::agent_run::processors::work_plan::work_plan_processor::WorkPlanProcessor;
 use crate::managers::exceptions::agent_run_engine_exception::AgentRunEngineException;
@@ -42,7 +41,6 @@ use crate::managers::models::model_response::ModelResponse;
 use crate::managers::models::model_usage::ModelUsage;
 use crate::managers::models::patch_operation::PatchOperation;
 use crate::managers::models::patch_operation_kind::PatchOperationKind;
-use crate::managers::models::planned_component::PlannedComponent;
 use crate::managers::models::project_map_role::ProjectMapRole;
 use crate::managers::models::prompt_layer::PromptLayer;
 use crate::managers::models::report_status::ReportStatus;
@@ -50,8 +48,6 @@ use crate::managers::models::review::Review;
 use crate::managers::models::review_finding::ReviewFinding;
 use crate::managers::models::run_context::RunContext;
 use crate::managers::models::run_summary::RunSummary;
-use crate::managers::models::scaffold_file::ScaffoldFile;
-use crate::managers::models::scaffold_plan::ScaffoldPlan;
 use crate::managers::models::session::Session;
 use crate::managers::models::session_event::SessionEvent;
 use crate::managers::models::session_project_maps::SessionProjectMaps;
@@ -59,7 +55,6 @@ use crate::managers::models::stack_pack::StackPack;
 use crate::managers::models::stack_pack_format::StackPackFormat;
 use crate::managers::models::stack_pack_lint::StackPackLint;
 use crate::managers::models::stack_pack_project_map::StackPackProjectMap;
-use crate::managers::models::stack_pack_scaffold::StackPackScaffold;
 use crate::managers::models::tool_call::ToolCall;
 use crate::managers::models::tool_request::ToolRequest;
 use crate::managers::models::usage_record::UsageRecord;
@@ -68,7 +63,6 @@ use crate::managers::models::work_plan::WorkPlan;
 use crate::managers::models::workspace_file::WorkspaceFile;
 
 const APPLY_PATCH: &str = "apply_patch";
-const SCAFFOLD: &str = "scaffold";
 // How many times the implementor, once it reports a plan done, is sent the checks that fail, before the build ends as
 // it is.
 const IMPLEMENTOR_ROUNDS: i64 = 3;
@@ -92,7 +86,6 @@ pub struct AgentRunEngine {
     patch_processor: Arc<PatchProcessor>,
     project_map_processor: Arc<ProjectMapProcessor>,
     architecture_lint_processor: Arc<ArchitectureLintProcessor>,
-    scaffold_processor: Arc<ScaffoldProcessor>,
     work_plan_processor: Arc<WorkPlanProcessor>,
     diff_processor: Arc<DiffProcessor>,
     max_turns: i64,
@@ -110,7 +103,6 @@ impl AgentRunEngine {
         patch_processor: Arc<PatchProcessor>,
         project_map_processor: Arc<ProjectMapProcessor>,
         architecture_lint_processor: Arc<ArchitectureLintProcessor>,
-        scaffold_processor: Arc<ScaffoldProcessor>,
         work_plan_processor: Arc<WorkPlanProcessor>,
         diff_processor: Arc<DiffProcessor>,
         max_turns: i64,
@@ -125,7 +117,6 @@ impl AgentRunEngine {
             patch_processor,
             project_map_processor,
             architecture_lint_processor,
-            scaffold_processor,
             work_plan_processor,
             diff_processor,
             max_turns,
@@ -164,8 +155,7 @@ impl AgentRunEngine {
         .await
     }
 
-    /// Builds the orchestrator's accepted plan: the harness scaffolds its components, then the implementor, on a lane of
-    /// its own, builds the change. Once the implementor reports it done, the harness runs every check itself and sends
+    /// Builds the orchestrator's accepted plan: the implementor, on a lane of its own, builds the change. Once the implementor reports it done, the harness runs every check itself and sends
     /// it what fails, for a few rounds; a blocked report ends the build as it is. A change that is done, with every
     /// check passing, is reviewed, and what the review says must be fixed goes back to the implementor, once.
     pub async fn implement_plan(
@@ -183,25 +173,12 @@ impl AgentRunEngine {
         let workspace_directory: &Path = &agent_assignment.workspace_directory;
         // The workspace before the change, which the review's diff is made against.
         let before_change: Vec<WorkspaceFile> = self.snapshot_workspace(workspace_directory).await?;
-        let (stack_pack, _): (Option<StackPack>, Option<String>) =
-            self.detect_stack_pack(workspace_directory, data_facade).await?;
-        let scaffold_outputs: Vec<String> = match stack_pack.as_ref() {
-            Some(stack_pack) => {
-                self.scaffold_components(workspace_directory, stack_pack, &work_plan.components, events)
-                    .await?
-            }
-            None => Vec::new(),
-        };
-
-        // The map is built after scaffolding, so what the scaffolds added shows in the note.
         let (run_context, project_map_note): (RunContext, Option<ConversationItem>) =
             self.prepare_assignment(session, &agent_assignment, data_facade).await?;
         let mut opening_items: Vec<ConversationItem> = Vec::with_capacity(2);
         opening_items.extend(project_map_note);
         opening_items.push(ConversationItem::UserMessage {
-            text: self
-                .tool_processor
-                .format_implementor_brief(work_plan, &scaffold_outputs),
+            text: self.tool_processor.format_implementor_brief(work_plan),
         });
         let (mut report, mut checks_passed, mut run_summary): (Option<AgentReport>, bool, RunSummary) = self
             .run_implementor(
@@ -387,62 +364,6 @@ impl AgentRunEngine {
         Ok(workspace_files)
     }
 
-    // Scaffolds the plan's components, and reports each as the harness's own use of the scaffold tool. A component that can't be scaffolded after all (its plan checked out) is
-    // told to the orchestrator, which writes it by hand.
-    async fn scaffold_components(
-        &self,
-        workspace_directory: &Path,
-        stack_pack: &StackPack,
-        planned_components: &[PlannedComponent],
-        events: &broadcast::Sender<SessionEvent>,
-    ) -> ApplicationResult<Vec<String>> {
-        let Some(stack_pack_scaffold) = stack_pack.scaffold.as_ref() else {
-            return Ok(Vec::new());
-        };
-        // A component that lives within another comes after those that live within nothing, so the one it lives
-        // within is there when it is scaffolded.
-        let mut ordered_components: Vec<&PlannedComponent> = planned_components.iter().collect();
-        ordered_components.sort_by_key(|planned_component: &&PlannedComponent| planned_component.within.is_some());
-
-        let mut scaffold_outputs: Vec<String> = Vec::with_capacity(ordered_components.len());
-        for planned_component in ordered_components {
-            let target: String = match planned_component.within.as_deref() {
-                Some(within) => format!("{} {} in {within}", planned_component.kind, planned_component.name),
-                None => format!("{} {}", planned_component.kind, planned_component.name),
-            };
-            let scaffolded: ApplicationResult<String> = self
-                .scaffold(
-                    workspace_directory,
-                    stack_pack_scaffold,
-                    stack_pack.format.as_ref(),
-                    &planned_component.kind,
-                    &planned_component.name,
-                    planned_component.within.as_deref(),
-                )
-                .await;
-            let (scaffold_output, succeeded): (String, bool) = match scaffolded {
-                Ok(scaffold_output) => (scaffold_output, true),
-                Err(exception) => (
-                    format!(
-                        "The {target} could not be scaffolded ({}); write it by hand.",
-                        self.to_tool_error_message(exception)?
-                    ),
-                    false,
-                ),
-            };
-            events
-                .send(SessionEvent::ToolUsed {
-                    agent: None,
-                    tool_name: SCAFFOLD.to_string(),
-                    target,
-                    succeeded,
-                })
-                .ok();
-            scaffold_outputs.push(scaffold_output);
-        }
-        Ok(scaffold_outputs)
-    }
-
     // The orchestrator's run context and the note of how the workspace changed since its last run. The session keeps
     // the orchestrator's map from run to run, so its requests' prefix (and its lane) carries over.
     async fn prepare_orchestrator(
@@ -476,7 +397,7 @@ impl AgentRunEngine {
     }
 
     // The implementor's or the reviewer's run context. Its requests open with the orchestrator's kept map, whose layer is
-    // cached already, and a note of what changed since it was built (the plan's scaffolds and change, for one), unless
+    // cached already, and a note of what changed since it was built (the plan's change, for the reviewer), unless
     // there is so much that a map of the workspace as it is now is the better layer. Nothing is kept: the orchestrator's
     // notes still start from its own last run.
     async fn prepare_assignment(
@@ -914,46 +835,12 @@ impl AgentRunEngine {
                     Err(exception) => Ok((self.to_tool_error(exception)?, false)),
                 }
             }
-            ToolRequest::Scaffold { kind, name, within } => {
-                match run_context
-                    .stack_pack
-                    .as_ref()
-                    .and_then(|stack_pack: &StackPack| stack_pack.scaffold.as_ref())
-                {
-                    None => Ok((
-                        self.tool_processor
-                            .format_error("The workspace's stack has no scaffolds; write the component by hand"),
-                        false,
-                    )),
-                    Some(stack_pack_scaffold) => {
-                        match self
-                            .scaffold(
-                                workspace_directory,
-                                stack_pack_scaffold,
-                                run_context
-                                    .stack_pack
-                                    .as_ref()
-                                    .and_then(|stack_pack: &StackPack| stack_pack.format.as_ref()),
-                                kind,
-                                name,
-                                within.as_deref(),
-                            )
-                            .await
-                        {
-                            Ok(output) => Ok((output, true)),
-                            Err(exception) => Ok((self.to_tool_error(exception)?, false)),
-                        }
-                    }
-                }
-            }
             ToolRequest::Report { .. } => Ok(("Reported.".to_string(), true)),
             ToolRequest::SubmitReview { .. } => Ok(("Review received.".to_string(), true)),
-            ToolRequest::SubmitPlan { work_plan } => {
-                match self.check_work_plan(agent_assignment, run_context, work_plan).await {
-                    Ok(()) => Ok((self.tool_processor.format_plan_accepted(work_plan), true)),
-                    Err(exception) => Ok((self.to_tool_error(exception)?, false)),
-                }
-            }
+            ToolRequest::SubmitPlan { work_plan } => match self.work_plan_processor.check(work_plan) {
+                Ok(()) => Ok((self.tool_processor.format_plan_accepted(work_plan), true)),
+                Err(exception) => Ok((self.to_tool_error(exception)?, false)),
+            },
             ToolRequest::RunChecks => match run_context.stack_pack.as_ref() {
                 None => Ok((
                     self.tool_processor
@@ -973,101 +860,6 @@ impl AgentRunEngine {
                 }
             },
         }
-    }
-
-    // Creates a component from the pack's scaffold kind and wires it in. Everything is checked first (the component it
-    // lives within exists, no file it creates does, every anchor is found), so a scaffold applies whole or not at all;
-    // then the pack's formatter sorts the lines it added in.
-    async fn scaffold(
-        &self,
-        workspace_directory: &Path,
-        stack_pack_scaffold: &StackPackScaffold,
-        stack_pack_format: Option<&StackPackFormat>,
-        kind: &str,
-        name: &str,
-        within: Option<&str>,
-    ) -> ApplicationResult<String> {
-        let scaffold_plan: ScaffoldPlan = self.scaffold_processor.plan(stack_pack_scaffold, kind, name, within)?;
-
-        if let Some(within_path) = scaffold_plan.within_path.as_deref()
-            && !self
-                .workspace_gateway
-                .file_exists(workspace_directory, within_path)
-                .await?
-        {
-            return Err(ApplicationBaseException::new(
-                AgentRunEngineException::ScaffoldNotApplicable,
-                format!(
-                    "{within_path} doesn't exist: there is no component named {}",
-                    within.unwrap_or_default()
-                ),
-                ContextualData::new().with("path", within_path),
-            ));
-        }
-        for created_file in &scaffold_plan.created_files {
-            if self
-                .workspace_gateway
-                .file_exists(workspace_directory, &created_file.path)
-                .await?
-            {
-                return Err(ApplicationBaseException::new(
-                    AgentRunEngineException::ScaffoldNotApplicable,
-                    format!("{} already exists: the component is there already", created_file.path),
-                    ContextualData::new().with("path", created_file.path.as_str()),
-                ));
-            }
-        }
-
-        // Each file wired into, with every insertion made, in the order they are first named.
-        let mut updated_files: Vec<WorkspaceFile> = Vec::new();
-        for scaffold_insertion in &scaffold_plan.insertions {
-            let position: Option<usize> = updated_files
-                .iter()
-                .position(|updated_file: &WorkspaceFile| updated_file.path == scaffold_insertion.path);
-            let current: WorkspaceFile = match position {
-                Some(index) => updated_files.remove(index),
-                None => {
-                    self.workspace_gateway
-                        .read_file(workspace_directory, &scaffold_insertion.path)
-                        .await?
-                }
-            };
-            let content: String = self.scaffold_processor.insert(&current.content, scaffold_insertion)?;
-            updated_files.push(WorkspaceFile {
-                path: current.path,
-                content,
-            });
-        }
-
-        for created_file in &scaffold_plan.created_files {
-            self.workspace_gateway
-                .write_file(workspace_directory, &created_file.path, &created_file.content, true)
-                .await?;
-        }
-        for updated_file in &updated_files {
-            self.workspace_gateway
-                .write_file(workspace_directory, &updated_file.path, &updated_file.content, false)
-                .await?;
-        }
-
-        let format_result: FormatResult = self.format_workspace(workspace_directory, stack_pack_format).await?;
-
-        // As they are after formatting, which the model patches against.
-        let mut created_files: Vec<WorkspaceFile> = Vec::with_capacity(scaffold_plan.created_files.len());
-        for created_file in &scaffold_plan.created_files {
-            created_files.push(
-                self.workspace_gateway
-                    .read_file(workspace_directory, &created_file.path)
-                    .await?,
-            );
-        }
-        let updated_paths: Vec<String> = updated_files
-            .iter()
-            .map(|updated_file: &WorkspaceFile| updated_file.path.clone())
-            .collect();
-        Ok(self
-            .tool_processor
-            .format_scaffold(&created_files, &updated_paths, &format_result))
     }
 
     // Runs the stack's formatters, and finds which of their files they changed (by reading them before and after), so
@@ -1179,87 +971,6 @@ impl AgentRunEngine {
         Ok(check_results)
     }
 
-    // Checks a plan against the workspace and the stack: each component is scaffolded on paper (its kind exists, the
-    // component it lives within exists or is planned too, none of its files exists yet), then the WorkPlanProcessor
-    // checks the rest. Every problem is reported in one InvalidWorkPlan.
-    async fn check_work_plan(
-        &self,
-        agent_assignment: &AgentAssignment,
-        run_context: &RunContext,
-        work_plan: &WorkPlan,
-    ) -> ApplicationResult<()> {
-        let workspace_directory: &Path = &agent_assignment.workspace_directory;
-        let Some(stack_pack) = run_context.stack_pack.as_ref() else {
-            return Err(ApplicationBaseException::new(
-                AgentRunEngineException::InvalidWorkPlan,
-                "No stack pack matches the workspace, so there is nothing to check a plan against: make the change \
-                 yourself",
-                ContextualData::new(),
-            ));
-        };
-
-        let mut component_errors: Vec<String> = Vec::new();
-        let mut scaffold_plans: Vec<ScaffoldPlan> = Vec::with_capacity(work_plan.components.len());
-        for planned_component in &work_plan.components {
-            let Some(stack_pack_scaffold) = stack_pack.scaffold.as_ref() else {
-                component_errors.push("the stack has no scaffolds, so a plan can't have components".to_string());
-                break;
-            };
-            match self.scaffold_processor.plan(
-                stack_pack_scaffold,
-                &planned_component.kind,
-                &planned_component.name,
-                planned_component.within.as_deref(),
-            ) {
-                Ok(scaffold_plan) => scaffold_plans.push(scaffold_plan),
-                Err(exception) if AgentRunEngine::is_told_to_model(exception.kind()) => {
-                    component_errors.push(format!(
-                        "the {} {}: {}",
-                        planned_component.kind,
-                        planned_component.name,
-                        exception.message()
-                    ));
-                }
-                Err(exception) => return Err(exception),
-            }
-        }
-
-        let created_paths: Vec<String> = scaffold_plans
-            .iter()
-            .flat_map(|scaffold_plan: &ScaffoldPlan| scaffold_plan.created_files.iter())
-            .map(|scaffold_file: &ScaffoldFile| scaffold_file.path.clone())
-            .collect();
-        for scaffold_plan in &scaffold_plans {
-            if let Some(within_path) = scaffold_plan.within_path.as_deref()
-                && !created_paths
-                    .iter()
-                    .any(|created_path: &String| created_path == within_path)
-                && !self
-                    .workspace_gateway
-                    .file_exists(workspace_directory, within_path)
-                    .await?
-            {
-                component_errors.push(format!(
-                    "{within_path} doesn't exist and isn't planned: a component lives within a component that does"
-                ));
-            }
-            for scaffold_file in &scaffold_plan.created_files {
-                if self
-                    .workspace_gateway
-                    .file_exists(workspace_directory, &scaffold_file.path)
-                    .await?
-                {
-                    component_errors.push(format!(
-                        "{} already exists: the component is there already",
-                        scaffold_file.path
-                    ));
-                }
-            }
-        }
-
-        self.work_plan_processor.check(work_plan, component_errors)
-    }
-
     // The InvalidToolCall-like refusal of a tool the agent's role may not call.
     fn check_tool_allowed(&self, agent_assignment: &AgentAssignment, tool_name: &str) -> ApplicationResult<()> {
         if self.tool_processor.is_tool_allowed(agent_assignment.role, tool_name) {
@@ -1349,7 +1060,6 @@ impl AgentRunEngine {
             ExceptionKind::AgentRunEngine(exception) => match exception {
                 AgentRunEngineException::InvalidToolCall
                 | AgentRunEngineException::InvalidPatch
-                | AgentRunEngineException::ScaffoldNotApplicable
                 | AgentRunEngineException::ToolNotAllowed
                 | AgentRunEngineException::InvalidWorkPlan => true,
                 AgentRunEngineException::MaxTurnsReached => false,

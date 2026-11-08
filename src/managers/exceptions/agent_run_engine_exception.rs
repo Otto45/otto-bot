@@ -4,9 +4,6 @@
 pub enum AgentRunEngineException {
     InvalidToolCall,
     InvalidPatch,
-    /// A scaffold that can't be applied to the workspace (a file it would create exists, an anchor is missing): told
-    /// to the model, which writes the component by hand instead.
-    ScaffoldNotApplicable,
     /// A tool the agent's role may not call: told to the model, which was told which it may.
     ToolNotAllowed,
     /// A work plan that fails the harness's checks: told to the model, which fixes the plan and submits it again.
@@ -19,7 +16,6 @@ impl AgentRunEngineException {
         match self {
             AgentRunEngineException::InvalidToolCall => "InvalidToolCallException",
             AgentRunEngineException::InvalidPatch => "InvalidPatchException",
-            AgentRunEngineException::ScaffoldNotApplicable => "ScaffoldNotApplicableException",
             AgentRunEngineException::ToolNotAllowed => "ToolNotAllowedException",
             AgentRunEngineException::InvalidWorkPlan => "InvalidWorkPlanException",
             AgentRunEngineException::MaxTurnsReached => "MaxTurnsReachedException",

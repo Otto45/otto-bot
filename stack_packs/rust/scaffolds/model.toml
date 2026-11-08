@@ -1,9 +1,0 @@
-description = "A domain model: an immutable struct with public fields, in managers/models/<name>.rs."
-
-[[files]]
-path = "src/managers/models/{name}.rs"
-template = "templates/model.rs"
-
-[[insertions]]
-path = "src/managers/models/mod.rs"
-text = "pub mod {name};\n"

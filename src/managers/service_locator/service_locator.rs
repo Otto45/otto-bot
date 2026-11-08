@@ -12,7 +12,6 @@ use crate::managers::engines::agent_run::processors::diff::diff_processor::DiffP
 use crate::managers::engines::agent_run::processors::patch::patch_processor::PatchProcessor;
 use crate::managers::engines::agent_run::processors::project_map::project_map_processor::ProjectMapProcessor;
 use crate::managers::engines::agent_run::processors::prompt::prompt_processor::PromptProcessor;
-use crate::managers::engines::agent_run::processors::scaffold::scaffold_processor::ScaffoldProcessor;
 use crate::managers::engines::agent_run::processors::tool::tool_processor::ToolProcessor;
 use crate::managers::engines::agent_run::processors::work_plan::work_plan_processor::WorkPlanProcessor;
 use crate::managers::exceptions::application_base_exception::{ApplicationBaseException, ApplicationResult};
@@ -48,7 +47,6 @@ pub struct ServiceLocator {
     patch_processor: Mutex<Option<Arc<PatchProcessor>>>,
     project_map_processor: Mutex<Option<Arc<ProjectMapProcessor>>>,
     architecture_lint_processor: Mutex<Option<Arc<ArchitectureLintProcessor>>>,
-    scaffold_processor: Mutex<Option<Arc<ScaffoldProcessor>>>,
     work_plan_processor: Mutex<Option<Arc<WorkPlanProcessor>>>,
     diff_processor: Mutex<Option<Arc<DiffProcessor>>>,
     agent_run_engine: Mutex<Option<Arc<AgentRunEngine>>>,
@@ -83,7 +81,6 @@ impl ServiceLocator {
             patch_processor: Mutex::new(None),
             project_map_processor: Mutex::new(None),
             architecture_lint_processor: Mutex::new(None),
-            scaffold_processor: Mutex::new(None),
             work_plan_processor: Mutex::new(None),
             diff_processor: Mutex::new(None),
             agent_run_engine: Mutex::new(None),
@@ -204,10 +201,6 @@ impl ServiceLocator {
         })
     }
 
-    pub fn get_scaffold_processor(&self) -> ApplicationResult<Arc<ScaffoldProcessor>> {
-        ServiceLocator::get_or_create(&self.scaffold_processor, || Ok(Arc::new(ScaffoldProcessor)))
-    }
-
     pub fn get_work_plan_processor(&self) -> ApplicationResult<Arc<WorkPlanProcessor>> {
         ServiceLocator::get_or_create(&self.work_plan_processor, || Ok(Arc::new(WorkPlanProcessor)))
     }
@@ -243,7 +236,6 @@ impl ServiceLocator {
                 self.get_patch_processor()?,
                 self.get_project_map_processor()?,
                 self.get_architecture_lint_processor()?,
-                self.get_scaffold_processor()?,
                 self.get_work_plan_processor()?,
                 self.get_diff_processor()?,
                 agent_settings.max_turns,
