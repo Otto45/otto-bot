@@ -141,9 +141,10 @@ agent (a lane) in a role.
    with `report` (done, or blocked with what it needs); once it reports done, the harness runs every check itself and
    sends it what fails, for up to three rounds.
 3. **Reviewer.** Once the implementor reports the change done with every check passing, the reviewer, on a read-only
-   lane at high reasoning effort, is given its diff (from snapshots of the workspace before and after) and reads what
-   else it needs; it looks for security problems first, then the architecture's rules, then whether the change does
-   what the plan says, and ends with `submit_review`. High-severity findings go back to the implementor for one round
+   lane at high reasoning effort, is given the person's request, the plan and the change's diff (from snapshots of the
+   workspace before and after), and reads what else it needs. It judges what the code does, not what its comments or
+   the plan say about it, looking for security problems first, then correctness against the request (money kept
+   exact, no data left inconsistent), then the architecture's rules, and ends with `submit_review`. High-severity findings go back to the implementor for one round
    of fixes (held to the checks again); every finding is listed in the run's result. The orchestrator's own small
    changes aren't reviewed.
 

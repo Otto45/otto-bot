@@ -161,6 +161,7 @@ impl AgentRunEngine {
     pub async fn implement_plan(
         &self,
         session: &Session,
+        user_request: &UserRequest,
         work_plan: &WorkPlan,
         events: &broadcast::Sender<SessionEvent>,
         data_facade: &DataFacade,
@@ -212,7 +213,7 @@ impl AgentRunEngine {
         }
 
         let (review, review_summary): (Option<Review>, RunSummary) = self
-            .review_change(session, work_plan, &diff, events, data_facade)
+            .review_change(session, user_request, work_plan, &diff, events, data_facade)
             .await?;
         run_summary = run_summary.plus(review_summary);
         let must_fix: bool = review.as_ref().is_some_and(|review: &Review| {
@@ -302,11 +303,12 @@ impl AgentRunEngine {
         Ok((report, checks_passed, run_summary.expect("the first round always runs")))
     }
 
-    // The reviewer, on a lane of its own, reads the change (its diff, and whatever else it needs) and ends with its
-    // review; none if it ended without one.
+    // The reviewer, on a lane of its own, reads the change (the person's request, the plan, the diff, and whatever else
+    // it needs) and ends with its review; none if it ended without one.
     async fn review_change(
         &self,
         session: &Session,
+        user_request: &UserRequest,
         work_plan: &WorkPlan,
         diff: &str,
         events: &broadcast::Sender<SessionEvent>,
@@ -322,7 +324,9 @@ impl AgentRunEngine {
         let mut opening_items: Vec<ConversationItem> = Vec::with_capacity(2);
         opening_items.extend(project_map_note);
         opening_items.push(ConversationItem::UserMessage {
-            text: self.tool_processor.format_review_brief(work_plan, diff),
+            text: self
+                .tool_processor
+                .format_review_brief(&user_request.text, work_plan, diff),
         });
         let agent_run_outcome: AgentRunOutcome = self
             .run_lane(

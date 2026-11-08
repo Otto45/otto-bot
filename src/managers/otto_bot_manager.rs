@@ -201,7 +201,7 @@ impl OttoBotManager {
             .ok();
 
         let implementation_result: ImplementationResult = agent_run_engine
-            .implement_plan(session, &work_plan, events, data_facade)
+            .implement_plan(session, user_request, &work_plan, events, data_facade)
             .await?;
         let run_summary: RunSummary = agent_run_outcome.run_summary.plus(implementation_result.run_summary);
         events

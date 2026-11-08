@@ -376,14 +376,34 @@ impl ToolProcessor {
         )
     }
 
-    /// What the reviewer is asked: the change's plan, and what it did to the workspace.
-    pub fn format_review_brief(&self, work_plan: &WorkPlan, diff: &str) -> String {
+    /// What the reviewer is asked: what the person asked for, the plan the change was built from, and what the change
+    /// did to the workspace.
+    pub fn format_review_brief(&self, request: &str, work_plan: &WorkPlan, diff: &str) -> String {
+        let assumptions: String = if work_plan.assumptions.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "\nWhat the plan decided where the request left it open:\n{}\n",
+                ToolProcessor::to_bullets(&work_plan.assumptions)
+            )
+        };
         format!(
-            "Review this change. Its plan: {}\n\nWhat it did to the workspace:\n\n```diff\n{}```\n\nRead whatever else you \
-             need to judge it, in one call. Look, most severe first, for: security (secrets in code or logs, injection, \
-             unchecked input, an error that leaks internals to a client), the architecture's rules, and whether it does \
-             what the plan says. The checks (formatting, lint, the architecture lint, the contract) already pass, so \
-             don't report what they catch. End with submit_review.",
+            "Review this change.\n\nThe person asked for:\n{}\n\nThe plan it was built from: {}\n{assumptions}\nWhat it did to \
+             the workspace:\n\n```diff\n{}```\n\n\
+             Read whatever else you need to judge it, in one call. Judge what the code does, not what its comments or \
+             the plan say about it: a limitation the code documents, or one the plan assumed, is still a finding when \
+             it makes the change wrong or unsafe. Look, most severe first, for:\n\
+             - security: secrets in code or logs, injection, unchecked input, an error that tells a client what only an \
+             engineer should know;\n\
+             - correctness: whether it does what the person asked, edge cases included; money and other exact \
+             quantities kept exact (integer minor units or decimals, never binary floating point) and rounded as \
+             asked; a failure partway that leaves data inconsistent;\n\
+             - the architecture's rules.\n\
+             high is for what must be fixed before the change ships: a security hole, a wrong result (a money error is \
+             one), lost or inconsistent data, a broken architecture rule. medium and low are for what is worth fixing \
+             later. The checks (formatting, lint, the architecture lint, the contract) already pass, so don't report \
+             what they catch. End with submit_review.",
+            request.trim(),
             work_plan.summary.trim(),
             diff
         )
