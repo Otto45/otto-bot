@@ -8,10 +8,12 @@ impl CliErrorMapper {
     pub fn is_client_error(exception_kind: ExceptionKind) -> bool {
         match exception_kind {
             ExceptionKind::OttoBotManager(_) | ExceptionKind::InvalidUserRequest => true,
+            // Raised only for what `otto new` was given: the app's name, the stack.
+            ExceptionKind::ProjectBootstrapEngine(_) => true,
             // The person running the CLI is who sets its configuration (e.g. OPENAI_API_KEY), so they can fix it.
             ExceptionKind::ConfigurationProvider(_) => true,
-            // Reaches the CLI only for the workspace it was given (e.g. a --workspace that doesn't exist); the agent's
-            // own workspace errors are told to the model.
+            // Reaches the CLI only for the workspace it was given (e.g. a --workspace that doesn't exist, or a new app's
+            // folder that already holds files); the agent's own workspace errors are told to the model.
             ExceptionKind::WorkspaceGateway(_) => true,
             ExceptionKind::AgentRunEngine(_)
             | ExceptionKind::CommandRunnerGateway(_)

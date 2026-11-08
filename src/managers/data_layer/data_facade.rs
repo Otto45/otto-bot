@@ -5,6 +5,7 @@ use crate::managers::models::project_map_role::ProjectMapRole;
 use crate::managers::models::session::Session;
 use crate::managers::models::session_project_maps::SessionProjectMaps;
 use crate::managers::models::stack_pack::StackPack;
+use crate::managers::models::template_file::TemplateFile;
 use crate::managers::models::usage_record::UsageRecord;
 use crate::managers::models::work_plan::WorkPlan;
 use crate::managers::service_locator::service_locator::ServiceLocator;
@@ -69,6 +70,11 @@ impl DataFacade {
 
     pub async fn get_stack_packs(&self) -> ApplicationResult<Vec<StackPack>> {
         self.data_manager.get_stack_packs().await
+    }
+
+    /// The files a new app of the pack starts with; None if the pack has no template.
+    pub async fn get_template_files(&self, stack_pack: &StackPack) -> ApplicationResult<Option<Vec<TemplateFile>>> {
+        self.data_manager.get_template_files(stack_pack).await
     }
 
     pub async fn get_stack_pack_rules(&self, stack_pack: &StackPack) -> ApplicationResult<String> {

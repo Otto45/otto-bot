@@ -8,6 +8,7 @@ use crate::managers::models::project_map_role::ProjectMapRole;
 use crate::managers::models::session::Session;
 use crate::managers::models::session_project_maps::SessionProjectMaps;
 use crate::managers::models::stack_pack::StackPack;
+use crate::managers::models::template_file::TemplateFile;
 use crate::managers::models::usage_record::UsageRecord;
 use crate::managers::models::work_plan::WorkPlan;
 use crate::managers::service_locator::service_locator::ServiceLocator;
@@ -75,6 +76,10 @@ impl DataManager {
 
     pub async fn get_stack_packs(&self) -> ApplicationResult<Vec<StackPack>> {
         self.stack_pack_store_gateway.get_stack_packs().await
+    }
+
+    pub async fn get_template_files(&self, stack_pack: &StackPack) -> ApplicationResult<Option<Vec<TemplateFile>>> {
+        self.stack_pack_store_gateway.get_template_files(stack_pack).await
     }
 
     pub async fn get_stack_pack_rules(&self, stack_pack: &StackPack) -> ApplicationResult<String> {

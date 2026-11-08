@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use ignore::{DirEntry, WalkBuilder};
+
 use crate::managers::common::formatters::validation_error_formatter::ValidationErrorFormatter;
 use crate::managers::data_layer::managers::gateways::stack_pack_store::mappers::stack_pack_mapper::StackPackMapper;
 use crate::managers::data_layer::managers::gateways::stack_pack_store::resource_models::stack_pack_manifest_resource::{
@@ -11,6 +13,7 @@ use crate::managers::exceptions::application_base_exception::{ApplicationBaseExc
 use crate::managers::exceptions::contextual_data::ContextualData;
 use crate::managers::exceptions::stack_pack_store_gateway_exception::StackPackStoreGatewayException;
 use crate::managers::models::stack_pack::StackPack;
+use crate::managers::models::template_file::TemplateFile;
 
 const MANIFEST_FILE_NAME: &str = "pack.toml";
 
@@ -69,6 +72,70 @@ impl StackPackStoreGateway {
                     &ContextualData::new().with("stack_pack", stack_pack.name.as_str()),
                 )
             })
+    }
+
+    /// Every file of the pack's template, sorted by path, as an app starts with it: what the template's .gitignore
+    /// ignores (its build output, its lock file), `.git/` and `.env` files are left out. None if the pack has no
+    /// template.
+    pub async fn get_template_files(&self, stack_pack: &StackPack) -> ApplicationResult<Option<Vec<TemplateFile>>> {
+        let Some(template_directory) = stack_pack.template_directory.clone() else {
+            return Ok(None);
+        };
+        let context: ContextualData = ContextualData::new().with("stack_pack", stack_pack.name.as_str());
+
+        let walked_directory: PathBuf = template_directory.clone();
+        let mut paths: Vec<PathBuf> = tokio::task::spawn_blocking(move || -> Vec<PathBuf> {
+            WalkBuilder::new(&walked_directory)
+                .hidden(false)
+                .require_git(false)
+                .filter_entry(|entry: &DirEntry| {
+                    let name: std::borrow::Cow<'_, str> = entry.file_name().to_string_lossy();
+                    name != ".git" && !name.starts_with(".env")
+                })
+                .build()
+                .filter_map(Result::ok)
+                .filter(|entry: &DirEntry| {
+                    entry
+                        .file_type()
+                        .is_some_and(|file_type: std::fs::FileType| file_type.is_file())
+                })
+                .map(DirEntry::into_path)
+                .collect()
+        })
+        .await
+        .map_err(|exception: tokio::task::JoinError| {
+            ApplicationBaseException::new(
+                StackPackStoreGatewayException::StackPackStoreIo,
+                "The stack pack store failed while listing a template's files",
+                context.clone(),
+            )
+            .with_source(exception)
+        })?;
+        paths.sort();
+
+        let mut template_files: Vec<TemplateFile> = Vec::with_capacity(paths.len());
+        for path in paths {
+            let relative_path: String = path
+                .strip_prefix(&template_directory)
+                .map(|relative_path: &Path| relative_path.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_default();
+            let file_context: ContextualData = context.clone().with("path", relative_path.as_str());
+            let bytes: Vec<u8> = tokio::fs::read(&path).await.map_err(|exception: std::io::Error| {
+                StackPackStoreGateway::to_io_exception(exception, "reading a template's file", &file_context)
+            })?;
+            let content: String = String::from_utf8(bytes).map_err(|_: std::string::FromUtf8Error| {
+                ApplicationBaseException::new(
+                    StackPackStoreGatewayException::InvalidStackPackTemplate,
+                    "A file of a stack pack's template is not UTF-8 text",
+                    file_context.clone(),
+                )
+            })?;
+            template_files.push(TemplateFile {
+                path: relative_path,
+                content,
+            });
+        }
+        Ok(Some(template_files))
     }
 
     /// Holds nothing open, so there is nothing to close.

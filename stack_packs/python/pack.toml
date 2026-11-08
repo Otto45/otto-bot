@@ -180,8 +180,8 @@ command = ["uv", "run", "export-openapi", "--check"]
 name = "test"
 command = []
 
-# Starting an app: names in the template replaced by the app's own, in this order (AGENTS.md, "Starting an app
-# from the template"); they apply to paths too (src/example_app/).
+# Starting an app: names in the template replaced by the app's own, in file contents and paths, the longest name first
+# where several start at the same place (AGENTS.md, "Starting an app from the template"); paths include src/example_app/.
 [rename]
 "example-app" = "{app_name_kebab}"
 "example_app" = "{app_name_snake}"

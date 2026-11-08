@@ -4,13 +4,13 @@ from urllib.parse import SplitResult, urlsplit
 import asyncpg
 import httpx
 
-from example_app.managers.configuration_providers.configuration_source_providers.configuration_source_provider_environment import (  # noqa: E501
+from example_app.managers.configuration_providers.configuration_source_providers.configuration_source_provider_environment import (
     ConfigurationSourceProviderEnvironment,
 )
-from example_app.managers.configuration_providers.configuration_source_providers.configuration_source_provider_protocol import (  # noqa: E501
+from example_app.managers.configuration_providers.configuration_source_providers.configuration_source_provider_protocol import (
     ConfigurationSourceProviderProtocol,
 )
-from example_app.managers.data_layer.managers.gateways.document_database.clients.in_memory_document_database_client import (  # noqa: E501
+from example_app.managers.data_layer.managers.gateways.document_database.clients.in_memory_document_database_client import (
     InMemoryDocumentDatabaseClient,
 )
 from example_app.managers.exceptions.contextual_data import ContextualData

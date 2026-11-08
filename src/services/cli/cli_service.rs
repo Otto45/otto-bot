@@ -6,12 +6,15 @@ use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::managers::models::session_event::SessionEvent;
+use crate::managers::models::started_project::StartedProject;
 use crate::managers::models::user_request::UserRequest;
 use crate::otto_bot_facade::OttoBotFacade;
 use crate::services::cli::exception_handlers::application_exception_report::ApplicationExceptionReport;
 use crate::services::cli::mappers::session_event_mapper::SessionEventMapper;
 use crate::services::cli::mappers::session_options_mapper::SessionOptionsMapper;
+use crate::services::cli::mappers::started_project_mapper::StartedProjectMapper;
 use crate::services::cli::wire_models::cli_arguments::CliArguments;
+use crate::services::cli::wire_models::cli_command::CliCommand;
 
 const GREETING: &str = "otto: what should I build? (Ctrl-C cancels a run; Ctrl-D or /exit quits)\n";
 const PROMPT: &str = "> ";
@@ -43,18 +46,31 @@ impl CliService {
         cli_arguments: &CliArguments,
         log_path: Option<&Path>,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let mut stdout: Stdout = tokio::io::stdout();
         let current_directory: PathBuf = std::env::current_dir()?;
+        let workspace_directory: PathBuf = match cli_arguments.command.as_ref() {
+            Some(CliCommand::New {
+                name,
+                stack,
+                parent_directory,
+            }) => {
+                let started_project: StartedProject = otto_bot_facade
+                    .start_project(stack, name, parent_directory.as_deref().unwrap_or(&current_directory))
+                    .await?;
+                CliService::write(&mut stdout, &StartedProjectMapper::to_output(&started_project)).await?;
+                started_project.workspace_directory
+            }
+            None => cli_arguments.workspace.clone().unwrap_or(current_directory),
+        };
         let session_id: String = otto_bot_facade
             .start_session(&SessionOptionsMapper::to_session_options(
                 cli_arguments,
-                current_directory.clone(),
+                workspace_directory.clone(),
             ))
             .await?;
-        let workspace_directory: PathBuf = cli_arguments.workspace.clone().unwrap_or(current_directory);
         // Subscribed before anything is submitted, so no event is missed.
         let mut events: broadcast::Receiver<SessionEvent> = otto_bot_facade.subscribe(&session_id)?;
         let mut lines: Lines<BufReader<Stdin>> = BufReader::new(tokio::io::stdin()).lines();
-        let mut stdout: Stdout = tokio::io::stdout();
 
         CliService::write(&mut stdout, GREETING).await?;
         CliService::write(&mut stdout, &format!("workspace: {}\n", workspace_directory.display())).await?;

@@ -165,9 +165,13 @@ boundaries the plan couldn't foresee, and most of them blocked on a file another
 
 ### Starting a project
 
-The pack's template is copied and renamed without a model (its `[rename]` map, applied to file contents and paths).
-Its examples stay: they show the implementor every component kind, and the first plan replaces them. Stripping them
-without a model would need a second, empty template per pack, kept in step by hand.
+`otto new <name> --stack <stack>` (the `ProjectBootstrapEngine`) copies the pack's template into a new or empty folder
+named after the app, leaving out what the template's `.gitignore` ignores, and renames it without a model: the pack's
+`[rename]` map, applied to file contents and paths in one pass, the longest name first. The app's name gives every form
+a stack needs (`orders-app`, `orders_app`, `OrdersApp`, `ORDERS_APP`, `Orders App`). Then the pack's formatters run,
+since a renamed name sorts and wraps differently, so the new app passes its checks before any request. Its examples
+stay: they show the implementor every component kind, and the first plan replaces them. Stripping them without a model
+would need a second, empty template per pack, kept in step by hand.
 
 ## Speed levers
 

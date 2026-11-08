@@ -1,7 +1,8 @@
+use std::collections::BTreeMap;
+
 use serde::Deserialize;
 
 // A pack's pack.toml, deserialized as it is, every field optional so the validator can say what is wrong with it.
-// Fields the harness doesn't use yet (e.g. the rename map) are left out.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct DetectResource {
@@ -56,6 +57,8 @@ pub struct StackPackManifestResource {
     pub name: Option<String>,
     pub language: Option<String>,
     pub rules: Option<String>,
+    pub template: Option<String>,
+    pub rename: Option<BTreeMap<String, String>>,
     pub detect: Option<DetectResource>,
     pub checks: Option<Vec<CheckResource>>,
     pub format: Option<FormatResource>,

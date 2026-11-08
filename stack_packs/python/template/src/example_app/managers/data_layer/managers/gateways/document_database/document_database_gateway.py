@@ -4,13 +4,13 @@ from pydantic import ValidationError
 
 from example_app.managers.common.formatters.validation_error_formatter import ValidationErrorFormatter
 from example_app.managers.data_layer.managers.gateways.document_database.clients.document import Document
-from example_app.managers.data_layer.managers.gateways.document_database.clients.in_memory_document_database_client import (  # noqa: E501
+from example_app.managers.data_layer.managers.gateways.document_database.clients.in_memory_document_database_client import (
     InMemoryDocumentDatabaseClient,
 )
 from example_app.managers.data_layer.managers.gateways.document_database.mappers.audit_event_mapper import (
     AuditEventMapper,
 )
-from example_app.managers.data_layer.managers.gateways.document_database.query_builders.audit_event_query_builder import (  # noqa: E501
+from example_app.managers.data_layer.managers.gateways.document_database.query_builders.audit_event_query_builder import (
     AuditEventQueryBuilder,
 )
 from example_app.managers.data_layer.managers.gateways.document_database.resource_models.audit_event_document import (
@@ -22,7 +22,7 @@ from example_app.managers.data_layer.managers.gateways.document_database.resourc
 from example_app.managers.data_layer.managers.gateways.document_database.resource_models.document_insert_query import (
     DocumentInsertQuery,
 )
-from example_app.managers.data_layer.managers.gateways.document_database.validators.validator_audit_event_document import (  # noqa: E501
+from example_app.managers.data_layer.managers.gateways.document_database.validators.validator_audit_event_document import (
     ValidatorAuditEventDocument,
 )
 from example_app.managers.exceptions.contextual_data import ContextualData

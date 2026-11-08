@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use crate::managers::common::validators::validator_string::ValidatorString;
 use crate::managers::data_layer::managers::gateways::stack_pack_store::resource_models::stack_pack_manifest_resource::{
     CheckResource, DetectResource, LintResource, LintRuleResource, ProjectMapResource, StackPackManifestResource,
@@ -5,6 +7,15 @@ use crate::managers::data_layer::managers::gateways::stack_pack_store::resource_
 use crate::managers::exceptions::application_base_exception::{ApplicationBaseException, ApplicationResult};
 use crate::managers::exceptions::contextual_data::ContextualData;
 use crate::managers::exceptions::stack_pack_store_gateway_exception::StackPackStoreGatewayException;
+
+// What a rename's replacement may say, for the forms of the app's name.
+const APP_NAME_PLACEHOLDERS: [&str; 5] = [
+    "app_name_kebab",
+    "app_name_snake",
+    "app_name_pascal",
+    "app_name_upper",
+    "app_name_title",
+];
 
 pub struct ValidatorStackPackManifestResource;
 
@@ -31,6 +42,15 @@ impl ValidatorStackPackManifestResource {
             Some(files) if files.is_empty() => errors.push("detect.files is empty".to_string()),
             Some(_) => {}
         }
+
+        if let Some(template) = manifest.template.as_deref()
+            && let Some(error) = ValidatorString::validate("template", Some(template))
+        {
+            errors.push(error);
+        }
+        errors.extend(ValidatorStackPackManifestResource::validate_rename(
+            manifest.rename.as_ref(),
+        ));
 
         // Mapping and linting parse source files, which takes the pack's grammar.
         if (manifest.project_map.is_some() || manifest.lint.is_some())
@@ -75,6 +95,29 @@ impl ValidatorStackPackManifestResource {
             ));
         }
         Ok(())
+    }
+
+    // Each name is replaced with a text whose placeholders are the forms of the app's name.
+    fn validate_rename(rename: Option<&BTreeMap<String, String>>) -> Vec<String> {
+        let mut errors: Vec<String> = Vec::new();
+        for (name, replacement) in rename.into_iter().flatten() {
+            if name.is_empty() {
+                errors.push("rename has an empty name".to_string());
+            }
+            let mut rest: &str = replacement;
+            while let Some(start) = rest.find('{') {
+                let Some(length) = rest[start..].find('}') else {
+                    errors.push(format!("rename.{name} has a `{{` with no `}}`"));
+                    break;
+                };
+                let placeholder: &str = &rest[start + 1..start + length];
+                if !APP_NAME_PLACEHOLDERS.contains(&placeholder) {
+                    errors.push(format!("rename.{name} has an unknown placeholder {{{placeholder}}}"));
+                }
+                rest = &rest[start + length + 1..];
+            }
+        }
+        errors
     }
 
     fn validate_project_map_resource(project_map: &ProjectMapResource) -> Vec<String> {

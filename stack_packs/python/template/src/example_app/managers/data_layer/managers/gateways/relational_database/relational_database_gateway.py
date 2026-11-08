@@ -8,7 +8,7 @@ from example_app.managers.common.formatters.validation_error_formatter import Va
 from example_app.managers.data_layer.managers.gateways.relational_database.mappers.customer_mapper import (
     CustomerMapper,
 )
-from example_app.managers.data_layer.managers.gateways.relational_database.query_builders.customer_query_builder import (  # noqa: E501
+from example_app.managers.data_layer.managers.gateways.relational_database.query_builders.customer_query_builder import (
     CustomerQueryBuilder,
 )
 from example_app.managers.data_layer.managers.gateways.relational_database.resource_models.customer_row import (

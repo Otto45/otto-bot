@@ -3,6 +3,7 @@ use crate::managers::exceptions::command_runner_gateway_exception::CommandRunner
 use crate::managers::exceptions::configuration_provider_exception::ConfigurationProviderException;
 use crate::managers::exceptions::openai_responses_gateway_exception::OpenAiResponsesGatewayException;
 use crate::managers::exceptions::otto_bot_manager_exception::OttoBotManagerException;
+use crate::managers::exceptions::project_bootstrap_engine_exception::ProjectBootstrapEngineException;
 use crate::managers::exceptions::session_store_gateway_exception::SessionStoreGatewayException;
 use crate::managers::exceptions::stack_pack_store_gateway_exception::StackPackStoreGatewayException;
 use crate::managers::exceptions::workspace_gateway_exception::WorkspaceGatewayException;
@@ -17,6 +18,7 @@ pub enum ExceptionKind {
     ConfigurationProvider(ConfigurationProviderException),
     OpenAiResponsesGateway(OpenAiResponsesGatewayException),
     OttoBotManager(OttoBotManagerException),
+    ProjectBootstrapEngine(ProjectBootstrapEngineException),
     SessionStoreGateway(SessionStoreGatewayException),
     StackPackStoreGateway(StackPackStoreGatewayException),
     WorkspaceGateway(WorkspaceGatewayException),
@@ -37,6 +39,7 @@ impl ExceptionKind {
             ExceptionKind::ConfigurationProvider(exception) => exception.name(),
             ExceptionKind::OpenAiResponsesGateway(exception) => exception.name(),
             ExceptionKind::OttoBotManager(exception) => exception.name(),
+            ExceptionKind::ProjectBootstrapEngine(exception) => exception.name(),
             ExceptionKind::SessionStoreGateway(exception) => exception.name(),
             ExceptionKind::StackPackStoreGateway(exception) => exception.name(),
             ExceptionKind::WorkspaceGateway(exception) => exception.name(),
@@ -67,6 +70,12 @@ impl From<ConfigurationProviderException> for ExceptionKind {
 impl From<OpenAiResponsesGatewayException> for ExceptionKind {
     fn from(exception: OpenAiResponsesGatewayException) -> Self {
         ExceptionKind::OpenAiResponsesGateway(exception)
+    }
+}
+
+impl From<ProjectBootstrapEngineException> for ExceptionKind {
+    fn from(exception: ProjectBootstrapEngineException) -> Self {
+        ExceptionKind::ProjectBootstrapEngine(exception)
     }
 }
 

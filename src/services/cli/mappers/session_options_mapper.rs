@@ -8,10 +8,10 @@ use crate::services::cli::wire_models::service_tier_argument::ServiceTierArgumen
 pub struct SessionOptionsMapper;
 
 impl SessionOptionsMapper {
-    /// `default_workspace_directory` is where the CLI was started, the workspace when `--workspace` doesn't say.
-    pub fn to_session_options(cli_arguments: &CliArguments, default_workspace_directory: PathBuf) -> SessionOptions {
+    /// `workspace_directory` is the one the CLI decided on: `--workspace`, a new app's folder, or where it was started.
+    pub fn to_session_options(cli_arguments: &CliArguments, workspace_directory: PathBuf) -> SessionOptions {
         SessionOptions {
-            workspace_directory: cli_arguments.workspace.clone().unwrap_or(default_workspace_directory),
+            workspace_directory,
             service_tier: cli_arguments.service_tier.map(SessionOptionsMapper::to_service_tier),
         }
     }

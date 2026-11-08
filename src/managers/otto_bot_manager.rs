@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use chrono::Utc;
@@ -8,6 +8,7 @@ use tokio::task::JoinHandle;
 
 use crate::managers::data_layer::data_facade::DataFacade;
 use crate::managers::engines::agent_run::agent_run_engine::AgentRunEngine;
+use crate::managers::engines::project_bootstrap::project_bootstrap_engine::ProjectBootstrapEngine;
 use crate::managers::exceptions::application_base_exception::{ApplicationBaseException, ApplicationResult};
 use crate::managers::exceptions::contextual_data::ContextualData;
 use crate::managers::exceptions::otto_bot_manager_exception::OttoBotManagerException;
@@ -21,6 +22,7 @@ use crate::managers::models::run_summary::RunSummary;
 use crate::managers::models::session::Session;
 use crate::managers::models::session_event::SessionEvent;
 use crate::managers::models::session_options::SessionOptions;
+use crate::managers::models::started_project::StartedProject;
 use crate::managers::models::user_request::UserRequest;
 use crate::managers::processors::session::session_processor::SessionProcessor;
 use crate::managers::runtime::live_run::LiveRun;
@@ -35,6 +37,7 @@ const SESSION_EVENT_CAPACITY: usize = 1024;
 pub struct OttoBotManager {
     session_processor: Arc<SessionProcessor>,
     agent_run_engine: Arc<AgentRunEngine>,
+    project_bootstrap_engine: Arc<ProjectBootstrapEngine>,
     workspace_gateway: Arc<WorkspaceGateway>,
     // Shared with the Domain Facade, which owns it and closes it.
     data_facade: Arc<DataFacade>,
@@ -46,10 +49,24 @@ impl OttoBotManager {
         Ok(OttoBotManager {
             session_processor: service_locator.get_session_processor()?,
             agent_run_engine: service_locator.get_agent_run_engine()?,
+            project_bootstrap_engine: service_locator.get_project_bootstrap_engine()?,
             workspace_gateway: service_locator.get_workspace_gateway()?,
             data_facade,
             live_sessions: Mutex::new(HashMap::new()),
         })
+    }
+
+    /// Starts a new app of the stack in `<parent_directory>/<its name>`, from the stack pack's template. A session is
+    /// then started in it as in any workspace.
+    pub async fn start_project(
+        &self,
+        stack_name: &str,
+        app_name: &str,
+        parent_directory: &Path,
+    ) -> ApplicationResult<StartedProject> {
+        self.project_bootstrap_engine
+            .start_project(stack_name, app_name, parent_directory, &self.data_facade)
+            .await
     }
 
     /// Starts a session in the client's workspace, which must be a directory, and keeps it in the session store.

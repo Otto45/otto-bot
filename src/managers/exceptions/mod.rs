@@ -6,6 +6,7 @@ pub mod contextual_data;
 pub mod exception_kind;
 pub mod openai_responses_gateway_exception;
 pub mod otto_bot_manager_exception;
+pub mod project_bootstrap_engine_exception;
 pub mod session_store_gateway_exception;
 pub mod stack_pack_store_gateway_exception;
 pub mod workspace_gateway_exception;

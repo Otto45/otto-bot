@@ -7,7 +7,7 @@ from example_app.managers.configuration_providers.config_models.json_placeholder
 from example_app.managers.configuration_providers.config_models.relational_database_config import (
     RelationalDatabaseConfig,
 )
-from example_app.managers.configuration_providers.configuration_source_providers.configuration_source_provider_protocol import (  # noqa: E501
+from example_app.managers.configuration_providers.configuration_source_providers.configuration_source_provider_protocol import (
     ConfigurationSourceProviderProtocol,
 )
 from example_app.managers.exceptions.contextual_data import ContextualData

@@ -12,7 +12,8 @@ of the stack pack's rules, and the stack's formatters (the code's formatting, th
 so no agent spends a turn on them. Agents run in roles on lanes of their own: the orchestrator (the session's own agent) makes a small change
 itself and plans a bigger one (`submit_plan`); the implementor builds
 it, until every check passes; then the reviewer reviews the change's diff, and the implementor fixes what it says must
-be fixed. The Python and TypeScript stack packs come next.
+be fixed. Stack packs: Rust and Python; `otto new` starts an app from a pack's template. The TypeScript pack comes
+next.
 
 ## What you need
 
@@ -25,8 +26,13 @@ be fixed. The Python and TypeScript stack packs come next.
 export OPENAI_API_KEY=...
 cargo run -- --workspace ../my-app      # the interactive CLI, working in ../my-app (default: the current directory)
 cargo run -- --service-tier fast        # a session at the fast tier
+cargo run -- new orders-app --stack python --in ..   # start ../orders-app from the Python template, then converse in it
 cargo run -- --help
 ```
+
+`new` copies the stack pack's template into a new (or empty) folder named after the app, renames its example names
+(`example_app`, `ExampleAppFacade`, `EXAMPLE_APP_`, ...) after the app, and runs the pack's formatters, with no model;
+the example components stay as the pattern for each kind, for the first request to replace.
 
 Type a request and press Enter: otto works on it until it is done, showing each tool it uses, then the run's turns
 and tokens. Ctrl-C cancels a run under way; Ctrl-D, `/exit` or Ctrl-C at the prompt quits.

@@ -6,6 +6,7 @@ use crate::managers::data_layer::managers::gateways::stack_pack_store::resource_
     StackPackManifestResource,
 };
 use crate::managers::models::lint_rule::LintRule;
+use crate::managers::models::name_replacement::NameReplacement;
 use crate::managers::models::stack_pack::StackPack;
 use crate::managers::models::stack_pack_check::StackPackCheck;
 use crate::managers::models::stack_pack_format::StackPackFormat;
@@ -39,6 +40,13 @@ impl StackPackMapper {
             language: manifest.language,
             detect_files: detect.files.expect("validated by ValidatorStackPackManifestResource"),
             rules_path: pack_directory.join(manifest.rules.expect("validated by ValidatorStackPackManifestResource")),
+            template_directory: manifest.template.map(|template: String| pack_directory.join(template)),
+            name_replacements: manifest
+                .rename
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(name, replacement): (String, String)| NameReplacement { name, replacement })
+                .collect(),
             checks: manifest
                 .checks
                 .unwrap_or_default()

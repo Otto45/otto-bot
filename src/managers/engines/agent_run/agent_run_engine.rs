@@ -1072,6 +1072,7 @@ impl AgentRunEngine {
             ExceptionKind::ConfigurationProvider(_)
             | ExceptionKind::OpenAiResponsesGateway(_)
             | ExceptionKind::OttoBotManager(_)
+            | ExceptionKind::ProjectBootstrapEngine(_)
             | ExceptionKind::SessionStoreGateway(_)
             | ExceptionKind::StackPackStoreGateway(_)
             | ExceptionKind::InvalidUserRequest

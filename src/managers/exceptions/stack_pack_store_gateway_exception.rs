@@ -3,6 +3,8 @@
 pub enum StackPackStoreGatewayException {
     StackPackStoreIo,
     InvalidStackPackManifest,
+    /// A file of a stack pack's template can't be copied (it isn't UTF-8 text).
+    InvalidStackPackTemplate,
 }
 
 impl StackPackStoreGatewayException {
@@ -10,6 +12,7 @@ impl StackPackStoreGatewayException {
         match self {
             StackPackStoreGatewayException::StackPackStoreIo => "StackPackStoreIoException",
             StackPackStoreGatewayException::InvalidStackPackManifest => "InvalidStackPackManifestException",
+            StackPackStoreGatewayException::InvalidStackPackTemplate => "InvalidStackPackTemplateException",
         }
     }
 }

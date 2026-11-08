@@ -153,8 +153,8 @@ command = ["cargo", "run", "--bin", "export-openapi", "--", "--check"]
 name = "test"
 command = []
 
-# Starting an app: names in the template replaced by the app's own, in this order (AGENTS.md, "Starting an app
-# from the template").
+# Starting an app: names in the template replaced by the app's own, in file contents and paths, the longest name first
+# where several start at the same place (AGENTS.md, "Starting an app from the template").
 [rename]
 "example-app" = "{app_name_kebab}"
 "example_app" = "{app_name_snake}"

@@ -14,6 +14,8 @@ use crate::managers::engines::agent_run::processors::project_map::project_map_pr
 use crate::managers::engines::agent_run::processors::prompt::prompt_processor::PromptProcessor;
 use crate::managers::engines::agent_run::processors::tool::tool_processor::ToolProcessor;
 use crate::managers::engines::agent_run::processors::work_plan::work_plan_processor::WorkPlanProcessor;
+use crate::managers::engines::project_bootstrap::processors::app_name::app_name_processor::AppNameProcessor;
+use crate::managers::engines::project_bootstrap::project_bootstrap_engine::ProjectBootstrapEngine;
 use crate::managers::exceptions::application_base_exception::{ApplicationBaseException, ApplicationResult};
 use crate::managers::exceptions::configuration_provider_exception::ConfigurationProviderException;
 use crate::managers::exceptions::contextual_data::ContextualData;
@@ -50,6 +52,8 @@ pub struct ServiceLocator {
     work_plan_processor: Mutex<Option<Arc<WorkPlanProcessor>>>,
     diff_processor: Mutex<Option<Arc<DiffProcessor>>>,
     agent_run_engine: Mutex<Option<Arc<AgentRunEngine>>>,
+    app_name_processor: Mutex<Option<Arc<AppNameProcessor>>>,
+    project_bootstrap_engine: Mutex<Option<Arc<ProjectBootstrapEngine>>>,
     // The close() of every singleton created so far, in creation order.
     close_callbacks: Mutex<Vec<CloseCallback>>,
 }
@@ -84,6 +88,8 @@ impl ServiceLocator {
             work_plan_processor: Mutex::new(None),
             diff_processor: Mutex::new(None),
             agent_run_engine: Mutex::new(None),
+            app_name_processor: Mutex::new(None),
+            project_bootstrap_engine: Mutex::new(None),
             close_callbacks: Mutex::new(Vec::new()),
         }
     }
@@ -205,6 +211,27 @@ impl ServiceLocator {
         ServiceLocator::get_or_create(&self.work_plan_processor, || Ok(Arc::new(WorkPlanProcessor)))
     }
 
+    pub fn get_app_name_processor(&self) -> ApplicationResult<Arc<AppNameProcessor>> {
+        ServiceLocator::get_or_create(&self.app_name_processor, || Ok(Arc::new(AppNameProcessor)))
+    }
+
+    pub fn get_project_bootstrap_engine(&self) -> ApplicationResult<Arc<ProjectBootstrapEngine>> {
+        ServiceLocator::get_or_create(&self.project_bootstrap_engine, || {
+            let configuration_provider: Arc<ConfigurationProvider> = self.get_configuration_provider()?;
+            // A new app's formatters are held to the same time limit as a check.
+            let format_timeout: Duration =
+                ServiceLocator::to_check_timeout(configuration_provider.get_agent_settings())?;
+
+            // Holds nothing of its own to release, so it registers no close(); the gateways it uses already have.
+            Ok(Arc::new(ProjectBootstrapEngine::new(
+                self.get_workspace_gateway()?,
+                self.get_command_runner_gateway()?,
+                self.get_app_name_processor()?,
+                format_timeout,
+            )))
+        })
+    }
+
     pub fn get_diff_processor(&self) -> ApplicationResult<Arc<DiffProcessor>> {
         ServiceLocator::get_or_create(&self.diff_processor, || Ok(Arc::new(DiffProcessor)))
     }
@@ -213,18 +240,7 @@ impl ServiceLocator {
         ServiceLocator::get_or_create(&self.agent_run_engine, || {
             let configuration_provider: Arc<ConfigurationProvider> = self.get_configuration_provider()?;
             let agent_settings: &AgentSettings = configuration_provider.get_agent_settings();
-            // The validator keeps the timeout positive and finite; one too long for a Duration is refused here.
-            let check_timeout: Duration = Duration::try_from_secs_f64(agent_settings.check_timeout_seconds).map_err(
-                |_: std::time::TryFromFloatSecsError| {
-                    ApplicationBaseException::new(
-                        ConfigurationProviderException::InvalidConfiguration,
-                        "Agent configuration is invalid",
-                        ContextualData::new()
-                            .with("setting_name", "agent")
-                            .with("errors", "check_timeout_seconds is too long"),
-                    )
-                },
-            )?;
+            let check_timeout: Duration = ServiceLocator::to_check_timeout(agent_settings)?;
 
             // Holds nothing of its own to release, so it registers no close(); the gateways it uses already have.
             Ok(Arc::new(AgentRunEngine::new(
@@ -252,6 +268,21 @@ impl ServiceLocator {
         for close_callback in close_callbacks.into_iter().rev() {
             close_callback().await;
         }
+    }
+
+    // The validator keeps the timeout positive and finite; one too long for a Duration is refused here.
+    fn to_check_timeout(agent_settings: &AgentSettings) -> ApplicationResult<Duration> {
+        Duration::try_from_secs_f64(agent_settings.check_timeout_seconds).map_err(
+            |_: std::time::TryFromFloatSecsError| {
+                ApplicationBaseException::new(
+                    ConfigurationProviderException::InvalidConfiguration,
+                    "Agent configuration is invalid",
+                    ContextualData::new()
+                        .with("setting_name", "agent")
+                        .with("errors", "check_timeout_seconds is too long"),
+                )
+            },
+        )
     }
 
     fn register_close(&self, close_callback: CloseCallback) {

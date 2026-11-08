@@ -62,6 +62,46 @@ impl WorkspaceGateway {
         Ok(canonical_directory)
     }
 
+    /// Makes a new, empty workspace (a new app's folder, and its parents) and returns its canonical path. A folder that
+    /// already exists is used only if it is empty, so nothing of someone's is overwritten.
+    pub async fn create_workspace_directory(&self, directory: &Path) -> ApplicationResult<PathBuf> {
+        let context: ContextualData =
+            ContextualData::new().with("workspace_directory", directory.to_string_lossy().into_owned());
+        if tokio::fs::try_exists(directory).await.unwrap_or(false) {
+            let mut entries: tokio::fs::ReadDir =
+                tokio::fs::read_dir(directory)
+                    .await
+                    .map_err(|exception: std::io::Error| {
+                        ApplicationBaseException::new(
+                            WorkspaceGatewayException::InvalidWorkspace,
+                            format!("{} exists and is not a folder that can be read", directory.display()),
+                            context.clone(),
+                        )
+                        .with_source(exception)
+                    })?;
+            let has_entry: bool = entries
+                .next_entry()
+                .await
+                .map_err(|exception: std::io::Error| WorkspaceGateway::to_io_exception(exception, &context))?
+                .is_some();
+            if has_entry {
+                return Err(ApplicationBaseException::new(
+                    WorkspaceGatewayException::InvalidWorkspace,
+                    format!(
+                        "{} already holds files; a new app starts in an empty folder",
+                        directory.display()
+                    ),
+                    context,
+                ));
+            }
+        } else {
+            tokio::fs::create_dir_all(directory)
+                .await
+                .map_err(|exception: std::io::Error| WorkspaceGateway::to_io_exception(exception, &context))?;
+        }
+        self.resolve_workspace_directory(directory).await
+    }
+
     pub async fn read_file(&self, workspace_directory: &Path, path: &str) -> ApplicationResult<WorkspaceFile> {
         let (relative_path, absolute_path): (String, PathBuf) =
             WorkspaceGateway::resolve_path(workspace_directory, path).await?;
@@ -347,6 +387,15 @@ impl WorkspaceGateway {
             WorkspaceGatewayException::WorkspaceIo,
             format!("{relative_path} could not be read or written"),
             context,
+        )
+        .with_source(exception)
+    }
+
+    fn to_io_exception(exception: std::io::Error, context: &ContextualData) -> ApplicationBaseException {
+        ApplicationBaseException::new(
+            WorkspaceGatewayException::WorkspaceIo,
+            "The new app's folder could not be made",
+            context.clone().with("error_type", format!("{:?}", exception.kind())),
         )
         .with_source(exception)
     }

@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use crate::managers::models::name_replacement::NameReplacement;
 use crate::managers::models::stack_pack_check::StackPackCheck;
 use crate::managers::models::stack_pack_format::StackPackFormat;
 use crate::managers::models::stack_pack_lint::StackPackLint;
@@ -16,6 +17,10 @@ pub struct StackPack {
     pub detect_files: Vec<String>,
     /// The architecture's rules for the stack's apps.
     pub rules_path: PathBuf,
+    /// The app a new project starts as (one example of every component kind); None for a pack that can't start one.
+    pub template_directory: Option<PathBuf>,
+    /// The template's names and what starting an app replaces them with, in file contents and paths.
+    pub name_replacements: Vec<NameReplacement>,
     pub checks: Vec<StackPackCheck>,
     /// None for a pack with no formatter.
     pub format: Option<StackPackFormat>,

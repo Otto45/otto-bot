@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::sync::Arc;
 
 use tokio::sync::broadcast;
@@ -6,6 +7,7 @@ use crate::managers::data_layer::data_facade::DataFacade;
 use crate::managers::exceptions::application_base_exception::ApplicationResult;
 use crate::managers::models::session_event::SessionEvent;
 use crate::managers::models::session_options::SessionOptions;
+use crate::managers::models::started_project::StartedProject;
 use crate::managers::models::user_request::UserRequest;
 use crate::managers::otto_bot_manager::OttoBotManager;
 use crate::managers::service_locator::service_locator::ServiceLocator;
@@ -38,6 +40,19 @@ impl OttoBotFacade {
             data_facade,
             otto_bot_manager,
         })
+    }
+
+    /// Starts a new app of the stack (e.g. "python") in `<parent_directory>/<the app's name>`, copied from the stack
+    /// pack's template and renamed, without a model. A session is then started in it as in any workspace.
+    pub async fn start_project(
+        &self,
+        stack_name: &str,
+        app_name: &str,
+        parent_directory: &Path,
+    ) -> ApplicationResult<StartedProject> {
+        self.otto_bot_manager
+            .start_project(stack_name, app_name, parent_directory)
+            .await
     }
 
     /// Starts a session in the client's workspace and returns its id.

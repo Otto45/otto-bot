@@ -3,10 +3,10 @@ from typing import Protocol
 import asyncpg
 import httpx
 
-from example_app.managers.configuration_providers.configuration_source_providers.configuration_source_provider_protocol import (  # noqa: E501
+from example_app.managers.configuration_providers.configuration_source_providers.configuration_source_provider_protocol import (
     ConfigurationSourceProviderProtocol,
 )
-from example_app.managers.data_layer.managers.gateways.document_database.clients.in_memory_document_database_client import (  # noqa: E501
+from example_app.managers.data_layer.managers.gateways.document_database.clients.in_memory_document_database_client import (
     InMemoryDocumentDatabaseClient,
 )
 from example_app.managers.models.settings.document_database_settings import DocumentDatabaseSettings
