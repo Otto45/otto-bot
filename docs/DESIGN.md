@@ -54,13 +54,18 @@ stack_packs/<stack>/
 
 | | Rust | Python | TypeScript |
 | --- | --- | --- | --- |
-| Template | the existing Rust template | ported by the harness, reviewed | ported by the harness, reviewed |
+| Template | the existing Rust template | written from the Rust template | written from the Rust template |
+| Libraries | axum, utoipa, sqlx, reqwest, serde | FastAPI, pydantic, asyncpg, httpx, uv | Node 24, Hono with `@hono/zod-openapi`, zod, `pg`, pnpm |
 | Module wiring | `mod.rs` | `__init__.py` | `index.ts` barrels, or none |
-| Checks | `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `export-openapi --check` | formatter, linter, strict type checker, contract check | formatter, linter, `tsc --noEmit` (strict), contract check |
+| Checks | `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `export-openapi --check` | `ruff format --check`, `ruff check`, `pyright` (strict), contract check | prettier, eslint (typescript-eslint strict type-checked), `tsc --noEmit` (strict), contract check |
 
 - Without tests, a strict type checker is part of the Python and TypeScript packs' rules.
-- The Python and TypeScript templates are ported from the Rust template by the harness itself, as its first real
-  multi-agent job, and reviewed before they become packs.
+- The Python and TypeScript templates are written from the Rust template (not ported by the harness), each mapping
+  the architecture onto its language's own inheritance: Protocols, interfaces and base classes where Rust has traits
+  and enums (e.g. an exception family is a base class, not an enum). Every template's relational example is Postgres
+  with dbmate migrations.
+- A pack's rules are its template's `AGENTS.md`; the Python one takes its Python conventions from the
+  `software-engineer-python` skill (`@final`, explicit `Protocol` inheritance, `slots` and `frozen` dataclasses).
 
 ## Prompt and cache design
 
@@ -160,8 +165,9 @@ boundaries the plan couldn't foresee, and most of them blocked on a file another
 
 ### Starting a project
 
-The pack's template is copied, renamed and stripped of its examples without a model, leaving a compiling empty app.
-The planner then designs the domain from the description, and the feature workflow builds it.
+The pack's template is copied and renamed without a model (its `[rename]` map, applied to file contents and paths).
+Its examples stay: they show the implementor every component kind, and the first plan replaces them. Stripping them
+without a model would need a second, empty template per pack, kept in step by hand.
 
 ## Speed levers
 
@@ -209,7 +215,7 @@ src/
         engines/
             agent_run/              runs one agent to completion: model turn -> tool calls -> results; applies
                                     patches, holds each role to its tools
-            project_bootstrap/      copies, renames and strips a pack's template (no model)
+            project_bootstrap/      copies and renames a pack's template (no model)
         gateways/
             openai_responses/       WebSocket and HTTP transport, lanes, replay from the session log
             workspace/              reads many files, applies V4A patches, lists the tree
@@ -242,7 +248,7 @@ stack_packs/rust/, stack_packs/python/, stack_packs/typescript/
    prewarm, concurrent lanes; (2) lanes and roles in the engine; (3) the plan; (4) the skeleton; (5) fan out (set
    aside: the roles are now the orchestrator, one implementor and the reviewer, and the implementor builds the plan
    with no skeleton step); (6) review.
-5. The Python pack, then the TypeScript pack, ported by the harness; starting new projects.
+5. The Python pack, then the TypeScript pack, their templates written from the Rust template; starting new projects.
 6. Resume, compaction, a second client.
 
 A fixed set of feature tasks on template apps is run against every change to the harness, recording wall time,
@@ -271,7 +277,4 @@ Not yet verified: forking a WebSocket lane (not needed while each lane has its o
 
 ## Open
 
-- Library choices for the Python and TypeScript templates. Suggested: FastAPI, pydantic, httpx, asyncpg, uv, ruff,
-  pyright (strict); Node, Fastify or Hono, zod, `pg`, `tsc` (strict), eslint.
-- Whether the `software-engineer-python` skill holds the Python conventions for the architecture.
 - Tests in generated apps.

@@ -28,6 +28,8 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["r
 uuid = { version = "1", features = ["v4"] }
 tree-sitter = "0.27.2"
 tree-sitter-rust = "0.24.2"
+tree-sitter-python = "0.25.0"
+tree-sitter-typescript = "0.23.2"
 globset = "0.4.21"
 tokio-tungstenite = { version = "0.28", features = ["rustls-tls-native-roots"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink"] }

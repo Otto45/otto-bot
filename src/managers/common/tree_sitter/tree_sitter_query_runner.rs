@@ -14,6 +14,10 @@ impl TreeSitterQueryRunner {
     pub fn get_language(language_name: &str) -> ApplicationResult<Language> {
         match language_name {
             "rust" => Ok(tree_sitter_rust::LANGUAGE.into()),
+            "python" => Ok(tree_sitter_python::LANGUAGE.into()),
+            // TypeScript and TSX are two grammars: TSX parses JSX, which plain TypeScript's type assertions rule out.
+            "typescript" => Ok(tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()),
+            "tsx" => Ok(tree_sitter_typescript::LANGUAGE_TSX.into()),
             _ => Err(ApplicationBaseException::new(
                 ExceptionKind::InvalidStackPack,
                 format!("The stack pack names a grammar otto-bot doesn't have: {language_name}"),
