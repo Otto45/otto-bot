@@ -9,10 +9,11 @@ use crate::managers::exceptions::contextual_data::ContextualData;
 use crate::managers::exceptions::stack_pack_store_gateway_exception::StackPackStoreGatewayException;
 
 // What a rename's replacement may say, for the forms of the app's name.
-const APP_NAME_PLACEHOLDERS: [&str; 5] = [
+const APP_NAME_PLACEHOLDERS: [&str; 6] = [
     "app_name_kebab",
     "app_name_snake",
     "app_name_pascal",
+    "app_name_camel",
     "app_name_upper",
     "app_name_title",
 ];

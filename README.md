@@ -12,8 +12,7 @@ of the stack pack's rules, and the stack's formatters (the code's formatting, th
 so no agent spends a turn on them. Agents run in roles on lanes of their own: the orchestrator (the session's own agent) makes a small change
 itself and plans a bigger one (`submit_plan`); the implementor builds
 it, until every check passes; then the reviewer reviews the change's diff, and the implementor fixes what it says must
-be fixed. Stack packs: Rust and Python; `otto new` starts an app from a pack's template. The TypeScript pack comes
-next.
+be fixed. Stack packs: Rust, Python and TypeScript; `otto new` starts an app from a pack's template.
 
 ## What you need
 

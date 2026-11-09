@@ -32,10 +32,23 @@ impl AppNameProcessor {
             .iter()
             .map(|word: &String| AppNameProcessor::capitalize(word))
             .collect();
+        // The first word as it is, the others capitalized: the name of a variable or a field holding the app's facade.
+        let camel: String = words
+            .iter()
+            .enumerate()
+            .map(|(index, word): (usize, &String)| {
+                if index == 0 {
+                    word.clone()
+                } else {
+                    AppNameProcessor::capitalize(word)
+                }
+            })
+            .collect();
         Ok(AppName {
             kebab: words.join("-"),
             snake: words.join("_"),
             pascal: capitalized.concat(),
+            camel,
             upper: words.join("_").to_ascii_uppercase(),
             title: capitalized.join(" "),
         })
@@ -78,6 +91,7 @@ impl AppNameProcessor {
             .replace("{app_name_kebab}", &app_name.kebab)
             .replace("{app_name_snake}", &app_name.snake)
             .replace("{app_name_pascal}", &app_name.pascal)
+            .replace("{app_name_camel}", &app_name.camel)
             .replace("{app_name_upper}", &app_name.upper)
             .replace("{app_name_title}", &app_name.title)
     }

@@ -1,0 +1,5 @@
+# Written by `pnpm run export-openapi`, in the form it writes.
+openapi.json
+pnpm-lock.yaml
+# Prose is written as it reads; prettier formats the code.
+*.md

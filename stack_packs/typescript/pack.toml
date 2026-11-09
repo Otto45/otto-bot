@@ -1,0 +1,193 @@
+# The TypeScript stack pack: everything the harness knows about building Domain Container apps in TypeScript.
+
+name = "typescript"
+# The tree-sitter grammar, built into otto-bot, that parses the stack's source files (for the project map and the lint).
+language = "typescript"
+
+# The template app (one example of every component kind) and the rules every change to an app follows.
+template = "template"
+rules = "template/AGENTS.md"
+
+# The project map: every file of the workspace, and the exported items of its source files (bodies left out), opening
+# every request so the agent knows the codebase's shape before it reads anything. The query's @item captures are
+# shown, and a @body or @omit inside one is left out.
+[project_map]
+sources = ["src/**/*.ts"]
+query = "queries/project_map.scm"
+
+# The architecture lint: the rules of AGENTS.md a machine can check, run as the "architecture" check before the
+# commands below, so the agent learns of a rule it broke as it learns of a type error. Rule kinds:
+# - imports: a file whose path matches `files` imports nothing matching `forbid` (regular expressions, on the imported
+#   module as written: every import goes through the #src/ alias). When both have a group named `name`, only an
+#   import of another one of the same kind breaks the rule.
+# - query: what the query captures as @violation, except what it also captures as @allowed.
+# - named_after_file: one of the names the query captures as @name is the file's name in PascalCase.
+[lint]
+sources = ["src/**/*.ts"]
+imports_query = "queries/imports.scm"
+
+[[lint.rules]]
+name = "manager-uses-manager"
+kind = "imports"
+message = "managers never call other managers; anything they share goes through the DataFacade, a processor or an engine"
+files = '^src/managers/(?P<name>[a-z0-9_]+)_manager\.ts$'
+forbid = ['^#src/managers/(?P<name>[a-z0-9_]+)_manager\.ts$']
+
+[[lint.rules]]
+name = "engine-uses-engine"
+kind = "imports"
+message = "an engine never uses another engine"
+files = '^src/managers/engines/(?P<name>[a-z0-9_]+)/'
+forbid = ['^#src/managers/engines/(?P<name>[a-z0-9_]+)/']
+
+[[lint.rules]]
+name = "engine-uses-manager-parts"
+kind = "imports"
+message = "an engine never uses a manager or a manager's processors; it is handed the DataFacade with each call"
+files = '^src/managers/engines/'
+forbid = ['^#src/managers/processors/', '^#src/managers/[a-z0-9_]+_manager\.ts$']
+
+[[lint.rules]]
+name = "processor-does-io"
+kind = "imports"
+message = "a processor holds domain logic only: no gateways, data layer, engines, managers or service locator"
+files = '^src/managers/processors/'
+forbid = ['^#src/managers/(gateways|data_layer|engines|service_locator)/', '^#src/managers/[a-z0-9_]+_manager\.ts$']
+
+[[lint.rules]]
+name = "engine-processor-does-io"
+kind = "imports"
+message = "an engine's processor holds domain logic only: no gateways, data layer or service locator"
+files = '^src/managers/engines/[a-z0-9_]+/processors/'
+forbid = ['^#src/managers/(gateways|data_layer|service_locator)/']
+
+[[lint.rules]]
+name = "gateway-uses-domain-parts"
+kind = "imports"
+message = "a gateway only talks to its system: no processors, engines, managers, data layer or service locator"
+files = '^src/managers/gateways/'
+forbid = ['^#src/managers/(processors|engines|data_layer|service_locator)/', '^#src/managers/[a-z0-9_]+_manager\.ts$']
+
+# TypeScript has no private modules, so a gateway's own parts are kept to it here: a file in one gateway's folder may
+# import its own; every other file (the first alternative doesn't match it, so it has no `name`) may import none.
+[[lint.rules]]
+name = "gateway-internals"
+kind = "imports"
+message = "a gateway's resource models, validators, mappers, query builders and request builders are its own: nothing outside its folder imports them"
+files = '^src/(?:managers/(?:data_layer/managers/)?gateways/(?P<name>[a-z0-9_]+)/|.*)'
+forbid = ['/gateways/(?P<name>[a-z0-9_]+)/(resource_models|validators|mappers|query_builders|request_builders)/']
+
+[[lint.rules]]
+name = "common-helper-uses-components"
+kind = "imports"
+message = "a common helper is stateless and does no I/O: it uses no component"
+files = '^src/managers/common/'
+forbid = ['^#src/managers/(gateways|data_layer|engines|processors|service_locator)/', '^#src/managers/[a-z0-9_]+_manager\.ts$']
+
+[[lint.rules]]
+name = "model-uses-components"
+kind = "imports"
+message = "a domain model is data: it uses other models only"
+files = '^src/managers/models/'
+forbid = ['^#src/managers/(gateways|data_layer|engines|processors|service_locator|configuration_providers|logger)/', '^#src/managers/[a-z0-9_]+_manager\.ts$']
+
+[[lint.rules]]
+name = "service-bypasses-facade"
+kind = "imports"
+message = "a service calls only the domain facade: it never uses the domain container's components"
+files = '^src/services/'
+forbid = ['^#src/managers/(gateways|data_layer|engines|processors|service_locator|configuration_providers|common)/', '^#src/managers/[a-z0-9_]+_manager\.ts$']
+
+[[lint.rules]]
+name = "untyped-variable"
+kind = "query"
+message = "every const, let and var has its type written out"
+query = "queries/lint/untyped_variable.scm"
+
+[[lint.rules]]
+name = "untyped-field"
+kind = "query"
+message = "every class field has its type written out (an `as const` literal aside)"
+query = "queries/lint/untyped_field.scm"
+
+[[lint.rules]]
+name = "untyped-parameter"
+kind = "query"
+message = "every parameter has its type written out (a callback's, typed by the function it is passed to, aside)"
+query = "queries/lint/untyped_parameter.scm"
+
+[[lint.rules]]
+name = "protocol-with-body"
+kind = "query"
+message = "a Protocol declares method signatures only: no fields"
+query = "queries/lint/protocol_body.scm"
+
+[[lint.rules]]
+name = "function-outside-class"
+kind = "query"
+message = "every function is a method of a class, except in an entry point's module"
+query = "queries/lint/function_outside_class.scm"
+exclude = ["**/main.ts", "**/export_openapi.ts"]
+
+[[lint.rules]]
+name = "relative-import"
+kind = "query"
+message = "imports go through the #src/ alias (import ... from \"#src/managers/...\"), never a relative path"
+query = "queries/lint/relative_import.scm"
+
+[[lint.rules]]
+name = "file-named-after-type"
+kind = "named_after_file"
+message = "a file holds the one class, interface or type it is named after"
+query = "queries/lint/type_names.scm"
+exclude = ["**/main.ts", "**/export_openapi.ts"]
+
+# The formatters: commands that rewrite files into the form the checks expect: the installed dependencies (what
+# package.json names), the code's formatting and the generated OpenAPI contract. The harness runs them, in order,
+# before every run of the checks, so no agent formats code or regenerates the contract by hand (or spends a turn on a
+# check of either), and tells the agent which of the `sources` they changed.
+[format]
+commands = [
+    ["pnpm", "install", "--silent"],
+    ["pnpm", "exec", "prettier", "--write", "--log-level", "warn", "."],
+    ["pnpm", "run", "--silent", "export-openapi"],
+]
+sources = ["src/**/*.ts", "openapi.json"]
+
+[detect]
+# A project is a TypeScript app when its root has all of these.
+files = ["package.json", "tsconfig.json"]
+
+# The checks every change passes, run from the app's root, in order.
+[[checks]]
+name = "format"
+command = ["pnpm", "exec", "prettier", "--check", "."]
+
+[[checks]]
+name = "lint"
+command = ["pnpm", "exec", "eslint", "."]
+
+[[checks]]
+name = "types"
+command = ["pnpm", "exec", "tsc", "--noEmit"]
+
+[[checks]]
+name = "contract"
+command = ["pnpm", "run", "--silent", "export-openapi", "--check"]
+
+# Tests are deferred; the slot is kept so adding them changes no harness code.
+[[checks]]
+name = "test"
+command = []
+
+# Starting an app: names in the template replaced by the app's own, in file contents and paths, the longest name first
+# where several start at the same place (AGENTS.md, "Starting an app from the template"); paths include
+# src/example_app_facade.ts.
+[rename]
+"example-app" = "{app_name_kebab}"
+"example_app" = "{app_name_snake}"
+"ExampleAppFacade" = "{app_name_pascal}Facade"
+"ExampleAppManager" = "{app_name_pascal}Manager"
+"exampleApp" = "{app_name_camel}"
+"EXAMPLE_APP_" = "{app_name_upper}_"
+"Example App" = "{app_name_title}"

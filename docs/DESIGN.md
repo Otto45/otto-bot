@@ -64,6 +64,9 @@ stack_packs/<stack>/
   the architecture onto its language's own inheritance: Protocols, interfaces and base classes where Rust has traits
   and enums (e.g. an exception family is a base class, not an enum). Every template's relational example is Postgres
   with dbmate migrations.
+- The TypeScript template runs on Node 24 with its types stripped (no build step, so only erasable syntax), imports
+  through a `#src/` alias so the lint's import rules see every path, and pins TypeScript 6.0: typescript-eslint doesn't
+  support TypeScript 7 yet.
 - A pack's rules are its template's `AGENTS.md`; the Python one takes its Python conventions from the
   `software-engineer-python` skill (`@final`, explicit `Protocol` inheritance, `slots` and `frozen` dataclasses).
 
@@ -168,7 +171,7 @@ boundaries the plan couldn't foresee, and most of them blocked on a file another
 `otto new <name> --stack <stack>` (the `ProjectBootstrapEngine`) copies the pack's template into a new or empty folder
 named after the app, leaving out what the template's `.gitignore` ignores, and renames it without a model: the pack's
 `[rename]` map, applied to file contents and paths in one pass, the longest name first. The app's name gives every form
-a stack needs (`orders-app`, `orders_app`, `OrdersApp`, `ORDERS_APP`, `Orders App`). Then the pack's formatters run,
+a stack needs (`orders-app`, `orders_app`, `OrdersApp`, `ordersApp`, `ORDERS_APP`, `Orders App`). Then the pack's formatters run,
 since a renamed name sorts and wraps differently, so the new app passes its checks before any request. Its examples
 stay: they show the implementor every component kind, and the first plan replaces them. Stripping them without a model
 would need a second, empty template per pack, kept in step by hand.
