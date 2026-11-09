@@ -7,6 +7,7 @@ pub struct OpenAiResponsesConfig {
     pub model: Option<String>,
     pub timeout_seconds: Option<f64>,
     pub idle_timeout_seconds: Option<f64>,
+    pub max_retries: Option<i64>,
     pub transport: Option<String>,
 }
 
@@ -20,6 +21,7 @@ impl fmt::Debug for OpenAiResponsesConfig {
             .field("model", &self.model)
             .field("timeout_seconds", &self.timeout_seconds)
             .field("idle_timeout_seconds", &self.idle_timeout_seconds)
+            .field("max_retries", &self.max_retries)
             .field("transport", &self.transport)
             .finish()
     }

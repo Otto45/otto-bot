@@ -25,6 +25,10 @@ export class UserProfileRouter {
             description: "No user profile has this id",
             content: { "application/json": { schema: ErrorResponseSchema } },
           },
+          503: {
+            description: "JSON Placeholder is unavailable for now",
+            content: { "application/json": { schema: ErrorResponseSchema } },
+          },
           422: {
             description: "The user id is not an integer",
             content: { "application/json": { schema: ErrorResponseSchema } },

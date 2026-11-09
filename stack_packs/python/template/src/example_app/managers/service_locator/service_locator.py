@@ -13,6 +13,7 @@ from example_app.managers.engines.customer_onboarding.processors.onboarding.onbo
     OnboardingProcessor,
 )
 from example_app.managers.gateways.json_placeholder.json_placeholder_gateway import JsonPlaceholderGateway
+from example_app.managers.models.settings.json_placeholder_settings import JsonPlaceholderSettings
 from example_app.managers.processors.customer.customer_processor import CustomerProcessor
 from example_app.managers.processors.greeting.greeting_processor import GreetingProcessor
 from example_app.managers.service_locator.service_locator_seams import ServiceLocatorSeams
@@ -66,8 +67,10 @@ class ServiceLocator:
     def get_json_placeholder_gateway(self) -> JsonPlaceholderGateway:
         if self._json_placeholder_gateway is None:
             configuration_provider: ConfigurationProvider = self.get_configuration_provider()
+            json_placeholder_settings: JsonPlaceholderSettings = configuration_provider.get_json_placeholder_settings()
             json_placeholder_gateway: JsonPlaceholderGateway = JsonPlaceholderGateway(
-                self._seams.create_json_placeholder_http_client(configuration_provider.get_json_placeholder_settings())
+                self._seams.create_json_placeholder_http_client(json_placeholder_settings),
+                json_placeholder_settings.max_retries,
             )
             self._close_callbacks.append(json_placeholder_gateway.close)
             self._json_placeholder_gateway = json_placeholder_gateway

@@ -1,6 +1,8 @@
 use serde::Deserialize;
 use serde_json::Value;
 
+use crate::managers::gateways::openai_responses::resource_models::error_response_resource::ErrorResource;
+
 // Resource models: the JSON body deserialized as it is, with every field optional so that anything the API sends
 // deserializes and the validator can say what is wrong with it. Fields the harness doesn't use are left out.
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -38,6 +40,8 @@ pub struct ResponseResource {
     pub model: Option<String>,
     pub status: Option<String>,
     pub incomplete_details: Option<IncompleteDetailsResource>,
+    // Why a response failed, when it did (its status is "failed").
+    pub error: Option<ErrorResource>,
     // Kept as the API sent them: each is sent back unchanged in the next request (see OutputItemResource for what
     // the harness reads of one).
     pub output: Option<Vec<Value>>,

@@ -5,3 +5,4 @@ from dataclasses import dataclass
 class JsonPlaceholderConfig:
     base_url: str | None = None
     timeout_seconds: float | None = None
+    max_retries: int | None = None

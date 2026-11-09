@@ -8,12 +8,12 @@ use crate::managers::data_layer::managers::gateways::session_store::session_stor
 use crate::managers::data_layer::managers::gateways::stack_pack_store::stack_pack_store_gateway::StackPackStoreGateway;
 use crate::managers::engines::agent_run::agent_run_engine::AgentRunEngine;
 use crate::managers::engines::agent_run::processors::architecture_lint::architecture_lint_processor::ArchitectureLintProcessor;
+use crate::managers::engines::agent_run::processors::brief::brief_processor::BriefProcessor;
 use crate::managers::engines::agent_run::processors::diff::diff_processor::DiffProcessor;
 use crate::managers::engines::agent_run::processors::patch::patch_processor::PatchProcessor;
 use crate::managers::engines::agent_run::processors::project_map::project_map_processor::ProjectMapProcessor;
 use crate::managers::engines::agent_run::processors::prompt::prompt_processor::PromptProcessor;
 use crate::managers::engines::agent_run::processors::tool::tool_processor::ToolProcessor;
-use crate::managers::engines::agent_run::processors::work_plan::work_plan_processor::WorkPlanProcessor;
 use crate::managers::engines::project_bootstrap::processors::app_name::app_name_processor::AppNameProcessor;
 use crate::managers::engines::project_bootstrap::project_bootstrap_engine::ProjectBootstrapEngine;
 use crate::managers::exceptions::application_base_exception::{ApplicationBaseException, ApplicationResult};
@@ -49,7 +49,7 @@ pub struct ServiceLocator {
     patch_processor: Mutex<Option<Arc<PatchProcessor>>>,
     project_map_processor: Mutex<Option<Arc<ProjectMapProcessor>>>,
     architecture_lint_processor: Mutex<Option<Arc<ArchitectureLintProcessor>>>,
-    work_plan_processor: Mutex<Option<Arc<WorkPlanProcessor>>>,
+    brief_processor: Mutex<Option<Arc<BriefProcessor>>>,
     diff_processor: Mutex<Option<Arc<DiffProcessor>>>,
     agent_run_engine: Mutex<Option<Arc<AgentRunEngine>>>,
     app_name_processor: Mutex<Option<Arc<AppNameProcessor>>>,
@@ -85,7 +85,7 @@ impl ServiceLocator {
             patch_processor: Mutex::new(None),
             project_map_processor: Mutex::new(None),
             architecture_lint_processor: Mutex::new(None),
-            work_plan_processor: Mutex::new(None),
+            brief_processor: Mutex::new(None),
             diff_processor: Mutex::new(None),
             agent_run_engine: Mutex::new(None),
             app_name_processor: Mutex::new(None),
@@ -122,6 +122,7 @@ impl ServiceLocator {
                 openai_responses_settings.base_url.clone(),
                 openai_responses_settings.api_key.clone(),
                 openai_responses_settings.model.clone(),
+                openai_responses_settings.max_retries,
             ));
             let gateway_to_close: Arc<OpenAiResponsesGateway> = openai_responses_gateway.clone();
             self.register_close(Box::new(move || {
@@ -207,8 +208,8 @@ impl ServiceLocator {
         })
     }
 
-    pub fn get_work_plan_processor(&self) -> ApplicationResult<Arc<WorkPlanProcessor>> {
-        ServiceLocator::get_or_create(&self.work_plan_processor, || Ok(Arc::new(WorkPlanProcessor)))
+    pub fn get_brief_processor(&self) -> ApplicationResult<Arc<BriefProcessor>> {
+        ServiceLocator::get_or_create(&self.brief_processor, || Ok(Arc::new(BriefProcessor)))
     }
 
     pub fn get_app_name_processor(&self) -> ApplicationResult<Arc<AppNameProcessor>> {
@@ -252,7 +253,7 @@ impl ServiceLocator {
                 self.get_patch_processor()?,
                 self.get_project_map_processor()?,
                 self.get_architecture_lint_processor()?,
-                self.get_work_plan_processor()?,
+                self.get_brief_processor()?,
                 self.get_diff_processor()?,
                 agent_settings.max_turns,
                 check_timeout,

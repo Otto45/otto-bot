@@ -6,9 +6,9 @@ use tokio::io::AsyncWriteExt;
 
 use crate::managers::common::formatters::validation_error_formatter::ValidationErrorFormatter;
 use crate::managers::data_layer::managers::gateways::session_store::mappers::conversation_item_document_mapper::ConversationItemDocumentMapper;
+use crate::managers::data_layer::managers::gateways::session_store::mappers::implementation_brief_document_mapper::ImplementationBriefDocumentMapper;
 use crate::managers::data_layer::managers::gateways::session_store::mappers::session_document_mapper::SessionDocumentMapper;
 use crate::managers::data_layer::managers::gateways::session_store::mappers::usage_record_document_mapper::UsageRecordDocumentMapper;
-use crate::managers::data_layer::managers::gateways::session_store::mappers::work_plan_document_mapper::WorkPlanDocumentMapper;
 use crate::managers::data_layer::managers::gateways::session_store::resource_models::conversation_item_document::ConversationItemDocument;
 use crate::managers::data_layer::managers::gateways::session_store::resource_models::project_map_document::ProjectMapDocument;
 use crate::managers::data_layer::managers::gateways::session_store::validators::validator_conversation_item_document::ValidatorConversationItemDocument;
@@ -16,18 +16,18 @@ use crate::managers::exceptions::application_base_exception::{ApplicationBaseExc
 use crate::managers::exceptions::contextual_data::ContextualData;
 use crate::managers::exceptions::session_store_gateway_exception::SessionStoreGatewayException;
 use crate::managers::models::conversation_item::ConversationItem;
+use crate::managers::models::implementation_brief::ImplementationBrief;
 use crate::managers::models::project_map_role::ProjectMapRole;
 use crate::managers::models::session::Session;
 use crate::managers::models::session_project_maps::SessionProjectMaps;
 use crate::managers::models::usage_record::UsageRecord;
-use crate::managers::models::work_plan::WorkPlan;
 
 const SESSION_FILE_NAME: &str = "session.json";
 // A folder of one conversation per lane, each `<lane_name>.jsonl`.
 const CONVERSATION_ITEMS_DIRECTORY_NAME: &str = "conversation_items";
 const USAGE_RECORDS_FILE_NAME: &str = "usage_records.jsonl";
 const PROJECT_MAPS_FILE_NAME: &str = "project_maps.jsonl";
-const PLANS_FILE_NAME: &str = "plans.jsonl";
+const BRIEFS_FILE_NAME: &str = "briefs.jsonl";
 
 /// Keeps each session in a folder of its own: `session.json`, and append-only JSON Lines files: each lane's
 /// conversation (every item in the order the model saw it, `conversation_items/<lane_name>.jsonl`), the usage ledger
@@ -204,16 +204,36 @@ impl SessionStoreGateway {
         .await
     }
 
-    /// Keeps a plan the harness accepted, after those before it.
-    pub async fn append_work_plan(&self, session_id: &str, work_plan: &WorkPlan) -> ApplicationResult<()> {
-        let line: String = serde_json::to_string(&WorkPlanDocumentMapper::to_work_plan_document(work_plan, Utc::now()))
-            .expect("a work plan document serializes to JSON");
+    /// Keeps a brief the harness accepted, after those before it.
+    pub async fn append_implementation_brief(
+        &self,
+        session_id: &str,
+        implementation_brief: &ImplementationBrief,
+    ) -> ApplicationResult<()> {
+        let line: String = serde_json::to_string(&ImplementationBriefDocumentMapper::to_implementation_brief_document(
+            implementation_brief,
+            Utc::now(),
+        ))
+        .expect("an implementation brief document serializes to JSON");
         self.append_lines(
-            &self.get_file_path(session_id, PLANS_FILE_NAME),
+            &self.get_file_path(session_id, BRIEFS_FILE_NAME),
             &[line],
             &ContextualData::new().with("session_id", session_id),
         )
         .await
+    }
+
+    /// How many briefs the session has accepted, each a line of briefs.jsonl; what they say isn't read.
+    pub async fn count_implementation_briefs(&self, session_id: &str) -> ApplicationResult<usize> {
+        match tokio::fs::read_to_string(self.get_file_path(session_id, BRIEFS_FILE_NAME)).await {
+            Ok(content) => Ok(content.lines().filter(|line: &&str| !line.trim().is_empty()).count()),
+            Err(exception) if exception.kind() == ErrorKind::NotFound => Ok(0),
+            Err(exception) => Err(SessionStoreGateway::to_io_exception(
+                exception,
+                "reading a session's briefs",
+                &ContextualData::new().with("session_id", session_id),
+            )),
+        }
     }
 
     /// Holds no open file between calls, so there is nothing to close.

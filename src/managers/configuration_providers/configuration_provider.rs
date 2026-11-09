@@ -72,6 +72,7 @@ impl ConfigurationProvider {
             api_key: config.api_key.expect("validated by ValidatorOpenAiResponses"),
             model: config.model.expect("validated by ValidatorOpenAiResponses"),
             timeout_seconds: config.timeout_seconds.expect("validated by ValidatorOpenAiResponses"),
+            max_retries: config.max_retries.expect("validated by ValidatorOpenAiResponses"),
             idle_timeout_seconds: config
                 .idle_timeout_seconds
                 .expect("validated by ValidatorOpenAiResponses"),

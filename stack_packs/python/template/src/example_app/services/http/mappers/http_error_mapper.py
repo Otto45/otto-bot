@@ -7,6 +7,9 @@ from example_app.managers.exceptions.customer_not_found_exception import Custome
 from example_app.managers.exceptions.document_database_gateway_exception import DocumentDatabaseGatewayException
 from example_app.managers.exceptions.invalid_customer_exception import InvalidCustomerException
 from example_app.managers.exceptions.json_placeholder_gateway_exception import JsonPlaceholderGatewayException
+from example_app.managers.exceptions.json_placeholder_unavailable_exception import (
+    JsonPlaceholderUnavailableException,
+)
 from example_app.managers.exceptions.relational_database_gateway_exception import RelationalDatabaseGatewayException
 from example_app.managers.exceptions.user_profile_not_found_exception import UserProfileNotFoundException
 from example_app.services.http.wire_models.error_response import ErrorResponse
@@ -25,6 +28,9 @@ class HttpErrorMapper:
                 return HTTPStatus.BAD_REQUEST
             case CustomerNotFoundException() | UserProfileNotFoundException():
                 return HTTPStatus.NOT_FOUND
+            # An upstream service down for now, through every retry: the caller can try again later.
+            case JsonPlaceholderUnavailableException():
+                return HTTPStatus.SERVICE_UNAVAILABLE
             case JsonPlaceholderGatewayException():
                 return HTTPStatus.BAD_GATEWAY
             case (
@@ -41,6 +47,8 @@ class HttpErrorMapper:
         # internals (tables, SQL statements, upstream services) that callers must not see; they are logged instead.
         if not status_code.is_server_error:
             return ErrorResponse(error=exception.message)
+        if status_code == HTTPStatus.SERVICE_UNAVAILABLE:
+            return ErrorResponse(error="An upstream service is unavailable for now; try again later")
         if status_code == HTTPStatus.BAD_GATEWAY:
             return ErrorResponse(error="An upstream service failed")
         return ErrorResponse(error="The request could not be completed")

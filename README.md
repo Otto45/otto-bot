@@ -4,15 +4,15 @@ A coding agent harness that builds apps on the Domain Container architecture, in
 itself a Domain Container app, in Rust. The design is [docs/DESIGN.md](docs/DESIGN.md); the rules every change to it
 follows are [AGENTS.md](AGENTS.md).
 
-Status: build steps 1-4 of [docs/DESIGN.md](docs/DESIGN.md) are done. An agent
+Status: build steps 1-5 of [docs/DESIGN.md](docs/DESIGN.md) are done. An agent
 works in a workspace: it reads, lists and searches files, edits them with `apply_patch`, and runs the stack pack's
 checks, remembering the whole session. Every request opens with cached layers (the stack's rules, then the workspace's
 project map), and goes over a WebSocket connection that sends only what is new. The checks include an architecture lint
 of the stack pack's rules, and the stack's formatters (the code's formatting, the OpenAPI contract) run before the checks,
-so no agent spends a turn on them. Agents run in roles on lanes of their own: the orchestrator (the session's own agent) makes a small change
-itself and plans a bigger one (`submit_plan`); the implementor builds
-it, until every check passes; then the reviewer reviews the change's diff, and the implementor fixes what it says must
-be fixed. Stack packs: Rust, Python and TypeScript; `otto new` starts an app from a pack's template.
+so no agent spends a turn on them. Agents run in roles on lanes of their own: the orchestrator (the session's own
+agent) holds the conversation, asks what only the person can decide, and briefs the implementor; the implementor plans
+and builds each brief from a fresh start, until every check passes; then the reviewer reviews the change's diff, the
+implementor fixes what it says must be fixed, and the orchestrator tells the person how it went. Stack packs: Rust, Python and TypeScript; `otto new` starts an app from a pack's template.
 
 ## What you need
 
@@ -31,7 +31,7 @@ cargo run -- --help
 
 `new` copies the stack pack's template into a new (or empty) folder named after the app, renames its example names
 (`example_app`, `ExampleAppFacade`, `EXAMPLE_APP_`, ...) after the app, and runs the pack's formatters, with no model;
-the example components stay as the pattern for each kind, for the first request to replace.
+the example components stay as the pattern for each kind, for the first brief to replace.
 
 Type a request and press Enter: otto works on it until it is done, showing each tool it uses, then the run's turns
 and tokens. Ctrl-C cancels a run under way; Ctrl-D, `/exit` or Ctrl-C at the prompt quits.
@@ -41,7 +41,17 @@ otto reads and writes nothing outside the workspace, and never reads `.env` file
 
 Everything otto keeps is under `~/.otto-bot/` (`OTTO_BOT_HOME`): `logs/otto.log` (one JSON object per line) and
 `sessions/<id>/`, with each agent's conversation (`conversation_items/<lane>.jsonl`, the session's own agent being
-`orchestrator`), token usage (`usage_records.jsonl`) and accepted plans (`plans.jsonl`).
+`orchestrator`), token usage (`usage_records.jsonl`) and accepted briefs (`briefs.jsonl`); each brief's implementor and reviewer are
+`implementor_<n>` and `reviewer_<n>`.
+
+## Benchmarks
+
+```sh
+benchmarks/run.sh python orders   # a new app, one task, its checks run independently, and a summary of the session
+```
+
+The tasks are in `benchmarks/tasks/`; results go to `target/benchmarks/`. The latest numbers are in
+[docs/DESIGN.md](docs/DESIGN.md) (Benchmarks).
 
 ## Checks
 
@@ -60,6 +70,7 @@ cargo clippy --all-targets -- -D warnings
 | `OTTO_BOT_OPENAI_BASE_URL` | `https://api.openai.com/v1` |
 | `OTTO_BOT_OPENAI_TIMEOUT_SECONDS` | `600` |
 | `OTTO_BOT_OPENAI_IDLE_TIMEOUT_SECONDS` | `120` (WebSocket: a response silent this long has stalled, and is sent again on a fresh connection) |
+| `OTTO_BOT_OPENAI_MAX_RETRIES` | `3` (a request the API failed on its side, rate-limited, or couldn't be reached is sent again this many times, after 1, 2, 4... seconds or the `Retry-After` it asks for; 0 to 10) |
 | `OTTO_BOT_OPENAI_TRANSPORT` | `websocket` (a connection per session that sends only what's new each turn; or `http`) |
 | `OTTO_BOT_HOME` | `~/.otto-bot` |
 | `OTTO_BOT_STACK_PACKS_DIRECTORY` | this checkout's `stack_packs/` |

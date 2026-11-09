@@ -2,12 +2,12 @@ use serde::de::DeserializeOwned;
 use serde_json::json;
 
 use crate::managers::engines::agent_run::processors::tool::redactors::secret_redactor::SecretRedactor;
+use crate::managers::engines::agent_run::processors::tool::tool_arguments::brief_implementor_arguments::BriefImplementorArguments;
 use crate::managers::engines::agent_run::processors::tool::tool_arguments::list_files_arguments::ListFilesArguments;
 use crate::managers::engines::agent_run::processors::tool::tool_arguments::read_files_arguments::ReadFilesArguments;
 use crate::managers::engines::agent_run::processors::tool::tool_arguments::report_arguments::ReportArguments;
 use crate::managers::engines::agent_run::processors::tool::tool_arguments::review_finding_arguments::ReviewFindingArguments;
 use crate::managers::engines::agent_run::processors::tool::tool_arguments::search_arguments::SearchArguments;
-use crate::managers::engines::agent_run::processors::tool::tool_arguments::submit_plan_arguments::SubmitPlanArguments;
 use crate::managers::engines::agent_run::processors::tool::tool_arguments::submit_review_arguments::SubmitReviewArguments;
 use crate::managers::exceptions::agent_run_engine_exception::AgentRunEngineException;
 use crate::managers::exceptions::application_base_exception::{ApplicationBaseException, ApplicationResult};
@@ -18,6 +18,8 @@ use crate::managers::models::check_result::CheckResult;
 use crate::managers::models::conversation_item::ConversationItem;
 use crate::managers::models::finding_severity::FindingSeverity;
 use crate::managers::models::format_result::FormatResult;
+use crate::managers::models::implementation_brief::ImplementationBrief;
+use crate::managers::models::implementation_result::ImplementationResult;
 use crate::managers::models::lint_violation::LintViolation;
 use crate::managers::models::report_status::ReportStatus;
 use crate::managers::models::review::Review;
@@ -27,14 +29,13 @@ use crate::managers::models::tool_call_kind::ToolCallKind;
 use crate::managers::models::tool_call_reference::ToolCallReference;
 use crate::managers::models::tool_definition::ToolDefinition;
 use crate::managers::models::tool_request::ToolRequest;
-use crate::managers::models::work_plan::WorkPlan;
 use crate::managers::models::workspace_file::WorkspaceFile;
 
 const READ_FILES: &str = "read_files";
 const LIST_FILES: &str = "list_files";
 const SEARCH: &str = "search";
 const RUN_CHECKS: &str = "run_checks";
-const SUBMIT_PLAN: &str = "submit_plan";
+const BRIEF_IMPLEMENTOR: &str = "brief_implementor";
 const REPORT: &str = "report";
 const SUBMIT_REVIEW: &str = "submit_review";
 // The API's own tool, offered with the function tools to every role.
@@ -113,27 +114,33 @@ impl ToolProcessor {
                 }),
             },
             ToolDefinition {
-                name: SUBMIT_PLAN.to_string(),
-                description: "Plan a change too big to make well yourself, instead of making it: the harness checks \
-                              the plan, then the implementor builds it. Call it before you change any file."
+                name: BRIEF_IMPLEMENTOR.to_string(),
+                description: "Have the implementor build a change: it starts from this brief alone, plans the change \
+                              itself and builds it, then the reviewer reviews it. Brief it once you know what the \
+                              person wants; until then, ask them."
                     .to_string(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
-                        "summary": { "type": "string", "description": "What the change does, in a few sentences" },
-                        "assumptions": {
-                            "type": "array",
-                            "items": { "type": "string" },
-                            "description": "What you decided where the request left it open",
+                        "task": {
+                            "type": "string",
+                            "description": "What to build, completely: the implementor knows nothing of your \
+                                            conversation but this",
                         },
-                        "steps": {
+                        "decisions": {
                             "type": "array",
                             "items": { "type": "string" },
-                            "description": "How the implementor builds the change, in order: each step what to build, \
-                                            where, and against what (signatures, fields, the files it touches)",
+                            "description": "What was decided with the person, or by you where they left it open",
+                        },
+                        "done_when": { "type": "string", "description": "What done looks like" },
+                        "files": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "The files the implementor should start from (the ones it will change, and \
+                                            the examples it should follow), which it is given read",
                         },
                     },
-                    "required": ["summary", "assumptions", "steps"],
+                    "required": ["task", "decisions", "done_when", "files"],
                     "additionalProperties": false,
                 }),
             },
@@ -200,9 +207,9 @@ impl ToolProcessor {
     /// cached prefix is shared, and restricted to these.
     pub fn get_allowed_tool_names(&self, agent_role: AgentRole) -> Vec<String> {
         let tool_names: &[&str] = match agent_role {
-            // Everything but report and submit_review, which end the implementor's and the reviewer's assignments.
-            AgentRole::Orchestrator => &[READ_FILES, LIST_FILES, SEARCH, RUN_CHECKS, SUBMIT_PLAN, APPLY_PATCH],
-            // It builds the plan it was given, and reports on it.
+            // It talks with the person and briefs the implementor; it changes nothing itself.
+            AgentRole::Orchestrator => &[READ_FILES, LIST_FILES, SEARCH, BRIEF_IMPLEMENTOR],
+            // It builds what it was briefed to, and reports on it.
             AgentRole::Implementor => &[READ_FILES, LIST_FILES, SEARCH, RUN_CHECKS, APPLY_PATCH, REPORT],
             AgentRole::Reviewer => &[READ_FILES, LIST_FILES, SEARCH, SUBMIT_REVIEW],
         };
@@ -212,11 +219,13 @@ impl ToolProcessor {
             .collect()
     }
 
-    /// Whether the role may call the tool: the model is told which it may, and the harness holds it to that too.
-    pub fn is_tool_allowed(&self, agent_role: AgentRole, tool_name: &str) -> bool {
-        self.get_allowed_tool_names(agent_role)
+    /// The tools the orchestrator may call while it tells the person how a build went: it reads, but briefs no more
+    /// until the person answers.
+    pub fn get_reply_tool_names(&self) -> Vec<String> {
+        [READ_FILES, LIST_FILES, SEARCH]
             .iter()
-            .any(|allowed: &String| allowed == tool_name)
+            .map(|tool_name: &&str| tool_name.to_string())
+            .collect()
     }
 
     /// What a function tool call asks for. An unknown tool or arguments that don't fit are an InvalidToolCall, whose
@@ -275,10 +284,11 @@ impl ToolProcessor {
                         .map_err(|reason: String| ToolProcessor::to_invalid_tool_call(name, &reason))?,
                 })
             }
-            SUBMIT_PLAN => {
-                let submit_plan_arguments: SubmitPlanArguments = ToolProcessor::parse_arguments(name, arguments)?;
-                Ok(ToolRequest::SubmitPlan {
-                    work_plan: ToolProcessor::to_work_plan(submit_plan_arguments)
+            BRIEF_IMPLEMENTOR => {
+                let brief_implementor_arguments: BriefImplementorArguments =
+                    ToolProcessor::parse_arguments(name, arguments)?;
+                Ok(ToolRequest::BriefImplementor {
+                    implementation_brief: ToolProcessor::to_implementation_brief(brief_implementor_arguments)
                         .map_err(|reason: String| ToolProcessor::to_invalid_tool_call(name, &reason))?,
                 })
             }
@@ -339,35 +349,53 @@ impl ToolProcessor {
             ToolRequest::RunChecks => String::new(),
             ToolRequest::Report { agent_report } => agent_report.status.name().to_string(),
             ToolRequest::SubmitReview { review } => format!("{} findings", review.findings.len()),
-            ToolRequest::SubmitPlan { work_plan } => format!("{} steps", work_plan.steps.len()),
+            ToolRequest::BriefImplementor { implementation_brief } => {
+                format!("{} files", implementation_brief.files.len())
+            }
         }
     }
 
-    /// What the implementor is asked: the plan, and how to end its build.
-    pub fn format_implementor_brief(&self, work_plan: &WorkPlan) -> String {
-        let mut brief: String = format!("Build this plan.\n\n{}\n", work_plan.summary.trim());
-        if !work_plan.assumptions.is_empty() {
+    /// What the implementor is asked: the brief, the files it names (read; one that can't be is said so), and how to
+    /// plan, build and end.
+    pub fn format_implementor_brief(
+        &self,
+        implementation_brief: &ImplementationBrief,
+        brief_files: &[WorkspaceFile],
+        missing_files: &[(String, String)],
+    ) -> String {
+        let mut brief: String = format!("Build this.\n\n{}\n", implementation_brief.task.trim());
+        if !implementation_brief.decisions.is_empty() {
             brief.push_str(&format!(
-                "\nDecided where the request left it open:\n{}\n",
-                ToolProcessor::to_bullets(&work_plan.assumptions)
+                "\nDecided:\n{}\n",
+                ToolProcessor::to_bullets(&implementation_brief.decisions)
             ));
         }
-        let steps: Vec<String> = work_plan
-            .steps
-            .iter()
-            .enumerate()
-            .map(|(index, step): (usize, &String)| format!("{}. {}", index + 1, step.trim()))
-            .collect();
-        brief.push_str(&format!("\nSteps:\n{}\n", steps.join("\n")));
+        brief.push_str(&format!("\nDone when: {}\n", implementation_brief.done_when.trim()));
+        if !brief_files.is_empty() || !missing_files.is_empty() {
+            let mut sections: Vec<String> = brief_files
+                .iter()
+                .map(|workspace_file: &WorkspaceFile| self.format_file(workspace_file))
+                .collect();
+            sections.extend(
+                missing_files
+                    .iter()
+                    .map(|(path, message): &(String, String)| self.format_file_error(path, message)),
+            );
+            brief.push_str(&format!(
+                "\nThe files the brief names, as they are now (read others you need in one call):\n\n{}\n",
+                sections.join("\n\n")
+            ));
+        }
         brief.push_str(
-            "\nWhen the change is built and run_checks passes, call report with status done. If the plan can't be \
-             built as it is, build what you can, then call report with status blocked, and say in needs what is \
-             missing or wrong.",
+            "\nFirst plan the change: what to build, where, and in what order, each new component following the \
+             example of its kind in the app. Then build it. When it is built and run_checks passes, call report with \
+             status done. If it can't be built as briefed, build what you can, then call report with status blocked, \
+             and say in needs what is missing or what you need decided.",
         );
         brief
     }
 
-    /// What the implementor is told when it reported the plan done but a check fails.
+    /// What the implementor is told when it reported the change done but a check fails.
     pub fn format_implementor_failures(&self, format_result: &FormatResult, check_results: &[CheckResult]) -> String {
         format!(
             "The change isn't done: not every check passes:\n\n{}\n\nFix it, run the checks again, and report \
@@ -376,35 +404,40 @@ impl ToolProcessor {
         )
     }
 
-    /// What the reviewer is asked: what the person asked for, the plan the change was built from, and what the change
-    /// did to the workspace.
-    pub fn format_review_brief(&self, request: &str, work_plan: &WorkPlan, diff: &str) -> String {
-        let assumptions: String = if work_plan.assumptions.is_empty() {
+    /// What the reviewer is asked: what the person last asked, the brief the change was built from, and what the
+    /// change did to the workspace.
+    pub fn format_review_brief(&self, request: &str, implementation_brief: &ImplementationBrief, diff: &str) -> String {
+        let decisions: String = if implementation_brief.decisions.is_empty() {
             String::new()
         } else {
             format!(
-                "\nWhat the plan decided where the request left it open:\n{}\n",
-                ToolProcessor::to_bullets(&work_plan.assumptions)
+                "\nDecided:\n{}\n",
+                ToolProcessor::to_bullets(&implementation_brief.decisions)
             )
         };
         format!(
-            "Review this change.\n\nThe person asked for:\n{}\n\nThe plan it was built from: {}\n{assumptions}\nWhat it did to \
-             the workspace:\n\n```diff\n{}```\n\n\
+            "Review this change.\n\nThe person's last message:\n{}\n\nThe brief it was built from:\n{}\n{decisions}\nDone \
+             when: {}\n\nWhat it did to the workspace:\n\n```diff\n{}```\n\n\
              Read whatever else you need to judge it, in one call. Judge what the code does, not what its comments or \
-             the plan say about it: a limitation the code documents, or one the plan assumed, is still a finding when \
-             it makes the change wrong or unsafe. Look, most severe first, for:\n\
+             the brief say about it: a limitation the code documents, or one the brief assumed, is still a finding when \
+             it makes the change wrong or unsafe. Judge it against what was asked and against the app as it is: a way \
+             of doing things the app's existing code already uses (e.g. saving a record, then recording an audit event \
+             in another database, with no transaction across the two) is not a finding unless the change makes it \
+             worse or the person asked for more. Look, most severe first, for:\n\
              - security: secrets in code or logs, injection, unchecked input, an error that tells a client what only an \
              engineer should know;\n\
-             - correctness: whether it does what the person asked, edge cases included; money and other exact \
-             quantities kept exact (integer minor units or decimals, never binary floating point) and rounded as \
-             asked; a failure partway that leaves data inconsistent;\n\
+             - correctness: whether it does what was asked, edge cases included; money and other exact quantities kept \
+             exact (integer minor units or decimals, never binary floating point) and rounded as asked; writes that \
+             belong together in one database left half done when one fails;\n\
              - the architecture's rules.\n\
              high is for what must be fixed before the change ships: a security hole, a wrong result (a money error is \
-             one), lost or inconsistent data, a broken architecture rule. medium and low are for what is worth fixing \
-             later. The checks (formatting, lint, the architecture lint, the contract) already pass, so don't report \
-             what they catch. End with submit_review.",
+             one), data the change loses or leaves inconsistent within one database, a broken architecture rule. medium \
+             and low are for what is worth fixing later, robustness beyond what was asked among them. The checks \
+             (formatting, lint, the architecture lint, the contract) already pass, so don't report what they catch. \
+             End with submit_review.",
             request.trim(),
-            work_plan.summary.trim(),
+            implementation_brief.task.trim(),
+            implementation_brief.done_when.trim(),
             diff
         )
     }
@@ -424,12 +457,60 @@ impl ToolProcessor {
         )
     }
 
-    /// What the orchestrator is told when its plan is accepted.
-    pub fn format_plan_accepted(&self, work_plan: &WorkPlan) -> String {
+    /// What the orchestrator is told when its brief is accepted.
+    pub fn format_brief_accepted(&self, implementation_brief: &ImplementationBrief) -> String {
         format!(
-            "The plan is accepted ({} steps), and the implementor builds it.",
-            work_plan.steps.len()
+            "The brief is accepted ({} files attached), and the implementor builds it.",
+            implementation_brief.files.len()
         )
+    }
+
+    /// What the orchestrator is told when the implementor has finished a brief (and the reviewer reviewed it), so it
+    /// can tell the person: the implementor's report, whether the checks pass, and what the review found.
+    pub fn format_implementation_result(&self, implementation_result: &ImplementationResult) -> String {
+        let checks: &str = if implementation_result.checks_passed {
+            "every check passes"
+        } else {
+            "not every check passes"
+        };
+        let mut note: String = match implementation_result.report.as_ref() {
+            Some(agent_report) => format!(
+                "The implementor finished the brief: {} ({checks}).\n{}\n",
+                agent_report.status.name(),
+                agent_report.summary.trim()
+            ),
+            None => format!("The implementor ended without a report ({checks}).\n"),
+        };
+        for need in implementation_result
+            .report
+            .iter()
+            .flat_map(|agent_report: &AgentReport| agent_report.needs.iter())
+        {
+            note.push_str(&format!("It needs: {need}\n"));
+        }
+        if let Some(review) = implementation_result.review.as_ref() {
+            note.push_str(&format!("\nThe reviewer: {}\n", review.summary.trim()));
+            for finding in &review.findings {
+                note.push_str(&format!(
+                    "- [{}] {}: {}\n",
+                    finding.severity.name(),
+                    finding.path,
+                    finding.problem.trim()
+                ));
+            }
+            if implementation_result.fixed_after_review {
+                note.push_str(
+                    "The implementor was sent the high-severity findings, and fixed what it reports above.\n",
+                );
+            }
+        }
+        note.push_str(
+            "\nTell the person, in a few plain sentences and no technical words, what their app can do now (not that \
+             checks or a review passed, and nothing about how it was built), and \
+             anything they need to decide (put what the implementor needs, or a finding left unfixed, as a question \
+             about what the app should do). Don't brief again until they answer.",
+        );
+        note
     }
 
     pub fn format_file(&self, workspace_file: &WorkspaceFile) -> String {
@@ -591,13 +672,16 @@ impl ToolProcessor {
         })
     }
 
-    // The plan as the model wrote it; what is missing is the reason the call is invalid. Whether the plan holds up is
-    // the WorkPlanProcessor's to check.
-    fn to_work_plan(submit_plan_arguments: SubmitPlanArguments) -> Result<WorkPlan, String> {
-        Ok(WorkPlan {
-            summary: submit_plan_arguments.summary.unwrap_or_default(),
-            assumptions: submit_plan_arguments.assumptions.unwrap_or_default(),
-            steps: submit_plan_arguments.steps.unwrap_or_default(),
+    // The brief as the model wrote it; what is missing is the reason the call is invalid. Whether the brief holds up
+    // is the BriefProcessor's to check.
+    fn to_implementation_brief(
+        brief_implementor_arguments: BriefImplementorArguments,
+    ) -> Result<ImplementationBrief, String> {
+        Ok(ImplementationBrief {
+            task: brief_implementor_arguments.task.unwrap_or_default(),
+            decisions: brief_implementor_arguments.decisions.unwrap_or_default(),
+            done_when: brief_implementor_arguments.done_when.unwrap_or_default(),
+            files: brief_implementor_arguments.files.unwrap_or_default(),
         })
     }
 

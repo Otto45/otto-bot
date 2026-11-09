@@ -29,6 +29,7 @@ impl UserProfileRouter {
         (status = OK, description = "The user profile", body = UserProfileResponse),
         (status = BAD_REQUEST, description = "The user id is not an integer", body = ErrorResponse),
         (status = NOT_FOUND, description = "No user profile has this id", body = ErrorResponse),
+        (status = SERVICE_UNAVAILABLE, description = "JSON Placeholder is unavailable for now", body = ErrorResponse),
     ),
 )]
 async fn get_user_profile(

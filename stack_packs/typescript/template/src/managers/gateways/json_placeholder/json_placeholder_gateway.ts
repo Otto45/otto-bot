@@ -1,33 +1,63 @@
+import { setTimeout } from "node:timers/promises";
+
 import type { z } from "zod";
 
 import { ValidationErrorFormatter } from "#src/managers/common/formatters/validation_error_formatter.ts";
 import { ContextualData } from "#src/managers/exceptions/contextual_data.ts";
 import { InvalidUserProfileResponseException } from "#src/managers/exceptions/invalid_user_profile_response_exception.ts";
 import { JsonPlaceholderRequestException } from "#src/managers/exceptions/json_placeholder_request_exception.ts";
+import { JsonPlaceholderUnavailableException } from "#src/managers/exceptions/json_placeholder_unavailable_exception.ts";
 import { UserProfileNotFoundException } from "#src/managers/exceptions/user_profile_not_found_exception.ts";
 import { UserProfileMapper } from "#src/managers/gateways/json_placeholder/mappers/user_profile_mapper.ts";
 import { UserResourceSchema } from "#src/managers/gateways/json_placeholder/resource_models/user_resource.ts";
 import type { UserResource } from "#src/managers/gateways/json_placeholder/resource_models/user_resource.ts";
 import { ValidatorUserResource } from "#src/managers/gateways/json_placeholder/validators/validator_user_resource.ts";
+import { ApplicationLogger } from "#src/managers/logger/application_logger.ts";
 import type { UserProfile } from "#src/managers/models/user_profile.ts";
 
 const HTTP_NOT_FOUND: number = 404;
+// How long the gateway waits before sending a failed request again: doubling from the first, up to the longest, with up
+// to a quarter of a second added at random so requests that failed together aren't sent together. The longest the
+// service's own Retry-After is waited for; asking for longer is treated as this.
+const FIRST_RETRY_DELAY_MILLISECONDS: number = 1_000;
+const LONGEST_RETRY_DELAY_MILLISECONDS: number = 20_000;
+const MAX_RETRY_JITTER_MILLISECONDS: number = 250;
+const LONGEST_RETRY_AFTER_MILLISECONDS: number = 60_000;
+// The statuses that mean JSON Placeholder failed on its side or is limiting requests for now.
+const UNAVAILABLE_STATUSES: ReadonlySet<number> = new Set<number>([429, 500, 502, 503, 504]);
 
 export class JsonPlaceholderGateway {
   private readonly fetch: typeof globalThis.fetch;
   private readonly baseUrl: string;
   private readonly timeoutMilliseconds: number;
+  private readonly maxRetries: number;
 
-  /** Given its fetch (a seam's), the service's base URL, which it joins to each path, and the configured timeout. */
-  public constructor(fetch: typeof globalThis.fetch, baseUrl: string, timeoutSeconds: number) {
+  /**
+   * Given its fetch (a seam's), the service's base URL, which it joins to each path, the configured timeout, and how
+   * many times a request that failed for a reason that may pass is sent again.
+   */
+  public constructor(fetch: typeof globalThis.fetch, baseUrl: string, timeoutSeconds: number, maxRetries: number) {
     this.fetch = fetch;
     this.baseUrl = baseUrl.replace(/\/+$/, "");
     this.timeoutMilliseconds = timeoutSeconds * 1000;
+    this.maxRetries = maxRetries;
   }
 
   public async getUserProfile(userId: number): Promise<UserProfile> {
     const context: ContextualData = new ContextualData().withValue("user_id", userId);
-    const body: string = await this.get(`/users/${userId}`, "retrieving a user profile", context);
+    const response: Response = await this.get(`/users/${userId}`, "retrieving a user profile", context);
+    if (response.status === HTTP_NOT_FOUND) {
+      throw new UserProfileNotFoundException("The user profile was not found", context);
+    }
+    if (!response.ok) {
+      throw JsonPlaceholderGateway.toRequestException(undefined, "retrieving a user profile", context, response.status);
+    }
+    let body: string;
+    try {
+      body = await response.text();
+    } catch (error: unknown) {
+      throw JsonPlaceholderGateway.toRequestException(error, "retrieving a user profile", context, undefined);
+    }
 
     const userResource: UserResource = JsonPlaceholderGateway.deserializeUserResource(body, context);
     ValidatorUserResource.validateUserResource(userResource);
@@ -37,25 +67,68 @@ export class JsonPlaceholderGateway {
   /** fetch keeps no connection the gateway owns, so there is nothing to close. */
   public close(): void {}
 
-  // The response's body; a 404 is the profile not being there, any other failure a request that failed.
-  private async get(path: string, operationDescription: string, context: ContextualData): Promise<string> {
+  // A GET's response. A GET is safe to send twice, so one that fails for a reason that may pass (it couldn't reach the
+  // service or timed out, an UNAVAILABLE_STATUSES answer) is sent again, up to maxRetries times, after a growing wait
+  // or the one the service asks for; the last failure is a JsonPlaceholderUnavailableException.
+  private async get(path: string, operationDescription: string, context: ContextualData): Promise<Response> {
+    for (let retry: number = 0; ; retry++) {
+      try {
+        return await this.getOnce(path, operationDescription, context);
+      } catch (error: unknown) {
+        if (!(error instanceof JsonPlaceholderUnavailableException) || retry >= this.maxRetries) {
+          throw error;
+        }
+        const delayMilliseconds: number = JsonPlaceholderGateway.getRetryDelayMilliseconds(retry + 1, error);
+        ApplicationLogger.warning(
+          "JSON Placeholder failed a request; it is sent again",
+          error.context.withValue("retry", retry + 1).withValue("delay_seconds", delayMilliseconds / 1000),
+          error,
+        );
+        await setTimeout(delayMilliseconds);
+      }
+    }
+  }
+
+  private async getOnce(path: string, operationDescription: string, context: ContextualData): Promise<Response> {
     let response: Response;
     try {
       response = await this.fetch(this.baseUrl + path, { signal: AbortSignal.timeout(this.timeoutMilliseconds) });
     } catch (error: unknown) {
-      throw JsonPlaceholderGateway.toRequestException(error, operationDescription, context, undefined);
+      // A request that couldn't reach the service, or timed out, may well get through if sent again.
+      throw new JsonPlaceholderUnavailableException(
+        `JSON Placeholder is unavailable while ${operationDescription}`,
+        context.withValue("error_type", error instanceof Error ? error.name : "Error"),
+        { cause: error },
+      );
     }
-    if (response.status === HTTP_NOT_FOUND) {
-      throw new UserProfileNotFoundException("The user profile was not found", context);
+    if (UNAVAILABLE_STATUSES.has(response.status)) {
+      let exceptionContext: ContextualData = context
+        .withValue("error_type", "StatusError")
+        .withValue("status_code", response.status);
+      // How long the service asks to be left before the request is sent again, in whole seconds.
+      const retryAfter: string = response.headers.get("retry-after")?.trim() ?? "";
+      if (/^\d+$/.test(retryAfter)) {
+        exceptionContext = exceptionContext.withValue("retry_after_seconds", Number(retryAfter));
+      }
+      throw new JsonPlaceholderUnavailableException(
+        `JSON Placeholder is unavailable while ${operationDescription}`,
+        exceptionContext,
+      );
     }
-    if (!response.ok) {
-      throw JsonPlaceholderGateway.toRequestException(undefined, operationDescription, context, response.status);
-    }
-    try {
-      return await response.text();
-    } catch (error: unknown) {
-      throw JsonPlaceholderGateway.toRequestException(error, operationDescription, context, undefined);
-    }
+    return response;
+  }
+
+  // The retry-th wait: what the service asked for (Retry-After, up to LONGEST_RETRY_AFTER_MILLISECONDS), or doubling
+  // from FIRST_RETRY_DELAY_MILLISECONDS up to LONGEST_RETRY_DELAY_MILLISECONDS, whichever is longer, with jitter.
+  private static getRetryDelayMilliseconds(retry: number, exception: JsonPlaceholderUnavailableException): number {
+    const backoff: number = Math.min(
+      FIRST_RETRY_DELAY_MILLISECONDS * 2 ** (retry - 1),
+      LONGEST_RETRY_DELAY_MILLISECONDS,
+    );
+    const retryAfterSeconds: unknown = exception.context.get("retry_after_seconds");
+    const asked: number =
+      typeof retryAfterSeconds === "number" ? Math.min(retryAfterSeconds * 1000, LONGEST_RETRY_AFTER_MILLISECONDS) : 0;
+    return Math.max(backoff, asked) + Math.random() * MAX_RETRY_JITTER_MILLISECONDS;
   }
 
   private static deserializeUserResource(body: string, context: ContextualData): UserResource {

@@ -3,10 +3,11 @@
 otto-bot is a coding agent harness, written in Rust, that builds and changes apps following the Domain Container
 architecture, in Rust, Python and TypeScript. It is itself a Domain Container app.
 
-Status: build steps 1-4 are done: the layered cache, WebSocket lanes, the project map, the architecture lint
-(steps 1-3), and the three roles (step 4): the orchestrator, which makes a small change itself and plans a
-bigger one; the implementor, which builds the plan; and the reviewer, whose high-severity findings the implementor
-fixes. The Python and TypeScript packs (step 5) are next.
+Status: build steps 1-5 are done: the layered cache, WebSocket lanes, the project map, the architecture lint
+(steps 1-3), and the three roles (step 4, reworked in step 5): the orchestrator, which holds the conversation with
+the person and briefs the implementor; the implementor, which plans and builds each brief from a fresh start; and the
+reviewer, whose high-severity findings the implementor fixes. Step 5 is done too: the Python and TypeScript packs,
+`otto new`, and the benchmarks (see Benchmarks).
 
 ## Goals
 
@@ -80,7 +81,7 @@ block of a developer message):
 | --- | --- | --- | --- |
 | BP1: stack prefix | the fixed tool set, harness instructions, `rules.md`, the pack's template code | 12h | every agent and project of the stack |
 | BP2: project map | tree; signatures of the facade, service locator and DataFacade; models; exception kinds; settings | 12h / 30m | every agent in the session |
-| BP3: role | what the agent's role is (the implementor's, the reviewer's); the orchestrator has none | 30m | one agent |
+| BP3: role | what the agent's role is (the orchestrator's, the implementor's, the reviewer's) | 30m | the lanes of one role |
 | conversation | append-only items, a breakpoint after each tool result | 30m | one agent |
 
 Rules that keep the cache hitting:
@@ -123,10 +124,15 @@ Output dominates the cost, which is why the speed levers below also cut cost.
   | `search` | text search across the project |
   | `apply_patch` | native file edits |
   | `run_checks` | runs the pack's check commands |
-  | `submit_plan` | the orchestrator's work plan, checked by the harness (a rejected plan is the call's error) |
+  | `brief_implementor` | the orchestrator's brief to the implementor, checked by the harness (a rejected brief is the call's error) |
   | `report` | the implementor's structured, terse completion report |
   | `submit_review` | the reviewer's findings, graded high, medium or low |
 
+- **Retries.** A request the API failed on its side (a 429 or 5xx, an error event or failed response of type
+  `server_error` or a rate limit, a connection that couldn't be made) is sent again, up to `OTTO_BOT_OPENAI_MAX_RETRIES`
+  times (3), after a wait doubling from a second or the `Retry-After` the API asks for, whichever transport it went by;
+  a refusal sending again won't change (a malformed request, a bad key, an exhausted quota) is not. Before this, one
+  `server_error` from the API ended the whole run.
 - **Compaction** (`/responses/compact`, or `context_management`) only at wave boundaries, since it resets cache reuse.
 - **Service tier** comes from the session's options; the ledger records the tier each response actually ran at,
   since `fast` can be downgraded under load.
@@ -138,23 +144,37 @@ Output dominates the cost, which is why the speed levers below also cut cost.
 There are three roles, and the manager keeps the order: each phase is one call to `AgentRunEngine`, which runs one
 agent (a lane) in a role.
 
-1. **Orchestrator.** The session's agent, with one more tool than steps 1-3 gave it: `submit_plan`. A small change it
-   makes itself, so a small request pays nothing for the workflow. A bigger one it plans, before it changes any file:
-   a summary, the assumptions it made where the request left things open, and the steps that build the change. The
-   `WorkPlanProcessor` checks the plan without a model; a rejected plan is the tool call's error, so the orchestrator
-   fixes it in the same turn loop.
-2. **Implementor.** On a lane of its own, the implementor builds the change from the plan: the only role that
-   changes files under a plan, in the session's own workspace. A new component follows the template's example of its
-   kind; the formatters and the checks catch what wiring it gets wrong. It ends
-   with `report` (done, or blocked with what it needs); once it reports done, the harness runs every check itself and
-   sends it what fails, for up to three rounds.
-3. **Reviewer.** Once the implementor reports the change done with every check passing, the reviewer, on a read-only
-   lane at high reasoning effort, is given the person's request, the plan and the change's diff (from snapshots of the
-   workspace before and after), and reads what else it needs. It judges what the code does, not what its comments or
-   the plan say about it, looking for security problems first, then correctness against the request (money kept
-   exact, no data left inconsistent), then the architecture's rules, and ends with `submit_review`. High-severity findings go back to the implementor for one round
-   of fixes (held to the checks again); every finding is listed in the run's result. The orchestrator's own small
-   changes aren't reviewed.
+1. **Orchestrator.** The session's agent holds the conversation with the person: its lane keeps the whole session.
+   otto-bot is part of a software factory that builds apps for non-technical people, so the orchestrator speaks in
+   plain words about what the app does, never about files, code, databases or checks; it asks only what the app
+   should do, and decides the technical rest itself. Its briefs to the implementor are technical.
+   It reads the code but changes no file and runs no check. When a request leaves open what only the person can
+   decide, it asks, by ending its turn with the question; the answer is the next request, so no run waits on a
+   person. When the request is clear, it briefs the implementor (`brief_implementor`): the task, complete enough to
+   build from alone; what was decided; what done looks like; and the files to start from. The `BriefProcessor` checks
+   the brief without a model; a rejected brief is the tool call's error. Once the brief is built and reviewed, the
+   result is told to the orchestrator, and it gets a turn, with only the reading tools, to tell the person in a few
+   plain sentences what their app can do now, and anything they need to decide.
+2. **Implementor.** Each brief gets a fresh lane (`implementor_<n>`): the implementor starts from the brief alone,
+   with the files it names already read into its first message, plans the change, and builds it. It is the only role
+   that changes files, in the session's own workspace. A new component follows the template's example of its kind;
+   the formatters and the checks catch what wiring it gets wrong. It ends with `report` (done, or blocked with what it
+   needs); once it reports done, the harness runs every check itself and sends it what fails, for up to three rounds.
+3. **Reviewer.** Once the implementor reports the change done with every check passing, the reviewer, on a fresh
+   read-only lane (`reviewer_<n>`) at high reasoning effort, is given the person's last message, the brief and the
+   change's diff (from snapshots of the workspace before and after), and reads what else it needs. It judges what the
+   code does, not what its comments or the brief say about it, looking for security problems first, then correctness
+   against what was asked (money kept exact, writes that belong together in one database never left half done), then
+   the architecture's rules, and ends with `submit_review`. It judges the change against the app as it is: a way of
+   doing things the app's code already uses is not a finding unless the change makes it worse or the person asked for
+   more. High-severity findings go back to the same implementor for one round of fixes (held to the checks again);
+   every finding is listed in the run's result.
+
+Until step 5 the orchestrator made a small change itself and planned a bigger one as steps for the implementor. The
+step 5 benchmarks showed why that was set aside: on small tasks the orchestrator often made the change and then
+submitted a plan anyway, so an implementor started only to find nothing to do; and an implementor that kept one
+conversation across plans carried every earlier plan's context. Now the conversation is the orchestrator's, each build
+starts fresh, and every change is reviewed.
 
 Scaffolding (the harness creating a planned component and its wiring from the pack's templates, without a model) was
 built in step 3 and removed after measuring it: the implementor never called it, it wrote about a tenth of a plan's
@@ -173,7 +193,7 @@ named after the app, leaving out what the template's `.gitignore` ignores, and r
 `[rename]` map, applied to file contents and paths in one pass, the longest name first. The app's name gives every form
 a stack needs (`orders-app`, `orders_app`, `OrdersApp`, `ordersApp`, `ORDERS_APP`, `Orders App`). Then the pack's formatters run,
 since a renamed name sorts and wraps differently, so the new app passes its checks before any request. Its examples
-stay: they show the implementor every component kind, and the first plan replaces them. Stripping them without a model
+stay: they show the implementor every component kind, and the first brief replaces them. Stripping them without a model
 would need a second, empty template per pack, kept in step by hand.
 
 ## Speed levers
@@ -213,9 +233,9 @@ src/
     otto_bot_facade.rs              start_session, submit, subscribe, cancel, close
     services/cli/                   interactive CLI (first client); later e.g. services/stdio/, services/http/
     managers/
-        otto_bot_manager.rs         coordinates orchestrator -> (plan ->) implementor -> reviewer
+        otto_bot_manager.rs         coordinates orchestrator -> (brief ->) implementor -> reviewer -> orchestrator
         processors/
-            work_plan/              checks a plan: it has a summary and steps
+            brief/                  checks a brief: it has a task and says what done looks like
             prompt_assembly/        builds the layered prompt, renders it deterministically, places breakpoints
             architecture_map/       the project map, from tree-sitter parses
             architecture_lint/      deterministic rule checks
@@ -230,7 +250,7 @@ src/
         data_layer/
             data_facade.rs, managers/data_manager.rs
             managers/gateways/
-                session_store/      JSONL files: sessions, plans, lane item logs, usage ledger
+                session_store/      JSONL files: sessions, briefs, lane item logs, usage ledger
                 stack_pack_store/   the stack packs
         common/                     diagnostics parsing (used by the engine and the manager)
         models/, exceptions/, logger/, configuration_providers/, service_locator/
@@ -240,7 +260,7 @@ stack_packs/rust/, stack_packs/python/, stack_packs/typescript/
 - **One engine talks to the model.** An engine never uses another engine, so `agent_run` is the only one, and the
   manager calls it for every role.
 - **The facade works for any client.** `submit` runs to completion on its own in a background task. Progress is a
-  stream of `SessionEvent`, a domain enum: plan accepted, tool used, plan implemented, usage, done.
+  stream of `SessionEvent`, a domain enum: brief accepted, tool used, brief implemented, usage, done.
   Each service maps the events to its own wire format.
 - **Any client can resume any session**, because the session log is the whole record of it.
 - **Session options** (such as the service tier) are passed to `start_session` and override configured defaults,
@@ -260,6 +280,31 @@ stack_packs/rust/, stack_packs/python/, stack_packs/typescript/
 
 A fixed set of feature tasks on template apps is run against every change to the harness, recording wall time,
 cost, cache hit rate, lint violations and whether the checks pass, so speed and quality trade-offs are measured.
+
+## Benchmarks
+
+The tasks are in `benchmarks/tasks/` (farewell and loyalty points, small; orders, the multi-component one), worded for
+any stack. `benchmarks/run.sh <stack> <task>` starts a new app with `otto new`, gives otto the task, then runs the
+stack's checks on what it left, independently of otto (`benchmarks/check.sh`), and summarizes the session
+(`benchmarks/summarize.py`: wall time, requests and tokens per lane, cache hit rate, briefs, the implementor's and the
+reviewer's reports). Results go to `target/benchmarks/`.
+
+Step 5, all nine runs at once (so the times are under load), with the roles as they are now:
+
+| Task | Rust | Python | TypeScript |
+| --- | --- | --- | --- |
+| farewell | 55s, 9 requests | 35s, 8 requests | 36s, 8 requests |
+| loyalty points | 62s, 9 requests | 49s, 9 requests | 40s, 9 requests |
+| orders | 260s, 22 requests | 259s, 14 requests | 247s, 22 requests |
+
+Every run passed its checks, every task went through one brief, and the cache hit rate was 80-94%. Each orders app
+was then run against Postgres: the discount (none at exactly 100 dollars), the conversion to EUR, and the errors for
+an unknown currency, order or customer were all right. On orders the reviewer's high findings were floating-point
+money (the currency conversion, and TypeScript's discount), fixed in the one round. With the roles as they were before
+(the orchestrator making small changes itself and planning bigger ones), the same runs took 68/43/41s, 88/68/67s and
+412/306/284s: the small tasks were planned anyway, and the reviewer graded the app's own pattern of saving and then
+recording an audit event in another database as high, so the fix round over-built (an outbox, a blocked report) and
+the Python app's fix failed at run time (a datetime bound as text, now a rule of the Python pack).
 
 ## Verified
 

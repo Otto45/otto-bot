@@ -42,6 +42,7 @@ export class ConfigurationSourceProviderEnvironment implements ConfigurationSour
         "EXAMPLE_APP_JSON_PLACEHOLDER_TIMEOUT_SECONDS",
         "10",
       ),
+      maxRetries: ConfigurationSourceProviderEnvironment.getNumber("EXAMPLE_APP_JSON_PLACEHOLDER_MAX_RETRIES", "3"),
     };
   }
 

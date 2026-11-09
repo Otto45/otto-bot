@@ -47,11 +47,25 @@ class ConfigurationSourceProviderEnvironment(ConfigurationSourceProviderProtocol
             timeout_seconds=ConfigurationSourceProviderEnvironment._get_float(
                 "EXAMPLE_APP_JSON_PLACEHOLDER_TIMEOUT_SECONDS", "10"
             ),
+            max_retries=ConfigurationSourceProviderEnvironment._get_integer(
+                "EXAMPLE_APP_JSON_PLACEHOLDER_MAX_RETRIES", "3"
+            ),
         )
 
     @staticmethod
     def _get_string(environment_variable_name: str, default_value: str) -> str:
         return os.environ.get(environment_variable_name, default_value)
+
+    @staticmethod
+    def _get_integer(environment_variable_name: str, default_value: str) -> int:
+        value: str = ConfigurationSourceProviderEnvironment._get_string(environment_variable_name, default_value)
+        try:
+            return int(value.strip())
+        except ValueError as error:
+            raise InvalidConfigurationException(
+                "Environment variable is not a whole number",
+                ContextualData().with_value("environment_variable_name", environment_variable_name),
+            ) from error
 
     @staticmethod
     def _get_float(environment_variable_name: str, default_value: str) -> float:

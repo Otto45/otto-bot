@@ -61,6 +61,7 @@ Every setting has a default, so the app runs unconfigured once `dbmate up` has m
 | `EXAMPLE_APP_DOCUMENT_DATABASE_CONNECTION_STRING` | `in-memory://document` |
 | `EXAMPLE_APP_JSON_PLACEHOLDER_BASE_URL` | `https://jsonplaceholder.typicode.com` |
 | `EXAMPLE_APP_JSON_PLACEHOLDER_TIMEOUT_SECONDS` | `10` |
+| `EXAMPLE_APP_JSON_PLACEHOLDER_MAX_RETRIES` | `3` (a request JSON Placeholder failed on its side, or that couldn't reach it, is sent again this many times; 0 to 10) |
 | `HOST`, `PORT` (HTTP service only) | `127.0.0.1`, `8000` |
 
 ## Where things are

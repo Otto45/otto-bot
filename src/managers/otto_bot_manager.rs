@@ -196,8 +196,9 @@ impl OttoBotManager {
         }
     }
 
-    // The orchestrator runs on the request, and either does it or plans it. An accepted plan is kept and reported, and
-    // built by the implementor.
+    // The orchestrator runs on the request: it answers the person (a question back, when the request isn't clear yet)
+    // or briefs the implementor. An accepted brief is kept and reported, built by the implementor and reviewed, and the
+    // orchestrator then tells the person how it went.
     async fn run_request(
         agent_run_engine: &AgentRunEngine,
         session: &Session,
@@ -207,24 +208,40 @@ impl OttoBotManager {
     ) -> ApplicationResult<RunSummary> {
         let agent_run_outcome: AgentRunOutcome =
             agent_run_engine.run(session, user_request, events, data_facade).await?;
-        let Some(LaneEnding::PlanAccepted(work_plan)) = agent_run_outcome.lane_ending else {
+        let Some(LaneEnding::BriefAccepted(implementation_brief)) = agent_run_outcome.lane_ending else {
             return Ok(agent_run_outcome.run_summary);
         };
-        data_facade.append_work_plan(&session.id, &work_plan).await?;
+        data_facade
+            .append_implementation_brief(&session.id, &implementation_brief)
+            .await?;
+        // The brief's number names its implementor's and reviewer's lanes, so each brief starts fresh.
+        let brief_number: usize = data_facade.count_implementation_briefs(&session.id).await?;
         events
-            .send(SessionEvent::PlanAccepted {
-                work_plan: work_plan.clone(),
+            .send(SessionEvent::BriefAccepted {
+                implementation_brief: implementation_brief.clone(),
             })
             .ok();
 
         let implementation_result: ImplementationResult = agent_run_engine
-            .implement_plan(session, user_request, &work_plan, events, data_facade)
+            .implement_brief(
+                session,
+                user_request,
+                &implementation_brief,
+                brief_number,
+                events,
+                data_facade,
+            )
             .await?;
-        let run_summary: RunSummary = agent_run_outcome.run_summary.plus(implementation_result.run_summary);
+        let build_summary: RunSummary = implementation_result.run_summary;
         events
-            .send(SessionEvent::PlanImplemented { implementation_result })
+            .send(SessionEvent::BriefImplemented {
+                implementation_result: implementation_result.clone(),
+            })
             .ok();
-        Ok(run_summary)
+        let reply_summary: RunSummary = agent_run_engine
+            .reply_after_build(session, &implementation_result, events, data_facade)
+            .await?;
+        Ok(agent_run_outcome.run_summary.plus(build_summary).plus(reply_summary))
     }
 
     // Reports the end of a run that could not report it itself: cancelled, or stopped by a panic (which the panic

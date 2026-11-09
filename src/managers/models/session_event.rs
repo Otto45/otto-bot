@@ -1,6 +1,6 @@
+use crate::managers::models::implementation_brief::ImplementationBrief;
 use crate::managers::models::implementation_result::ImplementationResult;
 use crate::managers::models::run_summary::RunSummary;
-use crate::managers::models::work_plan::WorkPlan;
 
 /// What happens in a session, as every client sees it. A run starts with `RunStarted` and ends with exactly one of
 /// `RunCompleted`, `RunFailed` or `RunCancelled`.
@@ -21,11 +21,11 @@ pub enum SessionEvent {
         succeeded: bool,
     },
     /// The orchestrator's plan passed the harness's checks; the implementor builds it.
-    PlanAccepted {
-        work_plan: WorkPlan,
+    BriefAccepted {
+        implementation_brief: ImplementationBrief,
     },
     /// The implementor finished building the accepted plan.
-    PlanImplemented {
+    BriefImplemented {
         implementation_result: ImplementationResult,
     },
     RunCompleted {

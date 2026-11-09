@@ -22,6 +22,10 @@ class UserProfileRouter:
             responses={
                 HTTPStatus.OK: {"description": "The user profile"},
                 HTTPStatus.NOT_FOUND: {"description": "No user profile has this id", "model": ErrorResponse},
+                HTTPStatus.SERVICE_UNAVAILABLE: {
+                    "description": "JSON Placeholder is unavailable for now",
+                    "model": ErrorResponse,
+                },
                 HTTPStatus.UNPROCESSABLE_CONTENT: {
                     "description": "The user id is not an integer",
                     "model": ErrorResponse,

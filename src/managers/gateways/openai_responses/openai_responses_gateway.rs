@@ -1,18 +1,20 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::Duration;
 
-use reqwest::header::CONTENT_TYPE;
+use reqwest::header::{CONTENT_TYPE, RETRY_AFTER};
 use serde_json::Value;
 
 use crate::managers::common::formatters::validation_error_formatter::ValidationErrorFormatter;
 use crate::managers::exceptions::application_base_exception::{ApplicationBaseException, ApplicationResult};
-use crate::managers::exceptions::contextual_data::ContextualData;
+use crate::managers::exceptions::contextual_data::{ContextValue, ContextualData};
 use crate::managers::exceptions::exception_kind::ExceptionKind;
 use crate::managers::exceptions::openai_responses_gateway_exception::OpenAiResponsesGatewayException;
 use crate::managers::gateways::openai_responses::clients::lane_continuation::LaneContinuation;
 use crate::managers::gateways::openai_responses::clients::responses_web_socket_connection::ResponsesWebSocketConnection;
 use crate::managers::gateways::openai_responses::clients::responses_web_socket_connector::ResponsesWebSocketConnector;
 use crate::managers::gateways::openai_responses::clients::responses_web_socket_lane::ResponsesWebSocketLane;
+use crate::managers::gateways::openai_responses::mappers::api_error_mapper::ApiErrorMapper;
 use crate::managers::gateways::openai_responses::mappers::model_response_mapper::ModelResponseMapper;
 use crate::managers::gateways::openai_responses::request_builders::response_request_builder::ResponseRequestBuilder;
 use crate::managers::gateways::openai_responses::resource_models::error_response_resource::{
@@ -27,6 +29,14 @@ use crate::managers::models::model_request::ModelRequest;
 use crate::managers::models::model_response::ModelResponse;
 use crate::managers::models::openai_transport::OpenAiTransport;
 
+// How long the gateway waits before sending a request the API failed again: doubling from the first, up to the
+// longest, with up to a quarter of a second added at random so requests that failed together aren't sent together.
+const FIRST_RETRY_DELAY: Duration = Duration::from_secs(1);
+const LONGEST_RETRY_DELAY: Duration = Duration::from_secs(20);
+const MAX_RETRY_JITTER_MILLISECONDS: u128 = 250;
+// The longest the API's own Retry-After is waited for; asking for longer is treated as this.
+const LONGEST_RETRY_AFTER: Duration = Duration::from_secs(60);
+
 // Each lane behind its own lock, which a request holds across its await points: one request per lane at a time.
 type Lanes = Mutex<HashMap<String, Arc<tokio::sync::Mutex<ResponsesWebSocketLane>>>>;
 
@@ -38,6 +48,11 @@ type Lanes = Mutex<HashMap<String, Arc<tokio::sync::Mutex<ResponsesWebSocketLane
 /// (`previous_response_id`) and sends just the new items. When the connection no longer holds it (evicted, or a new
 /// connection), or the connection is lost, the request is sent once more with the whole conversation on a fresh
 /// connection; its prefix is cached, so that costs little. If no connection can be opened, the request goes over HTTP.
+///
+/// A request the API failed on its side (an error status like 500 or 503, a rate limit, a response that failed with a
+/// server error), or that couldn't reach it, is sent again, up to `max_retries` times, after a growing wait (or the
+/// wait the API asks for), whichever transport it went by. A request the API refused for a reason sending it again
+/// won't change (it is malformed, unauthorized, over a quota) is not.
 pub struct OpenAiResponsesGateway {
     http_client: reqwest::Client,
     web_socket_connector: ResponsesWebSocketConnector,
@@ -47,6 +62,7 @@ pub struct OpenAiResponsesGateway {
     // Sent as the bearer token; never logged, never put in a context.
     api_key: String,
     model: String,
+    max_retries: i64,
     lanes: Lanes,
 }
 
@@ -58,6 +74,7 @@ impl OpenAiResponsesGateway {
         base_url: String,
         api_key: String,
         model: String,
+        max_retries: i64,
     ) -> Self {
         OpenAiResponsesGateway {
             http_client,
@@ -66,6 +83,7 @@ impl OpenAiResponsesGateway {
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key,
             model,
+            max_retries,
             lanes: Mutex::new(HashMap::new()),
         }
     }
@@ -76,10 +94,72 @@ impl OpenAiResponsesGateway {
             .with("service_tier", model_request.service_tier.name())
             .with("lane_id", model_request.lane_id.as_str());
 
-        match self.transport {
-            OpenAiTransport::Http => self.create_response_over_http(model_request, &context).await,
-            OpenAiTransport::WebSocket => self.create_response_over_web_socket(model_request, &context).await,
+        let mut retry: i64 = 0;
+        loop {
+            let created: ApplicationResult<ModelResponse> = match self.transport {
+                OpenAiTransport::Http => self.create_response_over_http(model_request, &context).await,
+                OpenAiTransport::WebSocket => self.create_response_over_web_socket(model_request, &context).await,
+            };
+            let exception: ApplicationBaseException = match created {
+                Err(exception) if retry < self.max_retries && OpenAiResponsesGateway::is_worth_retrying(&exception) => {
+                    exception
+                }
+                created => return created,
+            };
+            retry += 1;
+            let delay: Duration = OpenAiResponsesGateway::get_retry_delay(retry, &exception);
+            // Expected now and then: a warning, so an outage shows in the log; the run carries on if a retry succeeds.
+            ApplicationLogger::warning(
+                "The OpenAI API failed a request; it is sent again",
+                exception
+                    .context()
+                    .clone()
+                    .with("retry", retry)
+                    .with("max_retries", self.max_retries)
+                    .with("delay_seconds", delay.as_secs_f64()),
+                Some(&exception),
+            );
+            tokio::time::sleep(delay).await;
         }
+    }
+
+    // A failure on the API's side, or a connection that couldn't be made or was lost twice in a row. A response that
+    // took longer than the whole response timeout isn't: sending it again would likely take as long.
+    fn is_worth_retrying(exception: &ApplicationBaseException) -> bool {
+        match exception.kind() {
+            ExceptionKind::OpenAiResponsesGateway(OpenAiResponsesGatewayException::OpenAiUnavailable) => true,
+            ExceptionKind::OpenAiResponsesGateway(OpenAiResponsesGatewayException::OpenAiConnection) => {
+                exception
+                    .context()
+                    .get("error_type")
+                    .map(ToString::to_string)
+                    .as_deref()
+                    != Some("TimeoutError")
+            }
+            _ => false,
+        }
+    }
+
+    // The `retry`th wait: what the API asked for (Retry-After, up to LONGEST_RETRY_AFTER), or doubling from
+    // FIRST_RETRY_DELAY up to LONGEST_RETRY_DELAY, whichever is longer, with jitter.
+    fn get_retry_delay(retry: i64, exception: &ApplicationBaseException) -> Duration {
+        let doubling: u32 = u32::try_from(retry.saturating_sub(1)).unwrap_or(u32::MAX).min(16);
+        let backoff: Duration = FIRST_RETRY_DELAY
+            .saturating_mul(2_u32.saturating_pow(doubling))
+            .min(LONGEST_RETRY_DELAY);
+        let retry_after: Duration = exception
+            .context()
+            .get("retry_after_seconds")
+            .and_then(|retry_after_seconds: &ContextValue| match retry_after_seconds {
+                ContextValue::Integer(seconds) => u64::try_from(*seconds).ok(),
+                _ => None,
+            })
+            .map_or(Duration::ZERO, Duration::from_secs)
+            .min(LONGEST_RETRY_AFTER);
+        let jitter: Duration = Duration::from_millis(
+            u64::try_from(uuid::Uuid::new_v4().as_u128() % MAX_RETRY_JITTER_MILLISECONDS).unwrap_or(0),
+        );
+        backoff.max(retry_after) + jitter
     }
 
     /// Closes every lane's connection. Called when the app stops, after every run has ended.
@@ -120,6 +200,12 @@ impl OpenAiResponsesGateway {
             })?;
 
         let status: reqwest::StatusCode = response.status();
+        // How long the API asks to be left before the request is sent again (a rate limit's), in whole seconds.
+        let retry_after_seconds: Option<i64> = response
+            .headers()
+            .get(RETRY_AFTER)
+            .and_then(|retry_after: &reqwest::header::HeaderValue| retry_after.to_str().ok())
+            .and_then(|retry_after: &str| retry_after.trim().parse::<i64>().ok());
         let response_body: Vec<u8> = response
             .bytes()
             .await
@@ -131,6 +217,7 @@ impl OpenAiResponsesGateway {
         if !status.is_success() {
             return Err(OpenAiResponsesGateway::to_status_exception(
                 status,
+                retry_after_seconds,
                 &response_body,
                 context,
             ));
@@ -318,6 +405,7 @@ impl OpenAiResponsesGateway {
     // kept: it can quote the request.
     fn to_status_exception(
         status: reqwest::StatusCode,
+        retry_after_seconds: Option<i64>,
         body: &[u8],
         context: &ContextualData,
     ) -> ApplicationBaseException {
@@ -325,21 +413,28 @@ impl OpenAiResponsesGateway {
             .clone()
             .with("error_type", "StatusError")
             .with("status_code", status.as_u16());
+        if let Some(retry_after_seconds) = retry_after_seconds {
+            exception_context.insert("retry_after_seconds", retry_after_seconds);
+        }
 
-        let error_resource: Option<ErrorResource> = serde_json::from_slice::<ErrorResponseResource>(body)
+        let error_resource: ErrorResource = serde_json::from_slice::<ErrorResponseResource>(body)
             .ok()
-            .and_then(|error_response_resource: ErrorResponseResource| error_response_resource.error);
-        if let Some(error_resource) = error_resource {
-            if let Some(api_error_type) = error_resource.error_type {
-                exception_context.insert("api_error_type", api_error_type);
-            }
-            if let Some(api_error_code) = error_resource.code {
-                exception_context.insert("api_error_code", api_error_code);
-            }
+            .and_then(|error_response_resource: ErrorResponseResource| error_response_resource.error)
+            .unwrap_or_default();
+        let exception_kind: OpenAiResponsesGatewayException = ApiErrorMapper::to_exception_kind(
+            Some(i64::from(status.as_u16())),
+            error_resource.error_type.as_deref(),
+            error_resource.code.as_deref(),
+        );
+        if let Some(api_error_type) = error_resource.error_type {
+            exception_context.insert("api_error_type", api_error_type);
+        }
+        if let Some(api_error_code) = error_resource.code {
+            exception_context.insert("api_error_code", api_error_code);
         }
 
         ApplicationBaseException::new(
-            OpenAiResponsesGatewayException::OpenAiRequest,
+            exception_kind,
             format!("The OpenAI API answered with status {}", status.as_u16()),
             exception_context,
         )
@@ -358,8 +453,14 @@ impl OpenAiResponsesGateway {
             exception_context.insert("status_code", status_code.as_u16());
         }
 
+        // A request that couldn't reach the API, or timed out, may well get through if sent again.
+        let exception_kind: OpenAiResponsesGatewayException = if http_error.is_connect() || http_error.is_timeout() {
+            OpenAiResponsesGatewayException::OpenAiUnavailable
+        } else {
+            OpenAiResponsesGatewayException::OpenAiRequest
+        };
         ApplicationBaseException::new(
-            OpenAiResponsesGatewayException::OpenAiRequest,
+            exception_kind,
             format!("OpenAI request failed while {operation_description}"),
             exception_context,
         )

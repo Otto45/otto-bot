@@ -117,6 +117,7 @@ impl ServiceLocator {
             let json_placeholder_gateway: Arc<JsonPlaceholderGateway> = Arc::new(JsonPlaceholderGateway::new(
                 http_client,
                 json_placeholder_settings.base_url.clone(),
+                json_placeholder_settings.max_retries,
             ));
             let gateway_to_close: Arc<JsonPlaceholderGateway> = json_placeholder_gateway.clone();
             self.register_close(Box::new(move || Box::pin(async move { gateway_to_close.close() })));

@@ -93,4 +93,5 @@ class ConfigurationProvider:
         return JsonPlaceholderSettings(
             base_url=ValidatedValue.expect(config.base_url, "ValidatorJsonPlaceholder"),
             timeout_seconds=ValidatedValue.expect(config.timeout_seconds, "ValidatorJsonPlaceholder"),
+            max_retries=ValidatedValue.expect(config.max_retries, "ValidatorJsonPlaceholder"),
         )

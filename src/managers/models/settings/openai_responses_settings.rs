@@ -9,6 +9,8 @@ pub struct OpenAiResponsesSettings {
     pub model: String,
     pub timeout_seconds: f64,
     pub idle_timeout_seconds: f64,
+    /// How many times a request the API failed on its side is sent again, after a growing wait.
+    pub max_retries: i64,
     pub transport: OpenAiTransport,
 }
 
@@ -23,6 +25,7 @@ impl fmt::Debug for OpenAiResponsesSettings {
             .field("model", &self.model)
             .field("timeout_seconds", &self.timeout_seconds)
             .field("idle_timeout_seconds", &self.idle_timeout_seconds)
+            .field("max_retries", &self.max_retries)
             .field("transport", &self.transport)
             .finish()
     }

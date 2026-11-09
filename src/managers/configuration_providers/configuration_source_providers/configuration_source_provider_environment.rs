@@ -69,6 +69,12 @@ impl ConfigurationSourceProviderProtocol for ConfigurationSourceProviderEnvironm
                 "OTTO_BOT_OPENAI_IDLE_TIMEOUT_SECONDS",
                 "120",
             )?),
+            // Enough to ride out a brief outage on the API's side (the waits add up to about 7 seconds) without
+            // holding a run for long when it lasts.
+            max_retries: Some(ConfigurationSourceProviderEnvironment::get_integer(
+                "OTTO_BOT_OPENAI_MAX_RETRIES",
+                "3",
+            )?),
             transport: Some(ConfigurationSourceProviderEnvironment::get_string(
                 "OTTO_BOT_OPENAI_TRANSPORT",
                 "websocket",

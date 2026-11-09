@@ -97,6 +97,7 @@ impl ConfigurationProvider {
         Ok(JsonPlaceholderSettings {
             base_url: config.base_url.expect("validated by ValidatorJsonPlaceholder"),
             timeout_seconds: config.timeout_seconds.expect("validated by ValidatorJsonPlaceholder"),
+            max_retries: config.max_retries.expect("validated by ValidatorJsonPlaceholder"),
         })
     }
 }

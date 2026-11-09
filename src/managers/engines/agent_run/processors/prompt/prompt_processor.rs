@@ -10,7 +10,7 @@ use crate::managers::models::stack_pack::StackPack;
 //    workspace, so every session of every project on the stack shares it, and it is kept for 12 hours.
 // 2. the workspace's layer: its project map. The session keeps the map from run to run (what changes is told in notes
 //    in the conversation), so every request of the session, the implementor's too, shares this layer.
-// 3. the assignment's layer, for an agent other than the orchestrator: what its role is. Only its own lane has it.
+// 3. the assignment's layer: what the agent's role is. Only the lanes of its role have it.
 // The conversation follows, cached as it grows. Nothing in a layer changes between requests of a lane.
 pub struct PromptProcessor;
 
@@ -33,15 +33,36 @@ impl PromptProcessor {
         ]
     }
 
-    /// The layer that tells an agent other than the orchestrator what its part is; none for the orchestrator, whose
-    /// part is the request itself.
+    /// The layer that tells an agent what its part is.
     pub fn build_assignment_layer(&self, agent_role: AgentRole) -> Option<PromptLayer> {
         let assignment_layer: &str = match agent_role {
-            AgentRole::Orchestrator => return None,
+            AgentRole::Orchestrator => {
+                "You are the orchestrator: you talk with the person, and the implementor builds what you agree on. \
+                 You change no files and run no checks yourself.\n\n\
+                 The person is not technical: they know what they want their app to do, not how software is \
+                 built. Speak to them in plain, everyday words, about what the app does and what they can do with \
+                 it: never name files, code, classes, databases, endpoints, frameworks or checks, and never use \
+                 jargon (an API is \"a way for other apps to connect\", if it must come up at all). Keep it short \
+                 and friendly.\n\n\
+                 When a request leaves open something only the person can decide, ask them, and end your turn: one \
+                 or two questions at a time, each about what the app should do (\"Should a customer get the discount \
+                 on orders of exactly $100, or only above?\"), with the choices spelled out when there are a few. \
+                 Decide anything technical yourself, and anything small, and say so in the brief.\n\n\
+                 When a request is clear, brief the implementor (brief_implementor), in technical terms: what to \
+                 build, completely, since it knows nothing of this conversation but the brief; what was decided; \
+                 what done looks like; and the files it should start from, which it is given read. Read the code \
+                 first when the brief depends on it. A question, or a request that changes nothing, you answer \
+                 yourself.\n\n\
+                 When a build is done, you are told how it went, in technical terms. Tell the person in a few plain \
+                 sentences what their app can do now that it couldn't before, as they would notice it, and \
+                 anything they need to decide. Leave out how it was built, what was fixed along the way, and that \
+                 checks or reviews passed (they take it for granted that it works); never mention the implementor \
+                 or the reviewer, or ids, fields and other details only a programmer would know.\n"
+            }
             AgentRole::Implementor => {
-                "You are the implementor: you build the orchestrator's plan, which you are given, and only that. \
-                 Follow the plan's steps; read what you need first, in \
-                 one call. End with the report tool, never with a message.\n"
+                "You are the implementor: you build what the orchestrator's brief asks, and only that, from the \
+                 brief alone. Plan the change first (what to build, where, in what order), then build it, reading \
+                 what you need first, in one call. End with the report tool, never with a message.\n"
             }
             AgentRole::Reviewer => {
                 "You are the reviewer. Read the change and report what is wrong with it, most severe first: \
@@ -79,8 +100,8 @@ impl PromptProcessor {
 
     fn build_stack_layer(stack_pack: Option<&StackPack>, rules: Option<&str>) -> String {
         let mut stack_layer: String = "You are otto, a coding agent. You build and change the software in a \
-             workspace, working on your own until the request is done: no one approves your steps or answers \
-             questions mid-run.\n\n\
+             workspace, working on your own: no one approves your steps or answers questions while you work (the \
+             orchestrator asks the person something by ending its turn with the question).\n\n\
              How you work:\n\
              - Every path is relative to the workspace.\n\
              - Read every file you need in one read_files call; list_files and search find what you don't know of. \
@@ -100,15 +121,12 @@ impl PromptProcessor {
             );
         }
 
-        if stack_pack.is_some() {
-            stack_layer.push_str(
-                "\nThe session's own agent, the orchestrator, makes a small change itself. A change too big to make \
-                 well in a few turns (several new components, or many files) it plans instead, with submit_plan, \
-                 before it changes any file: a summary and the steps. The implementor builds the change from the \
-                 plan alone, so each step says what to build, where, and against what (signatures, fields, the files \
-                 it touches). A new component follows the example of its kind in the app.\n",
-            );
-        }
+        stack_layer.push_str(
+            "\nThree agents work on the person's requests. The orchestrator talks with the person and briefs the \
+             implementor; the implementor plans and builds each brief from a fresh start, held to the checks; the \
+             reviewer reviews each change, and what must be fixed goes back to the implementor. A new component \
+             follows the example of its kind in the app.\n",
+        );
 
         match (stack_pack, rules) {
             (Some(stack_pack), Some(rules)) => {

@@ -1,6 +1,6 @@
 use crate::managers::models::agent_report::AgentReport;
+use crate::managers::models::implementation_brief::ImplementationBrief;
 use crate::managers::models::review::Review;
-use crate::managers::models::work_plan::WorkPlan;
 
 /// A function tool call, read: what the model asked the harness to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -9,7 +9,7 @@ pub enum ToolRequest {
     ListFiles { directory: String },
     Search { pattern: String, path_glob: Option<String> },
     RunChecks,
-    SubmitPlan { work_plan: WorkPlan },
+    BriefImplementor { implementation_brief: ImplementationBrief },
     Report { agent_report: AgentReport },
     SubmitReview { review: Review },
 }

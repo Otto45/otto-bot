@@ -1,9 +1,9 @@
 use crate::managers::models::agent_report::AgentReport;
+use crate::managers::models::implementation_brief::ImplementationBrief;
 use crate::managers::models::implementation_result::ImplementationResult;
 use crate::managers::models::run_summary::RunSummary;
 use crate::managers::models::service_tier::ServiceTier;
 use crate::managers::models::session_event::SessionEvent;
-use crate::managers::models::work_plan::WorkPlan;
 
 // What the terminal shows for each event.
 pub struct SessionEventMapper;
@@ -30,8 +30,10 @@ impl SessionEventMapper {
                     SessionEventMapper::to_agent_prefix(agent.as_deref())
                 ))
             }
-            SessionEvent::PlanAccepted { work_plan } => Some(SessionEventMapper::to_plan_output(work_plan)),
-            SessionEvent::PlanImplemented { implementation_result } => {
+            SessionEvent::BriefAccepted { implementation_brief } => {
+                Some(SessionEventMapper::to_brief_output(implementation_brief))
+            }
+            SessionEvent::BriefImplemented { implementation_result } => {
                 Some(SessionEventMapper::to_implementation_output(implementation_result))
             }
             SessionEvent::RunCompleted { run_summary } => {
@@ -42,13 +44,14 @@ impl SessionEventMapper {
         }
     }
 
-    fn to_plan_output(work_plan: &WorkPlan) -> String {
-        let mut output: String = format!("\nplan: {}\n", work_plan.summary.trim());
-        for assumption in &work_plan.assumptions {
-            output.push_str(&format!("  assumed: {assumption}\n"));
+    fn to_brief_output(implementation_brief: &ImplementationBrief) -> String {
+        let mut output: String = format!("\nbrief: {}\n", implementation_brief.task.trim());
+        for decision in &implementation_brief.decisions {
+            output.push_str(&format!("  decided: {decision}\n"));
         }
-        for (index, step) in work_plan.steps.iter().enumerate() {
-            output.push_str(&format!("  {}. {}\n", index + 1, step.trim()));
+        output.push_str(&format!("  done when: {}\n", implementation_brief.done_when.trim()));
+        if !implementation_brief.files.is_empty() {
+            output.push_str(&format!("  files: {}\n", implementation_brief.files.join(", ")));
         }
         output
     }

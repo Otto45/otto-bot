@@ -77,6 +77,7 @@ export class ConfigurationProvider {
     return {
       baseUrl: ValidatedValue.expect(config.baseUrl, "ValidatorJsonPlaceholder"),
       timeoutSeconds: ValidatedValue.expect(config.timeoutSeconds, "ValidatorJsonPlaceholder"),
+      maxRetries: ValidatedValue.expect(config.maxRetries, "ValidatorJsonPlaceholder"),
     };
   }
 }

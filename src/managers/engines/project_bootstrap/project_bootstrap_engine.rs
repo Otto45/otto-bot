@@ -18,7 +18,7 @@ use crate::managers::models::started_project::StartedProject;
 // Starts an app from a stack pack's template, with no model: the template's files are copied into a new folder, its
 // names (in file contents and paths) replaced with the app's, then the pack's formatters run over it, since a renamed
 // name sorts and wraps differently (an import's place in its block, a line's length). The examples stay: they show
-// the implementor every component kind, and the first plan replaces them.
+// the implementor every component kind, and the first brief replaces them.
 pub struct ProjectBootstrapEngine {
     workspace_gateway: Arc<WorkspaceGateway>,
     command_runner_gateway: Arc<CommandRunnerGateway>,

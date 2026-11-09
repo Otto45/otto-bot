@@ -48,6 +48,10 @@ impl ConfigurationSourceProviderProtocol for ConfigurationSourceProviderEnvironm
                 "EXAMPLE_APP_JSON_PLACEHOLDER_TIMEOUT_SECONDS",
                 "10",
             )?),
+            max_retries: Some(ConfigurationSourceProviderEnvironment::get_integer(
+                "EXAMPLE_APP_JSON_PLACEHOLDER_MAX_RETRIES",
+                "3",
+            )?),
         })
     }
 }
@@ -55,6 +59,22 @@ impl ConfigurationSourceProviderProtocol for ConfigurationSourceProviderEnvironm
 impl ConfigurationSourceProviderEnvironment {
     fn get_string(environment_variable_name: &str, default_value: &str) -> String {
         std::env::var(environment_variable_name).unwrap_or_else(|_: std::env::VarError| default_value.to_string())
+    }
+
+    fn get_integer(environment_variable_name: &str, default_value: &str) -> ApplicationResult<i64> {
+        let value: String =
+            ConfigurationSourceProviderEnvironment::get_string(environment_variable_name, default_value);
+        value
+            .trim()
+            .parse::<i64>()
+            .map_err(|exception: std::num::ParseIntError| {
+                ApplicationBaseException::new(
+                    ConfigurationProviderException::InvalidConfiguration,
+                    "Environment variable is not a whole number",
+                    ContextualData::new().with("environment_variable_name", environment_variable_name),
+                )
+                .with_source(exception)
+            })
     }
 
     fn get_float(environment_variable_name: &str, default_value: &str) -> ApplicationResult<f64> {

@@ -4,6 +4,9 @@ import { ContextualData } from "#src/managers/exceptions/contextual_data.ts";
 import { InvalidConfigurationException } from "#src/managers/exceptions/invalid_configuration_exception.ts";
 import { MissingConfigurationException } from "#src/managers/exceptions/missing_configuration_exception.ts";
 
+// More retries than this would hold a request for minutes on an outage that is no longer brief.
+const MAX_RETRIES_LIMIT: number = 10;
+
 export class ValidatorJsonPlaceholder {
   public static validateJsonPlaceholderConfig(config: JsonPlaceholderConfig): void {
     const errors: string[] = [];
@@ -15,11 +18,26 @@ export class ValidatorJsonPlaceholder {
     if (config.timeoutSeconds === undefined) {
       errors.push("timeout_seconds is missing");
     }
+    if (config.maxRetries === undefined) {
+      errors.push("max_retries is missing");
+    }
 
     if (errors.length > 0) {
       throw new MissingConfigurationException(
         "JSON Placeholder configuration is invalid",
         new ContextualData().withValue("setting_name", "json_placeholder").withValue("errors", errors.join("; ")),
+      );
+    }
+
+    if (
+      config.maxRetries !== undefined &&
+      (!Number.isInteger(config.maxRetries) || config.maxRetries < 0 || config.maxRetries > MAX_RETRIES_LIMIT)
+    ) {
+      throw new InvalidConfigurationException(
+        "JSON Placeholder configuration is invalid",
+        new ContextualData()
+          .withValue("setting_name", "json_placeholder")
+          .withValue("errors", `max_retries is not a whole number between 0 and ${MAX_RETRIES_LIMIT}`),
       );
     }
 

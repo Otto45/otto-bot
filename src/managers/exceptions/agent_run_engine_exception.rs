@@ -7,7 +7,7 @@ pub enum AgentRunEngineException {
     /// A tool the agent's role may not call: told to the model, which was told which it may.
     ToolNotAllowed,
     /// A work plan that fails the harness's checks: told to the model, which fixes the plan and submits it again.
-    InvalidWorkPlan,
+    InvalidBrief,
     MaxTurnsReached,
 }
 
@@ -17,7 +17,7 @@ impl AgentRunEngineException {
             AgentRunEngineException::InvalidToolCall => "InvalidToolCallException",
             AgentRunEngineException::InvalidPatch => "InvalidPatchException",
             AgentRunEngineException::ToolNotAllowed => "ToolNotAllowedException",
-            AgentRunEngineException::InvalidWorkPlan => "InvalidWorkPlanException",
+            AgentRunEngineException::InvalidBrief => "InvalidBriefException",
             AgentRunEngineException::MaxTurnsReached => "MaxTurnsReachedException",
         }
     }

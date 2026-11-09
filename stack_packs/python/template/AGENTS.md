@@ -123,6 +123,14 @@ pyproject.toml                  dependencies, the entry points ([project.scripts
   - the gateway is where driver and HTTP errors are translated into `ApplicationBaseException`s; nothing above it sees a library's error
 - when building a gateway's request is too involved to inline, it goes in a `request_builders/` subfolder of the gateway (the counterpart of a data gateway's `query_builders/`)
 - an HTTP gateway is given its `httpx.AsyncClient`, built by a seam with the service's base URL and the configured timeout; the client pools connections, so the gateway's `close()` closes it (`aclose()`)
+- a gateway retries a request that failed for a reason that may pass on its own, so a brief outage of the other system doesn't fail the app's operation
+  - transient: a connection that couldn't be made or timed out, and a status of 429, 500, 502, 503 or 504 (or the error a service's API documents as temporary, e.g. `server_error`, a rate limit); never what sending again won't change: any other 4xx (a malformed request, a bad key, an exhausted quota even when it comes as a 429), and a response the gateway can't read
+  - only a request that is safe to send twice is retried: a read, or a write the other system makes idempotent (e.g. with an idempotency key the gateway sends); a write that could happen twice is not retried, and its failure is told as it is
+  - up to a few times (a setting of the gateway's settings group, e.g. `max_retries`, 3 by default), after a wait that doubles from about a second, up to a cap, with a little random jitter so callers that failed together don't retry together; when the service says how long to wait (`Retry-After`), that wait, up to a cap
+  - the wait is `await asyncio.sleep(...)`, so nothing blocks while it waits
+  - each retry is logged as a warning (with the attempt and the wait), so an outage shows in the log even when a retry succeeds; once the retries run out, the last failure is the gateway's exception, as any other
+  - a transient failure is its own exception (e.g. `JsonPlaceholderUnavailableException`), so the retry decides on the exception's kind, and a service that answers its callers can tell "try again later" (503) from a request that is wrong
+  - a database gateway leaves connecting to its pool, whose acquire timeout already waits for a connection; it retries a statement only for what the database documents as safe to run again (e.g. Postgres's serialization failure, `40001`, or deadlock, `40P01`, for a transaction that is run again whole)
 
 ## Data layer
 - the data layer repeats the architecture one level down: the `DataFacade` (the only entry point a manager sees) over one `DataManager`, which orchestrates every data gateway
@@ -139,7 +147,8 @@ pyproject.toml                  dependencies, the entry points ([project.scripts
   - add a database by adding a gateway subfolder, a seam for its client, a `get_*` in the `ServiceLocator`, and its use in `DataManager`
 - relational data is kept in Postgres through asyncpg: SQL is sent through a query builder with bound parameters (`$1`, `$2`); values are never formatted into a statement
   - `SqlQuery.statement` is a `LiteralString`, so pyright refuses a statement built from a value at run time (an f-string, a concatenation with a variable); nothing casts one to it
-  - `SqlParameter` names only the types some query binds; add one (e.g. `str | int`) with the first query that binds it
+  - `SqlParameter` names only the types some query binds; add one (e.g. `str | int | datetime`) with the first query that binds it
+  - a parameter is bound as the Python type of its column: an `int` for an integer, a `datetime` for a `timestamptz`, a `Decimal` for a `numeric`; asyncpg encodes each parameter by its column's type and doesn't parse text into it, so a value passed as text for any other type (a datetime's `isoformat()`, an `int` as a string) fails every time the statement runs, which no check can see without a database
   - a row (`asyncpg.Record`) is read into its resource model with `model_validate(dict(record.items()))`
   - a gateway holds the pool, which the `create_relational_database_pool` seam builds without starting it (`asyncpg.create_pool(...)`, not awaited); the gateway starts it, once, when it first sends a statement, and closes it only if it started it
   - the pool keeps no connection open while the app is idle, so a database that sleeps while nothing is connected to it can: `min_size=0`, and a connection unused for a minute is closed (`max_inactive_connection_lifetime`); a statement waits up to 10 seconds for a connection (`acquire(timeout=...)`, opening one included), then fails the request

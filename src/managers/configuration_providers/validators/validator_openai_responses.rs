@@ -5,6 +5,9 @@ use crate::managers::exceptions::configuration_provider_exception::Configuration
 use crate::managers::exceptions::contextual_data::ContextualData;
 use crate::managers::models::openai_transport::OpenAiTransport;
 
+// More retries than this would hold a run for minutes on an outage that is no longer brief.
+const MAX_RETRIES_LIMIT: i64 = 10;
+
 pub struct ValidatorOpenAiResponses;
 
 impl ValidatorOpenAiResponses {
@@ -27,6 +30,9 @@ impl ValidatorOpenAiResponses {
         if config.idle_timeout_seconds.is_none() {
             errors.push("idle_timeout_seconds is missing".to_string());
         }
+        if config.max_retries.is_none() {
+            errors.push("max_retries is missing".to_string());
+        }
 
         if !errors.is_empty() {
             return Err(ApplicationBaseException::new(
@@ -47,6 +53,19 @@ impl ValidatorOpenAiResponses {
                 ContextualData::new()
                     .with("setting_name", "openai_responses")
                     .with("errors", "transport is not one of websocket, http"),
+            ));
+        }
+
+        if let Some(max_retries) = config.max_retries
+            && !(0..=MAX_RETRIES_LIMIT).contains(&max_retries)
+        {
+            return Err(ApplicationBaseException::new(
+                ConfigurationProviderException::InvalidConfiguration,
+                "OpenAI configuration is invalid",
+                ContextualData::new().with("setting_name", "openai_responses").with(
+                    "errors",
+                    format!("max_retries is not between 0 and {MAX_RETRIES_LIMIT}"),
+                ),
             ));
         }
 

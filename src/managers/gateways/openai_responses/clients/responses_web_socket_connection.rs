@@ -9,6 +9,7 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use crate::managers::exceptions::application_base_exception::{ApplicationBaseException, ApplicationResult};
 use crate::managers::exceptions::contextual_data::ContextualData;
 use crate::managers::exceptions::openai_responses_gateway_exception::OpenAiResponsesGatewayException;
+use crate::managers::gateways::openai_responses::mappers::api_error_mapper::ApiErrorMapper;
 
 pub type WebSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
@@ -43,7 +44,8 @@ impl ResponsesWebSocketConnection {
 
     /// Sends a `response.create` event with `body` and waits for the response to end. Returns the response object's
     /// JSON text. An error event is an exception: PreviousResponseNotFound when the response the body continues isn't
-    /// held any more, OpenAiRequest for anything else the API refused; a connection that is lost (or a response that
+    /// held any more, OpenAiUnavailable when the API failed on its side or is limiting requests, OpenAiRequest for
+    /// anything else it refused; a connection that is lost (or a response that
     /// takes too long, or goes silent for the idle timeout) is an OpenAiConnection, and the connection can't be used
     /// again.
     pub async fn create_response(&mut self, body: &Value) -> ApplicationResult<String> {
@@ -136,18 +138,22 @@ impl ResponsesWebSocketConnection {
             }
         }
 
-        if code == Some("previous_response_not_found") {
-            return ApplicationBaseException::new(
-                OpenAiResponsesGatewayException::PreviousResponseNotFound,
-                "The response to continue is no longer held by the connection",
-                context,
-            );
-        }
-        ApplicationBaseException::new(
-            OpenAiResponsesGatewayException::OpenAiRequest,
-            "The OpenAI API refused the request",
-            context,
-        )
+        let exception_kind: OpenAiResponsesGatewayException = ApiErrorMapper::to_exception_kind(
+            event.get("status").and_then(Value::as_i64),
+            error.get("type").and_then(Value::as_str),
+            code,
+        );
+        let message: &str = match exception_kind {
+            OpenAiResponsesGatewayException::PreviousResponseNotFound => {
+                "The response to continue is no longer held by the connection"
+            }
+            OpenAiResponsesGatewayException::OpenAiUnavailable => "The OpenAI API failed on its side",
+            OpenAiResponsesGatewayException::OpenAiRequest
+            | OpenAiResponsesGatewayException::InvalidOpenAiResponse
+            | OpenAiResponsesGatewayException::IncompleteOpenAiResponse
+            | OpenAiResponsesGatewayException::OpenAiConnection => "The OpenAI API refused the request",
+        };
+        ApplicationBaseException::new(exception_kind, message, context)
     }
 
     fn to_connection_lost(exception: Option<tokio_tungstenite::tungstenite::Error>) -> ApplicationBaseException {

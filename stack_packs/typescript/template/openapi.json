@@ -269,6 +269,16 @@
               }
             },
             "description": "The user id is not an integer"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "JSON Placeholder is unavailable for now"
           }
         }
       }

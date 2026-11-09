@@ -9,12 +9,12 @@ use tokio::sync::broadcast;
 use crate::managers::common::matchers::path_glob_matcher::PathGlobMatcher;
 use crate::managers::data_layer::data_facade::DataFacade;
 use crate::managers::engines::agent_run::processors::architecture_lint::architecture_lint_processor::ArchitectureLintProcessor;
+use crate::managers::engines::agent_run::processors::brief::brief_processor::BriefProcessor;
 use crate::managers::engines::agent_run::processors::diff::diff_processor::DiffProcessor;
 use crate::managers::engines::agent_run::processors::patch::patch_processor::PatchProcessor;
 use crate::managers::engines::agent_run::processors::project_map::project_map_processor::ProjectMapProcessor;
 use crate::managers::engines::agent_run::processors::prompt::prompt_processor::PromptProcessor;
 use crate::managers::engines::agent_run::processors::tool::tool_processor::ToolProcessor;
-use crate::managers::engines::agent_run::processors::work_plan::work_plan_processor::WorkPlanProcessor;
 use crate::managers::exceptions::agent_run_engine_exception::AgentRunEngineException;
 use crate::managers::exceptions::application_base_exception::{ApplicationBaseException, ApplicationResult};
 use crate::managers::exceptions::contextual_data::ContextualData;
@@ -33,6 +33,7 @@ use crate::managers::models::check_result::CheckResult;
 use crate::managers::models::conversation_item::ConversationItem;
 use crate::managers::models::finding_severity::FindingSeverity;
 use crate::managers::models::format_result::FormatResult;
+use crate::managers::models::implementation_brief::ImplementationBrief;
 use crate::managers::models::implementation_result::ImplementationResult;
 use crate::managers::models::lane_ending::LaneEnding;
 use crate::managers::models::lint_violation::LintViolation;
@@ -59,17 +60,19 @@ use crate::managers::models::tool_call::ToolCall;
 use crate::managers::models::tool_request::ToolRequest;
 use crate::managers::models::usage_record::UsageRecord;
 use crate::managers::models::user_request::UserRequest;
-use crate::managers::models::work_plan::WorkPlan;
 use crate::managers::models::workspace_file::WorkspaceFile;
 
 const APPLY_PATCH: &str = "apply_patch";
-// How many times the implementor, once it reports a plan done, is sent the checks that fail, before the build ends as
+// How many times the implementor, once it reports a brief done, is sent the checks that fail, before the build ends as
 // it is.
 const IMPLEMENTOR_ROUNDS: i64 = 3;
-// The lanes of the session's own agent, and of the implementor and the reviewer of its plans.
+// The session's own agent's lane, and the start of the lanes of each brief's implementor and reviewer
+// (`implementor_1`, `reviewer_1`, ...): each brief is built and reviewed in fresh conversations.
 const ORCHESTRATOR_LANE_NAME: &str = "orchestrator";
 const IMPLEMENTOR_LANE_NAME: &str = "implementor";
 const REVIEWER_LANE_NAME: &str = "reviewer";
+// How many of a brief's files are read into the implementor's first message; it reads any others itself.
+const MAX_BRIEF_FILES: usize = 24;
 // The check the harness runs itself, before the pack's commands.
 const ARCHITECTURE_CHECK: &str = "architecture";
 
@@ -86,7 +89,7 @@ pub struct AgentRunEngine {
     patch_processor: Arc<PatchProcessor>,
     project_map_processor: Arc<ProjectMapProcessor>,
     architecture_lint_processor: Arc<ArchitectureLintProcessor>,
-    work_plan_processor: Arc<WorkPlanProcessor>,
+    brief_processor: Arc<BriefProcessor>,
     diff_processor: Arc<DiffProcessor>,
     max_turns: i64,
     check_timeout: Duration,
@@ -103,7 +106,7 @@ impl AgentRunEngine {
         patch_processor: Arc<PatchProcessor>,
         project_map_processor: Arc<ProjectMapProcessor>,
         architecture_lint_processor: Arc<ArchitectureLintProcessor>,
-        work_plan_processor: Arc<WorkPlanProcessor>,
+        brief_processor: Arc<BriefProcessor>,
         diff_processor: Arc<DiffProcessor>,
         max_turns: i64,
         check_timeout: Duration,
@@ -117,7 +120,7 @@ impl AgentRunEngine {
             patch_processor,
             project_map_processor,
             architecture_lint_processor,
-            work_plan_processor,
+            brief_processor,
             diff_processor,
             max_turns,
             check_timeout,
@@ -155,19 +158,22 @@ impl AgentRunEngine {
         .await
     }
 
-    /// Builds the orchestrator's accepted plan: the implementor, on a lane of its own, builds the change. Once the implementor reports it done, the harness runs every check itself and sends
-    /// it what fails, for a few rounds; a blocked report ends the build as it is. A change that is done, with every
-    /// check passing, is reviewed, and what the review says must be fixed goes back to the implementor, once.
-    pub async fn implement_plan(
+    /// Builds the orchestrator's accepted brief, the session's `brief_number`th: the implementor, on a fresh lane of its
+    /// own, plans and builds the change from the brief alone (and the files it names, read into its first message).
+    /// Once the implementor reports it done, the harness runs every check itself and sends it what fails, for a few
+    /// rounds; a blocked report ends the build as it is. A change that is done, with every check passing, is reviewed,
+    /// and what the review says must be fixed goes back to the implementor, once.
+    pub async fn implement_brief(
         &self,
         session: &Session,
         user_request: &UserRequest,
-        work_plan: &WorkPlan,
+        implementation_brief: &ImplementationBrief,
+        brief_number: usize,
         events: &broadcast::Sender<SessionEvent>,
         data_facade: &DataFacade,
     ) -> ApplicationResult<ImplementationResult> {
         let agent_assignment: AgentAssignment = AgentAssignment {
-            lane_name: IMPLEMENTOR_LANE_NAME.to_string(),
+            lane_name: format!("{IMPLEMENTOR_LANE_NAME}_{brief_number}"),
             role: AgentRole::Implementor,
             workspace_directory: session.workspace_directory.clone(),
         };
@@ -176,10 +182,14 @@ impl AgentRunEngine {
         let before_change: Vec<WorkspaceFile> = self.snapshot_workspace(workspace_directory).await?;
         let (run_context, project_map_note): (RunContext, Option<ConversationItem>) =
             self.prepare_assignment(session, &agent_assignment, data_facade).await?;
+        let (brief_files, missing_files): (Vec<WorkspaceFile>, Vec<(String, String)>) =
+            self.read_brief_files(workspace_directory, implementation_brief).await?;
         let mut opening_items: Vec<ConversationItem> = Vec::with_capacity(2);
         opening_items.extend(project_map_note);
         opening_items.push(ConversationItem::UserMessage {
-            text: self.tool_processor.format_implementor_brief(work_plan),
+            text: self
+                .tool_processor
+                .format_implementor_brief(implementation_brief, &brief_files, &missing_files),
         });
         let (mut report, mut checks_passed, mut run_summary): (Option<AgentReport>, bool, RunSummary) = self
             .run_implementor(
@@ -213,7 +223,15 @@ impl AgentRunEngine {
         }
 
         let (review, review_summary): (Option<Review>, RunSummary) = self
-            .review_change(session, user_request, work_plan, &diff, events, data_facade)
+            .review_change(
+                session,
+                user_request,
+                implementation_brief,
+                brief_number,
+                &diff,
+                events,
+                data_facade,
+            )
             .await?;
         run_summary = run_summary.plus(review_summary);
         let must_fix: bool = review.as_ref().is_some_and(|review: &Review| {
@@ -240,6 +258,58 @@ impl AgentRunEngine {
             fixed_after_review: must_fix,
             run_summary,
         })
+    }
+
+    /// Gives the orchestrator a turn to tell the person how its brief went: what the implementor built (or what it
+    /// needs), and what the review found, told in its conversation as a harness note. In this turn it reads but doesn't
+    /// brief again: a new brief waits for the person's answer.
+    pub async fn reply_after_build(
+        &self,
+        session: &Session,
+        implementation_result: &ImplementationResult,
+        events: &broadcast::Sender<SessionEvent>,
+        data_facade: &DataFacade,
+    ) -> ApplicationResult<RunSummary> {
+        let agent_assignment: AgentAssignment = AgentRunEngine::to_orchestrator_assignment(session);
+        let (mut run_context, project_map_note): (RunContext, Option<ConversationItem>) = self
+            .prepare_orchestrator(session, &agent_assignment, data_facade)
+            .await?;
+        run_context.allowed_tool_names = Some(self.tool_processor.get_reply_tool_names());
+
+        let mut opening_items: Vec<ConversationItem> = Vec::with_capacity(2);
+        opening_items.extend(project_map_note);
+        opening_items.push(ConversationItem::HarnessNote {
+            text: self.tool_processor.format_implementation_result(implementation_result),
+        });
+        let agent_run_outcome: AgentRunOutcome = self
+            .run_lane(
+                session,
+                &agent_assignment,
+                &run_context,
+                opening_items,
+                events,
+                data_facade,
+            )
+            .await?;
+        Ok(agent_run_outcome.run_summary)
+    }
+
+    // The files a brief names, read, up to MAX_BRIEF_FILES; one that can't be read (one the change will create, a path
+    // outside the workspace) is listed with why, for the implementor to know.
+    async fn read_brief_files(
+        &self,
+        workspace_directory: &Path,
+        implementation_brief: &ImplementationBrief,
+    ) -> ApplicationResult<(Vec<WorkspaceFile>, Vec<(String, String)>)> {
+        let mut brief_files: Vec<WorkspaceFile> = Vec::new();
+        let mut missing_files: Vec<(String, String)> = Vec::new();
+        for path in implementation_brief.files.iter().take(MAX_BRIEF_FILES) {
+            match self.workspace_gateway.read_file(workspace_directory, path).await {
+                Ok(workspace_file) => brief_files.push(workspace_file),
+                Err(exception) => missing_files.push((path.clone(), self.to_tool_error_message(exception)?)),
+            }
+        }
+        Ok((brief_files, missing_files))
     }
 
     // The implementor's rounds: it builds until it reports, then the harness runs every check, and sends it what fails,
@@ -276,7 +346,7 @@ impl AgentRunEngine {
             });
             report = match agent_run_outcome.lane_ending {
                 Some(LaneEnding::Reported(agent_report)) => Some(agent_report),
-                Some(LaneEnding::PlanAccepted(_)) | Some(LaneEnding::Reviewed(_)) | None => None,
+                Some(LaneEnding::BriefAccepted(_)) | Some(LaneEnding::Reviewed(_)) | None => None,
             };
 
             let Some(stack_pack) = run_context.stack_pack.as_ref() else {
@@ -303,19 +373,21 @@ impl AgentRunEngine {
         Ok((report, checks_passed, run_summary.expect("the first round always runs")))
     }
 
-    // The reviewer, on a lane of its own, reads the change (the person's request, the plan, the diff, and whatever else
-    // it needs) and ends with its review; none if it ended without one.
+    // The reviewer, on a fresh lane of its own for the brief, reads the change (the person's last message, the brief,
+    // the diff, and whatever else it needs) and ends with its review; none if it ended without one.
+    #[allow(clippy::too_many_arguments)]
     async fn review_change(
         &self,
         session: &Session,
         user_request: &UserRequest,
-        work_plan: &WorkPlan,
+        implementation_brief: &ImplementationBrief,
+        brief_number: usize,
         diff: &str,
         events: &broadcast::Sender<SessionEvent>,
         data_facade: &DataFacade,
     ) -> ApplicationResult<(Option<Review>, RunSummary)> {
         let agent_assignment: AgentAssignment = AgentAssignment {
-            lane_name: REVIEWER_LANE_NAME.to_string(),
+            lane_name: format!("{REVIEWER_LANE_NAME}_{brief_number}"),
             role: AgentRole::Reviewer,
             workspace_directory: session.workspace_directory.clone(),
         };
@@ -326,7 +398,7 @@ impl AgentRunEngine {
         opening_items.push(ConversationItem::UserMessage {
             text: self
                 .tool_processor
-                .format_review_brief(&user_request.text, work_plan, diff),
+                .format_review_brief(&user_request.text, implementation_brief, diff),
         });
         let agent_run_outcome: AgentRunOutcome = self
             .run_lane(
@@ -340,7 +412,7 @@ impl AgentRunEngine {
             .await?;
         let review: Option<Review> = match agent_run_outcome.lane_ending {
             Some(LaneEnding::Reviewed(review)) => Some(review),
-            Some(LaneEnding::PlanAccepted(_)) | Some(LaneEnding::Reported(_)) | None => None,
+            Some(LaneEnding::BriefAccepted(_)) | Some(LaneEnding::Reported(_)) | None => None,
         };
         Ok((review, agent_run_outcome.run_summary))
     }
@@ -729,7 +801,7 @@ impl AgentRunEngine {
                 arguments,
             } => {
                 let (target, output, succeeded, lane_ending): (String, String, bool, Option<LaneEnding>) = match self
-                    .check_tool_allowed(agent_assignment, name)
+                    .check_tool_allowed(agent_assignment, run_context, name)
                     .and_then(|(): ()| self.tool_processor.to_tool_request(name, arguments))
                 {
                     Ok(tool_request) => {
@@ -737,8 +809,8 @@ impl AgentRunEngine {
                             .use_function_tool(agent_assignment, run_context, &tool_request)
                             .await?;
                         let lane_ending: Option<LaneEnding> = match &tool_request {
-                            ToolRequest::SubmitPlan { work_plan } if succeeded => {
-                                Some(LaneEnding::PlanAccepted(work_plan.clone()))
+                            ToolRequest::BriefImplementor { implementation_brief } if succeeded => {
+                                Some(LaneEnding::BriefAccepted(implementation_brief.clone()))
                             }
                             ToolRequest::Report { agent_report } => Some(LaneEnding::Reported(agent_report.clone())),
                             ToolRequest::SubmitReview { review } => Some(LaneEnding::Reviewed(review.clone())),
@@ -773,12 +845,14 @@ impl AgentRunEngine {
                 call_id,
                 patch_operation,
             } => {
-                let (output, succeeded): (String, bool) =
-                    match self.apply_allowed_patch(agent_assignment, patch_operation).await {
-                        Ok(output) => (output, true),
-                        // The model knows this error format from the reference applier.
-                        Err(exception) => (format!("Error: {}", self.to_tool_error_message(exception)?), false),
-                    };
+                let (output, succeeded): (String, bool) = match self
+                    .apply_allowed_patch(agent_assignment, run_context, patch_operation)
+                    .await
+                {
+                    Ok(output) => (output, true),
+                    // The model knows this error format from the reference applier.
+                    Err(exception) => (format!("Error: {}", self.to_tool_error_message(exception)?), false),
+                };
                 events
                     .send(SessionEvent::ToolUsed {
                         agent: AgentRunEngine::to_agent(agent_assignment),
@@ -841,10 +915,12 @@ impl AgentRunEngine {
             }
             ToolRequest::Report { .. } => Ok(("Reported.".to_string(), true)),
             ToolRequest::SubmitReview { .. } => Ok(("Review received.".to_string(), true)),
-            ToolRequest::SubmitPlan { work_plan } => match self.work_plan_processor.check(work_plan) {
-                Ok(()) => Ok((self.tool_processor.format_plan_accepted(work_plan), true)),
-                Err(exception) => Ok((self.to_tool_error(exception)?, false)),
-            },
+            ToolRequest::BriefImplementor { implementation_brief } => {
+                match self.brief_processor.check(implementation_brief) {
+                    Ok(()) => Ok((self.tool_processor.format_brief_accepted(implementation_brief), true)),
+                    Err(exception) => Ok((self.to_tool_error(exception)?, false)),
+                }
+            }
             ToolRequest::RunChecks => match run_context.stack_pack.as_ref() {
                 None => Ok((
                     self.tool_processor
@@ -975,12 +1051,21 @@ impl AgentRunEngine {
         Ok(check_results)
     }
 
-    // The InvalidToolCall-like refusal of a tool the agent's role may not call.
-    fn check_tool_allowed(&self, agent_assignment: &AgentAssignment, tool_name: &str) -> ApplicationResult<()> {
-        if self.tool_processor.is_tool_allowed(agent_assignment.role, tool_name) {
+    // The refusal of a tool the agent may not call now: the run's allowed tools (its role's, or fewer, as when the
+    // orchestrator tells the person how a build went).
+    fn check_tool_allowed(
+        &self,
+        agent_assignment: &AgentAssignment,
+        run_context: &RunContext,
+        tool_name: &str,
+    ) -> ApplicationResult<()> {
+        let allowed_tool_names: Vec<String> = run_context
+            .allowed_tool_names
+            .clone()
+            .unwrap_or_else(|| self.tool_processor.get_allowed_tool_names(agent_assignment.role));
+        if allowed_tool_names.iter().any(|allowed: &String| allowed == tool_name) {
             return Ok(());
         }
-        let allowed_tool_names: Vec<String> = self.tool_processor.get_allowed_tool_names(agent_assignment.role);
         Err(ApplicationBaseException::new(
             AgentRunEngineException::ToolNotAllowed,
             format!(
@@ -994,13 +1079,14 @@ impl AgentRunEngine {
         ))
     }
 
-    // A patch's file operation, if the agent's role may patch.
+    // A patch's file operation, if the agent may patch.
     async fn apply_allowed_patch(
         &self,
         agent_assignment: &AgentAssignment,
+        run_context: &RunContext,
         patch_operation: &PatchOperation,
     ) -> ApplicationResult<String> {
-        self.check_tool_allowed(agent_assignment, APPLY_PATCH)?;
+        self.check_tool_allowed(agent_assignment, run_context, APPLY_PATCH)?;
         self.apply_patch(&agent_assignment.workspace_directory, patch_operation)
             .await
     }
@@ -1065,7 +1151,7 @@ impl AgentRunEngine {
                 AgentRunEngineException::InvalidToolCall
                 | AgentRunEngineException::InvalidPatch
                 | AgentRunEngineException::ToolNotAllowed
-                | AgentRunEngineException::InvalidWorkPlan => true,
+                | AgentRunEngineException::InvalidBrief => true,
                 AgentRunEngineException::MaxTurnsReached => false,
             },
             ExceptionKind::WorkspaceGateway(_) | ExceptionKind::CommandRunnerGateway(_) => true,

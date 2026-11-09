@@ -20,6 +20,10 @@ impl HttpErrorMapper {
             | ExceptionKind::JsonPlaceholderGateway(JsonPlaceholderGatewayException::UserProfileNotFound) => {
                 StatusCode::NOT_FOUND
             }
+            // An upstream service down for now, through every retry: the caller can try again later.
+            ExceptionKind::JsonPlaceholderGateway(JsonPlaceholderGatewayException::JsonPlaceholderUnavailable) => {
+                StatusCode::SERVICE_UNAVAILABLE
+            }
             ExceptionKind::JsonPlaceholderGateway(_) => StatusCode::BAD_GATEWAY,
             ExceptionKind::ConfigurationProvider(_)
             | ExceptionKind::RelationalDatabaseGateway(_)
@@ -35,6 +39,11 @@ impl HttpErrorMapper {
         if !status_code.is_server_error() {
             return ErrorResponse {
                 error: exception.message().to_string(),
+            };
+        }
+        if status_code == StatusCode::SERVICE_UNAVAILABLE {
+            return ErrorResponse {
+                error: "An upstream service is unavailable for now; try again later".to_string(),
             };
         }
         if status_code == StatusCode::BAD_GATEWAY {

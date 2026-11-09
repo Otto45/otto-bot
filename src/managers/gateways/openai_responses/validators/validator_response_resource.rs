@@ -4,6 +4,7 @@ use crate::managers::common::validators::validator_string::ValidatorString;
 use crate::managers::exceptions::application_base_exception::{ApplicationBaseException, ApplicationResult};
 use crate::managers::exceptions::contextual_data::ContextualData;
 use crate::managers::exceptions::openai_responses_gateway_exception::OpenAiResponsesGatewayException;
+use crate::managers::gateways::openai_responses::mappers::api_error_mapper::ApiErrorMapper;
 use crate::managers::gateways::openai_responses::resource_models::output_item_resource::{
     OutputItemResource, PatchOperationResource,
 };
@@ -26,6 +27,27 @@ impl ValidatorResponseResource {
                 .and_then(|incomplete_details: &IncompleteDetailsResource| incomplete_details.reason.as_deref())
             {
                 context.insert("incomplete_reason", reason);
+            }
+            // A response that failed says why; one that failed on the API's side may succeed if sent again.
+            if let Some(error_resource) = response_resource.error.as_ref() {
+                if let Some(api_error_type) = error_resource.error_type.as_deref() {
+                    context.insert("api_error_type", api_error_type);
+                }
+                if let Some(api_error_code) = error_resource.code.as_deref() {
+                    context.insert("api_error_code", api_error_code);
+                }
+                if ApiErrorMapper::to_exception_kind(
+                    None,
+                    error_resource.error_type.as_deref(),
+                    error_resource.code.as_deref(),
+                ) == OpenAiResponsesGatewayException::OpenAiUnavailable
+                {
+                    return Err(ApplicationBaseException::new(
+                        OpenAiResponsesGatewayException::OpenAiUnavailable,
+                        "The OpenAI API failed on its side",
+                        context,
+                    ));
+                }
             }
             return Err(ApplicationBaseException::new(
                 OpenAiResponsesGatewayException::IncompleteOpenAiResponse,

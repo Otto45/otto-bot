@@ -72,6 +72,7 @@ export class ServiceLocator {
         this.seams.createJsonPlaceholderFetch(jsonPlaceholderSettings),
         jsonPlaceholderSettings.baseUrl,
         jsonPlaceholderSettings.timeoutSeconds,
+        jsonPlaceholderSettings.maxRetries,
       );
       this.closeCallbacks.push((): void => {
         jsonPlaceholderGateway.close();
