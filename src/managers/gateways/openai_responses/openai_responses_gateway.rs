@@ -5,6 +5,7 @@ use std::time::Duration;
 use reqwest::header::{CONTENT_TYPE, RETRY_AFTER};
 use serde_json::Value;
 
+use crate::managers::common::calculators::retry_delay_calculator::RetryDelayCalculator;
 use crate::managers::common::formatters::validation_error_formatter::ValidationErrorFormatter;
 use crate::managers::exceptions::application_base_exception::{ApplicationBaseException, ApplicationResult};
 use crate::managers::exceptions::contextual_data::{ContextValue, ContextualData};
@@ -32,14 +33,6 @@ use crate::managers::models::conversation_item::ConversationItem;
 use crate::managers::models::model_request::ModelRequest;
 use crate::managers::models::model_response::ModelResponse;
 use crate::managers::models::openai_transport::OpenAiTransport;
-
-// How long the gateway waits before sending a request the API failed again: doubling from the first, up to the
-// longest, with up to a quarter of a second added at random so requests that failed together aren't sent together.
-const FIRST_RETRY_DELAY: Duration = Duration::from_secs(1);
-const LONGEST_RETRY_DELAY: Duration = Duration::from_secs(20);
-const MAX_RETRY_JITTER_MILLISECONDS: u128 = 250;
-// The longest the API's own Retry-After is waited for; asking for longer is treated as this.
-const LONGEST_RETRY_AFTER: Duration = Duration::from_secs(60);
 
 // Each lane behind its own lock, which a request holds across its await points: one request per lane at a time.
 type Lanes = Mutex<HashMap<String, Arc<tokio::sync::Mutex<ResponsesWebSocketLane>>>>;
@@ -178,26 +171,13 @@ impl OpenAiResponsesGateway {
         }
     }
 
-    // The `retry`th wait: what the API asked for (Retry-After, up to LONGEST_RETRY_AFTER), or doubling from
-    // FIRST_RETRY_DELAY up to LONGEST_RETRY_DELAY, whichever is longer, with jitter.
+    // The `retry`th wait: what the API asked for (its Retry-After, kept in the exception's context), or the backoff.
     fn get_retry_delay(retry: i64, exception: &ApplicationBaseException) -> Duration {
-        let doubling: u32 = u32::try_from(retry.saturating_sub(1)).unwrap_or(u32::MAX).min(16);
-        let backoff: Duration = FIRST_RETRY_DELAY
-            .saturating_mul(2_u32.saturating_pow(doubling))
-            .min(LONGEST_RETRY_DELAY);
-        let retry_after: Duration = exception
-            .context()
-            .get("retry_after_seconds")
-            .and_then(|retry_after_seconds: &ContextValue| match retry_after_seconds {
-                ContextValue::Integer(seconds) => u64::try_from(*seconds).ok(),
-                _ => None,
-            })
-            .map_or(Duration::ZERO, Duration::from_secs)
-            .min(LONGEST_RETRY_AFTER);
-        let jitter: Duration = Duration::from_millis(
-            u64::try_from(uuid::Uuid::new_v4().as_u128() % MAX_RETRY_JITTER_MILLISECONDS).unwrap_or(0),
-        );
-        backoff.max(retry_after) + jitter
+        let retry_after_seconds: Option<i64> = match exception.context().get("retry_after_seconds") {
+            Some(ContextValue::Integer(seconds)) => Some(*seconds),
+            _ => None,
+        };
+        RetryDelayCalculator::get_retry_delay(retry, retry_after_seconds)
     }
 
     /// Closes every lane's connection. Called when the app stops, after every run has ended.
@@ -254,7 +234,7 @@ impl OpenAiResponsesGateway {
             .headers()
             .get(RETRY_AFTER)
             .and_then(|retry_after: &reqwest::header::HeaderValue| retry_after.to_str().ok())
-            .and_then(|retry_after: &str| retry_after.trim().parse::<i64>().ok());
+            .and_then(RetryDelayCalculator::parse_retry_after);
         let response_body: Vec<u8> = response
             .bytes()
             .await

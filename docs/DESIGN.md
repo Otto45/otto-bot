@@ -350,6 +350,12 @@ requests; one TypeScript review response took 103 seconds. Both reviews sent two
 exchange rates parsed as floating point (money again), and, in Rust, the retry backoff copied from the example gateway
 rather than shared, since every template keeps it inside its JSON Placeholder gateway.
 
+With the backoff moved into each template's `common/calculators/retry_delay_calculator` (and a pack rule that every
+gateway waits through it), the three orders runs again, at once: Rust 257s (16 requests), Python 204s (16),
+TypeScript 240s (20), every check passing. Each new exchange-rates gateway used the shared calculator, and no review
+found a copy. Each review still sent back one high finding, and the same one: money converted through binary floating
+point.
+
 ## Verified
 
 What the design depends on from the API, probed with `gpt-6.1-sol` on a ~6.3k-token prefix (`store=false`):

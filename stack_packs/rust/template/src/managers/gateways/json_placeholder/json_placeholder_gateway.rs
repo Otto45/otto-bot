@@ -3,6 +3,7 @@ use std::time::Duration;
 use reqwest::StatusCode;
 use reqwest::header::RETRY_AFTER;
 
+use crate::managers::common::calculators::retry_delay_calculator::RetryDelayCalculator;
 use crate::managers::common::formatters::validation_error_formatter::ValidationErrorFormatter;
 use crate::managers::exceptions::application_base_exception::{ApplicationBaseException, ApplicationResult};
 use crate::managers::exceptions::contextual_data::{ContextValue, ContextualData};
@@ -14,13 +15,6 @@ use crate::managers::gateways::json_placeholder::validators::validator_user_reso
 use crate::managers::logger::application_logger::ApplicationLogger;
 use crate::managers::models::user_profile::UserProfile;
 
-// How long the gateway waits before sending a failed request again: doubling from the first, up to the longest, with up
-// to a quarter of a second added at random so requests that failed together aren't sent together. The longest the
-// service's own Retry-After is waited for; asking for longer is treated as this.
-const FIRST_RETRY_DELAY: Duration = Duration::from_secs(1);
-const LONGEST_RETRY_DELAY: Duration = Duration::from_secs(20);
-const MAX_RETRY_JITTER_MILLISECONDS: u128 = 250;
-const LONGEST_RETRY_AFTER: Duration = Duration::from_secs(60);
 // The statuses that mean JSON Placeholder failed on its side or is limiting requests for now.
 const UNAVAILABLE_STATUSES: [StatusCode; 5] = [
     StatusCode::TOO_MANY_REQUESTS,
@@ -103,7 +97,11 @@ impl JsonPlaceholderGateway {
                 answered => return answered,
             };
             retry += 1;
-            let delay: Duration = JsonPlaceholderGateway::get_retry_delay(retry, &exception);
+            let retry_after_seconds: Option<i64> = match exception.context().get("retry_after_seconds") {
+                Some(ContextValue::Integer(seconds)) => Some(*seconds),
+                _ => None,
+            };
+            let delay: Duration = RetryDelayCalculator::get_retry_delay(retry, retry_after_seconds);
             ApplicationLogger::warning(
                 "JSON Placeholder failed a request; it is sent again",
                 exception
@@ -143,7 +141,7 @@ impl JsonPlaceholderGateway {
                 .headers()
                 .get(RETRY_AFTER)
                 .and_then(|retry_after: &reqwest::header::HeaderValue| retry_after.to_str().ok())
-                .and_then(|retry_after: &str| retry_after.trim().parse::<i64>().ok())
+                .and_then(RetryDelayCalculator::parse_retry_after)
             {
                 exception_context.insert("retry_after_seconds", retry_after_seconds);
             }
@@ -162,24 +160,6 @@ impl JsonPlaceholderGateway {
             })?
             .to_vec();
         Ok((status, body))
-    }
-
-    // The `retry`th wait: what the service asked for (Retry-After, up to LONGEST_RETRY_AFTER), or doubling from
-    // FIRST_RETRY_DELAY up to LONGEST_RETRY_DELAY, whichever is longer, with jitter.
-    fn get_retry_delay(retry: i64, exception: &ApplicationBaseException) -> Duration {
-        let doubling: u32 = u32::try_from(retry.saturating_sub(1)).unwrap_or(u32::MAX).min(16);
-        let backoff: Duration = FIRST_RETRY_DELAY
-            .saturating_mul(2_u32.saturating_pow(doubling))
-            .min(LONGEST_RETRY_DELAY);
-        let retry_after: Duration = match exception.context().get("retry_after_seconds") {
-            Some(ContextValue::Integer(seconds)) => u64::try_from(*seconds).map_or(Duration::ZERO, Duration::from_secs),
-            _ => Duration::ZERO,
-        }
-        .min(LONGEST_RETRY_AFTER);
-        let jitter: Duration = Duration::from_millis(
-            u64::try_from(uuid::Uuid::new_v4().as_u128() % MAX_RETRY_JITTER_MILLISECONDS).unwrap_or(0),
-        );
-        backoff.max(retry_after) + jitter
     }
 
     fn deserialize_user_resource(body: &[u8], context: &ContextualData) -> ApplicationResult<UserResource> {

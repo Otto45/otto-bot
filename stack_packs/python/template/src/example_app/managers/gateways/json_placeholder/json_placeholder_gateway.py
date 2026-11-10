@@ -1,11 +1,11 @@
 import asyncio
-import random
 from http import HTTPStatus
 from typing import Final, final
 
 import httpx
 from pydantic import ValidationError
 
+from example_app.managers.common.calculators.retry_delay_calculator import RetryDelayCalculator
 from example_app.managers.common.formatters.validation_error_formatter import ValidationErrorFormatter
 from example_app.managers.exceptions.contextual_data import ContextualData
 from example_app.managers.exceptions.invalid_user_profile_response_exception import (
@@ -22,13 +22,6 @@ from example_app.managers.gateways.json_placeholder.validators.validator_user_re
 from example_app.managers.logger.application_logger import ApplicationLogger
 from example_app.managers.models.user_profile import UserProfile
 
-# How long the gateway waits before sending a failed request again: doubling from the first, up to the longest, with up
-# to a quarter of a second added at random so requests that failed together aren't sent together. The longest the
-# service's own Retry-After is waited for; asking for longer is treated as this.
-_FIRST_RETRY_DELAY_SECONDS: Final[float] = 1
-_LONGEST_RETRY_DELAY_SECONDS: Final[float] = 20
-_MAX_RETRY_JITTER_SECONDS: Final[float] = 0.25
-_LONGEST_RETRY_AFTER_SECONDS: Final[float] = 60
 # The statuses that mean JSON Placeholder failed on its side or is limiting requests for now.
 _UNAVAILABLE_STATUSES: Final[frozenset[int]] = frozenset(
     {
@@ -82,7 +75,10 @@ class JsonPlaceholderGateway:
                 if retry >= self._max_retries:
                     raise
                 retry += 1
-                delay_seconds: float = JsonPlaceholderGateway._get_retry_delay_seconds(retry, exception)
+                retry_after_seconds: object = exception.context.get("retry_after_seconds")
+                delay_seconds: float = RetryDelayCalculator.get_retry_delay_seconds(
+                    retry, retry_after_seconds if isinstance(retry_after_seconds, int) else None
+                )
                 ApplicationLogger.warning(
                     "JSON Placeholder failed a request; it is sent again",
                     exception.context.with_value("retry", retry).with_value("delay_seconds", delay_seconds),
@@ -110,24 +106,17 @@ class JsonPlaceholderGateway:
                 "status_code", response.status_code
             )
             # How long the service asks to be left before the request is sent again, in whole seconds.
-            retry_after: str = response.headers.get("retry-after", "").strip()
-            if retry_after.isdigit():
+            retry_after_seconds: int | None = RetryDelayCalculator.parse_retry_after(
+                response.headers.get("retry-after", "")
+            )
+            if retry_after_seconds is not None:
                 exception_context: ContextualData = exception_context.with_value(
-                    "retry_after_seconds", int(retry_after)
+                    "retry_after_seconds", retry_after_seconds
                 )
             raise JsonPlaceholderUnavailableException(
                 f"JSON Placeholder is unavailable while {operation_description}", exception_context
             )
         return response
-
-    @staticmethod
-    def _get_retry_delay_seconds(retry: int, exception: JsonPlaceholderUnavailableException) -> float:
-        """The retry-th wait: what the service asked for (Retry-After, up to _LONGEST_RETRY_AFTER_SECONDS), or doubling
-        from _FIRST_RETRY_DELAY_SECONDS up to _LONGEST_RETRY_DELAY_SECONDS, whichever is longer, with jitter."""
-        backoff: float = min(_FIRST_RETRY_DELAY_SECONDS * 2 ** (retry - 1), _LONGEST_RETRY_DELAY_SECONDS)
-        retry_after: object = exception.context.get("retry_after_seconds")
-        asked: float = min(float(retry_after), _LONGEST_RETRY_AFTER_SECONDS) if isinstance(retry_after, int) else 0
-        return max(backoff, asked) + random.uniform(0, _MAX_RETRY_JITTER_SECONDS)
 
     @staticmethod
     def _deserialize_user_resource(body: bytes, context: ContextualData) -> UserResource:

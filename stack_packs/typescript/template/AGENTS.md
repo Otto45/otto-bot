@@ -69,7 +69,7 @@ package.json                    dependencies, the entry points (scripts), and th
   - an engine never uses a manager's processors, another engine, or a manager
   - an engine keeps no state between calls and owns nothing to release, so it has no `close()` and is never registered for closing
 - managers never call other managers; anything they share goes through the `DataFacade`, a processor or an engine
-- stateless helpers used by more than one component live in `managers/common/` (e.g. `common/validators/validator_string.ts`, `common/formatters/validation_error_formatter.ts`)
+- stateless helpers used by more than one component live in `managers/common/` (e.g. `common/calculators/retry_delay_calculator.ts`, `common/validators/validator_string.ts`, `common/formatters/validation_error_formatter.ts`)
   - static methods only, no I/O; never registered in the `ServiceLocator`
   - never copy a common helper into a component as a private method
 
@@ -132,6 +132,7 @@ package.json                    dependencies, the entry points (scripts), and th
   - transient: a connection that couldn't be made or timed out, and a status of 429, 500, 502, 503 or 504 (or the error a service's API documents as temporary, e.g. `server_error`, a rate limit); never what sending again won't change: any other 4xx (a malformed request, a bad key, an exhausted quota even when it comes as a 429), and a response the gateway can't read
   - only a request that is safe to send twice is retried: a read, or a write the other system makes idempotent (e.g. with an idempotency key the gateway sends); a write that could happen twice is not retried, and its failure is told as it is
   - up to a few times (a setting of the gateway's settings group, e.g. `max_retries`, 3 by default), after a wait that doubles from about a second, up to a cap, with a little random jitter so callers that failed together don't retry together; when the service says how long to wait (`Retry-After`), that wait, up to a cap
+  - every gateway waits the same: the wait comes from the shared `RetryDelayCalculator.getRetryDelayMilliseconds` (`common/calculators/retry_delay_calculator.ts`), and a `Retry-After` header is read with `RetryDelayCalculator.parseRetryAfter`; a gateway keeps its own retry loop, which decides on its own exceptions, but never its own copy of the backoff
   - the wait is `await setTimeout(milliseconds)` from `node:timers/promises`, so nothing blocks while it waits
   - each retry is logged as a warning (with the attempt and the wait), so an outage shows in the log even when a retry succeeds; once the retries run out, the last failure is the gateway's exception, as any other
   - a transient failure is its own exception (e.g. `JsonPlaceholderUnavailableException`), so the retry decides on the exception's kind, and a service that answers its callers can tell "try again later" (503) from a request that is wrong

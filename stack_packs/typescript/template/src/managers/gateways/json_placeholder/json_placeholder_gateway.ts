@@ -2,6 +2,7 @@ import { setTimeout } from "node:timers/promises";
 
 import type { z } from "zod";
 
+import { RetryDelayCalculator } from "#src/managers/common/calculators/retry_delay_calculator.ts";
 import { ValidationErrorFormatter } from "#src/managers/common/formatters/validation_error_formatter.ts";
 import { ContextualData } from "#src/managers/exceptions/contextual_data.ts";
 import { InvalidUserProfileResponseException } from "#src/managers/exceptions/invalid_user_profile_response_exception.ts";
@@ -16,13 +17,6 @@ import { ApplicationLogger } from "#src/managers/logger/application_logger.ts";
 import type { UserProfile } from "#src/managers/models/user_profile.ts";
 
 const HTTP_NOT_FOUND: number = 404;
-// How long the gateway waits before sending a failed request again: doubling from the first, up to the longest, with up
-// to a quarter of a second added at random so requests that failed together aren't sent together. The longest the
-// service's own Retry-After is waited for; asking for longer is treated as this.
-const FIRST_RETRY_DELAY_MILLISECONDS: number = 1_000;
-const LONGEST_RETRY_DELAY_MILLISECONDS: number = 20_000;
-const MAX_RETRY_JITTER_MILLISECONDS: number = 250;
-const LONGEST_RETRY_AFTER_MILLISECONDS: number = 60_000;
 // The statuses that mean JSON Placeholder failed on its side or is limiting requests for now.
 const UNAVAILABLE_STATUSES: ReadonlySet<number> = new Set<number>([429, 500, 502, 503, 504]);
 
@@ -78,7 +72,11 @@ export class JsonPlaceholderGateway {
         if (!(error instanceof JsonPlaceholderUnavailableException) || retry >= this.maxRetries) {
           throw error;
         }
-        const delayMilliseconds: number = JsonPlaceholderGateway.getRetryDelayMilliseconds(retry + 1, error);
+        const retryAfterSeconds: unknown = error.context.get("retry_after_seconds");
+        const delayMilliseconds: number = RetryDelayCalculator.getRetryDelayMilliseconds(
+          retry + 1,
+          typeof retryAfterSeconds === "number" ? retryAfterSeconds : undefined,
+        );
         ApplicationLogger.warning(
           "JSON Placeholder failed a request; it is sent again",
           error.context.withValue("retry", retry + 1).withValue("delay_seconds", delayMilliseconds / 1000),
@@ -106,9 +104,11 @@ export class JsonPlaceholderGateway {
         .withValue("error_type", "StatusError")
         .withValue("status_code", response.status);
       // How long the service asks to be left before the request is sent again, in whole seconds.
-      const retryAfter: string = response.headers.get("retry-after")?.trim() ?? "";
-      if (/^\d+$/.test(retryAfter)) {
-        exceptionContext = exceptionContext.withValue("retry_after_seconds", Number(retryAfter));
+      const retryAfterSeconds: number | undefined = RetryDelayCalculator.parseRetryAfter(
+        response.headers.get("retry-after"),
+      );
+      if (retryAfterSeconds !== undefined) {
+        exceptionContext = exceptionContext.withValue("retry_after_seconds", retryAfterSeconds);
       }
       throw new JsonPlaceholderUnavailableException(
         `JSON Placeholder is unavailable while ${operationDescription}`,
@@ -116,19 +116,6 @@ export class JsonPlaceholderGateway {
       );
     }
     return response;
-  }
-
-  // The retry-th wait: what the service asked for (Retry-After, up to LONGEST_RETRY_AFTER_MILLISECONDS), or doubling
-  // from FIRST_RETRY_DELAY_MILLISECONDS up to LONGEST_RETRY_DELAY_MILLISECONDS, whichever is longer, with jitter.
-  private static getRetryDelayMilliseconds(retry: number, exception: JsonPlaceholderUnavailableException): number {
-    const backoff: number = Math.min(
-      FIRST_RETRY_DELAY_MILLISECONDS * 2 ** (retry - 1),
-      LONGEST_RETRY_DELAY_MILLISECONDS,
-    );
-    const retryAfterSeconds: unknown = exception.context.get("retry_after_seconds");
-    const asked: number =
-      typeof retryAfterSeconds === "number" ? Math.min(retryAfterSeconds * 1000, LONGEST_RETRY_AFTER_MILLISECONDS) : 0;
-    return Math.max(backoff, asked) + Math.random() * MAX_RETRY_JITTER_MILLISECONDS;
   }
 
   private static deserializeUserResource(body: string, context: ContextualData): UserResource {
