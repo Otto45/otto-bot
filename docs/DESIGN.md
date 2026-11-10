@@ -133,7 +133,18 @@ Output dominates the cost, which is why the speed levers below also cut cost.
   times (3), after a wait doubling from a second or the `Retry-After` the API asks for, whichever transport it went by;
   a refusal sending again won't change (a malformed request, a bad key, an exhausted quota) is not. Before this, one
   `server_error` from the API ended the whole run.
-- **Compaction** (`/responses/compact`, or `context_management`) only at wave boundaries, since it resets cache reuse.
+- **Compaction**, explicit (`/responses/compact`, never the server-side `context_management`), at boundaries, so
+  the person never waits on it and no request is compacted under them (see Verified):
+  - the orchestrator's lane, once a run has ended, if its last request had `OTTO_BOT_ORCHESTRATOR_COMPACT_TOKENS`
+    (400k) input tokens or more: the person reads the reply while it compacts (8-25 seconds), and a request sent
+    meanwhile starts when it is done;
+  - any lane between turns, if its last request had `OTTO_BOT_LANE_COMPACT_TOKENS` (600k; the model takes 922k): a
+    safety net for a task long enough to near the limit.
+
+  What comes back is appended to the lane as one `compaction` item, with the role's reasoning effort set again after
+  it (the API refuses an effort before a compaction), and the lane is loaded from its last compaction on. Its first
+  item, the prompt layers it was sent, must come back unchanged and is left out, since every request opens with them:
+  they stay cached. A compaction's usage is in the ledger, and it is reported as `LaneCompacted`.
 - **Service tier** comes from the session's options; the ledger records the tier each response actually ran at,
   since `fast` can be downgraded under load.
 
@@ -328,6 +339,33 @@ What the design depends on from the API, probed with `gpt-6.1-sol` on a ~6.3k-to
   on a cold prefix: one writes it and five read it. `prompt_cache_options.prewarm: true` writes a prefix with no
   output (about 0.7s), but a fan-out doesn't need it. A request sent right after another's write can still miss.
 - **Six WebSocket connections at once** open in 0.4-0.7s each and continue with `previous_response_id`.
+
+**Compaction** (`POST /responses/compact`, probed 2026-11-10 on an orchestrator-like lane: the three prompt layers,
+a fact, two parallel `read_files` calls with their outputs, replies; about 14.9k tokens):
+
+- **It works without `store`**, which it rejects as an unknown parameter (it keeps nothing anyway). It takes `model`,
+  `input`, `tools`, `service_tier` (`default`, `fast`, `ultrafast`, `priority`, `flex`; the response doesn't say which
+  served it), `include` and `prompt_cache_options`; it returns `output` and `usage`, with no `status`.
+- **What comes back is a new conversation**: the developer message with the prompt layers, unchanged (cache
+  breakpoints included), every user message and every developer message (harness notes) word for word, then one
+  `compaction` item (`encrypted_content`, opaque). Tool calls, their outputs, reasoning and the model's replies are
+  folded into the compaction item: 14.9k tokens became 8.0k, of which 6.85k are the layers. Compacting a compacted
+  conversation replaces its compaction item with a new one, and keeps the messages again.
+- **The prompt layers stay cached**: the first request after a compaction reads the layers from the cache (6,846
+  tokens) and writes only the compacted rest. A compaction itself reads nothing the requests cached (it keeps a cache
+  of its own) and writes what it was sent, so it is billed as a cold request plus its output.
+- **It is slow**: 8-25 seconds, mostly its output (250-1,900 tokens, growing with what it folds in).
+- **The model carries on**: it recalled a fact from a user message, a harness note and a tool output it read after an
+  earlier compaction; a detail only in a file it had read (a constant's name) was lost, its value kept.
+- **`configuration_update` is refused in what is compacted**, and in a request where it comes before the compaction
+  item with no update after it. One after the compaction item sets the effort as before (low: 67 reasoning tokens,
+  max: 154, on the same question).
+- **Both transports continue from it**: HTTP, and WebSocket with the whole compacted conversation and then
+  `previous_response_id`. The items keep their ids, which `store=false` doesn't mind.
+- **Parallel tool calls compact** (call, call, output, output), unlike the server-side compaction bug reported.
+
+On the orders benchmark the orchestrator's lane holds 60-76KB of file contents per request and 2-3KB of messages and
+notes, so a compaction keeps about 3% of what a request adds.
 
 Not yet verified: forking a WebSocket lane (not needed while each lane has its own connection).
 

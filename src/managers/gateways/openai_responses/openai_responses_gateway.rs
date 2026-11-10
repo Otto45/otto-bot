@@ -15,15 +15,19 @@ use crate::managers::gateways::openai_responses::clients::responses_web_socket_c
 use crate::managers::gateways::openai_responses::clients::responses_web_socket_connector::ResponsesWebSocketConnector;
 use crate::managers::gateways::openai_responses::clients::responses_web_socket_lane::ResponsesWebSocketLane;
 use crate::managers::gateways::openai_responses::mappers::api_error_mapper::ApiErrorMapper;
+use crate::managers::gateways::openai_responses::mappers::compacted_conversation_mapper::CompactedConversationMapper;
 use crate::managers::gateways::openai_responses::mappers::model_response_mapper::ModelResponseMapper;
 use crate::managers::gateways::openai_responses::request_builders::response_request_builder::ResponseRequestBuilder;
+use crate::managers::gateways::openai_responses::resource_models::compaction_resource::CompactionResource;
 use crate::managers::gateways::openai_responses::resource_models::error_response_resource::{
     ErrorResource, ErrorResponseResource,
 };
 use crate::managers::gateways::openai_responses::resource_models::response_resource::ResponseResource;
+use crate::managers::gateways::openai_responses::validators::validator_compaction_resource::ValidatorCompactionResource;
 use crate::managers::gateways::openai_responses::validators::validator_response_resource::ValidatorResponseResource;
 use crate::managers::logger::application_logger::ApplicationLogger;
 use crate::managers::logger::log_level::LogLevel;
+use crate::managers::models::compacted_conversation::CompactedConversation;
 use crate::managers::models::conversation_item::ConversationItem;
 use crate::managers::models::model_request::ModelRequest;
 use crate::managers::models::model_response::ModelResponse;
@@ -89,17 +93,51 @@ impl OpenAiResponsesGateway {
     }
 
     pub async fn create_response(&self, model_request: &ModelRequest) -> ApplicationResult<ModelResponse> {
-        let context: ContextualData = ContextualData::new()
-            .with("model", self.model.as_str())
-            .with("service_tier", model_request.service_tier.name())
-            .with("lane_id", model_request.lane_id.as_str());
-
-        let mut retry: i64 = 0;
-        loop {
-            let created: ApplicationResult<ModelResponse> = match self.transport {
+        let context: ContextualData = self.to_context(model_request);
+        self.send_with_retries(|| async {
+            match self.transport {
                 OpenAiTransport::Http => self.create_response_over_http(model_request, &context).await,
                 OpenAiTransport::WebSocket => self.create_response_over_web_socket(model_request, &context).await,
-            };
+            }
+        })
+        .await
+    }
+
+    /// Compacts the lane's conversation (`/responses/compact`, always over HTTP: it is one request, not a lane's
+    /// next), into the items its requests send from now on in place of it. Retried like a response.
+    pub async fn compact_conversation(&self, model_request: &ModelRequest) -> ApplicationResult<CompactedConversation> {
+        let context: ContextualData = self.to_context(model_request).with("operation", "compaction");
+        let body: Vec<u8> = OpenAiResponsesGateway::serialize_body(
+            &ResponseRequestBuilder::build_compaction(&self.model, model_request)?,
+            &context,
+        )?;
+        let prompt_layers_message: Value = ResponseRequestBuilder::to_prompt_layers_message(model_request);
+        self.send_with_retries(|| async {
+            let response_body: Vec<u8> = self
+                .post("responses/compact", body.clone(), "compacting a conversation", &context)
+                .await?;
+            self.to_compacted_conversation(&response_body, &prompt_layers_message, &context)
+        })
+        .await
+    }
+
+    fn to_context(&self, model_request: &ModelRequest) -> ContextualData {
+        ContextualData::new()
+            .with("model", self.model.as_str())
+            .with("service_tier", model_request.service_tier.name())
+            .with("lane_id", model_request.lane_id.as_str())
+    }
+
+    // Sends with `send` until it succeeds, fails in a way sending again won't change, or `max_retries` retries have
+    // failed, waiting longer before each.
+    async fn send_with_retries<T, Send, Sent>(&self, mut send: Send) -> ApplicationResult<T>
+    where
+        Send: FnMut() -> Sent,
+        Sent: std::future::Future<Output = ApplicationResult<T>>,
+    {
+        let mut retry: i64 = 0;
+        loop {
+            let created: ApplicationResult<T> = send().await;
             let exception: ApplicationBaseException = match created {
                 Err(exception) if retry < self.max_retries && OpenAiResponsesGateway::is_worth_retrying(&exception) => {
                     exception
@@ -186,17 +224,28 @@ impl OpenAiResponsesGateway {
             &ResponseRequestBuilder::build(&self.model, model_request)?,
             context,
         )?;
+        let response_body: Vec<u8> = self.post("responses", body, "creating a response", context).await?;
+        OpenAiResponsesGateway::to_model_response(&response_body, context)
+    }
 
+    // POSTs the JSON body to the API's `path`; the body of a successful response, or the error status as an exception.
+    async fn post(
+        &self,
+        path: &str,
+        body: Vec<u8>,
+        operation_description: &str,
+        context: &ContextualData,
+    ) -> ApplicationResult<Vec<u8>> {
         let response: reqwest::Response = self
             .http_client
-            .post(format!("{}/responses", self.base_url))
+            .post(format!("{}/{path}", self.base_url))
             .bearer_auth(&self.api_key)
             .header(CONTENT_TYPE, "application/json")
             .body(body)
             .send()
             .await
             .map_err(|exception: reqwest::Error| {
-                OpenAiResponsesGateway::to_request_exception(exception, "creating a response", context)
+                OpenAiResponsesGateway::to_request_exception(exception, operation_description, context)
             })?;
 
         let status: reqwest::StatusCode = response.status();
@@ -210,7 +259,7 @@ impl OpenAiResponsesGateway {
             .bytes()
             .await
             .map_err(|exception: reqwest::Error| {
-                OpenAiResponsesGateway::to_request_exception(exception, "creating a response", context)
+                OpenAiResponsesGateway::to_request_exception(exception, operation_description, context)
             })?
             .to_vec();
 
@@ -222,7 +271,34 @@ impl OpenAiResponsesGateway {
                 context,
             ));
         }
-        OpenAiResponsesGateway::to_model_response(&response_body, context)
+        Ok(response_body)
+    }
+
+    // The compacted conversation, deserialized, validated against the prompt layers it was sent, and mapped.
+    fn to_compacted_conversation(
+        &self,
+        body: &[u8],
+        prompt_layers_message: &Value,
+        context: &ContextualData,
+    ) -> ApplicationResult<CompactedConversation> {
+        let mut deserializer: serde_json::Deserializer<serde_json::de::SliceRead<'_>> =
+            serde_json::Deserializer::from_slice(body);
+        let compaction_resource: CompactionResource = serde_path_to_error::deserialize(&mut deserializer).map_err(
+            |exception: serde_path_to_error::Error<serde_json::Error>| {
+                ApplicationBaseException::new(
+                    OpenAiResponsesGatewayException::InvalidOpenAiResponse,
+                    "The compacted conversation could not be deserialized",
+                    context
+                        .clone()
+                        .with("errors", ValidationErrorFormatter::format(&exception, "body")),
+                )
+            },
+        )?;
+        ValidatorCompactionResource::validate_compaction_resource(&compaction_resource, prompt_layers_message)?;
+        Ok(CompactedConversationMapper::to_compacted_conversation(
+            compaction_resource,
+            &self.model,
+        ))
     }
 
     async fn create_response_over_web_socket(

@@ -25,18 +25,42 @@ impl ResponseRequestBuilder {
     /// The whole request: the prompt layers, then every item of the conversation.
     pub fn build(model: &str, model_request: &ModelRequest) -> ApplicationResult<Value> {
         let mut input: Vec<Value> = Vec::with_capacity(model_request.items.len() + 1);
-        input.push(json!({
+        input.push(ResponseRequestBuilder::to_prompt_layers_message(model_request));
+        for conversation_item in &model_request.items {
+            input.extend(ResponseRequestBuilder::to_input_items(conversation_item)?);
+        }
+        Ok(ResponseRequestBuilder::build_body(model, model_request, input, None))
+    }
+
+    /// A request to compact the lane's conversation (`/responses/compact`): the prompt layers and every item, except
+    /// how hard the model reasons, which the endpoint refuses (the lane sets it again after the compaction). It keeps
+    /// nothing, and takes no `store`.
+    pub fn build_compaction(model: &str, model_request: &ModelRequest) -> ApplicationResult<Value> {
+        let mut input: Vec<Value> = Vec::with_capacity(model_request.items.len() + 1);
+        input.push(ResponseRequestBuilder::to_prompt_layers_message(model_request));
+        for conversation_item in &model_request.items {
+            if !matches!(conversation_item, ConversationItem::ConfigurationUpdate { .. }) {
+                input.extend(ResponseRequestBuilder::to_input_items(conversation_item)?);
+            }
+        }
+        Ok(json!({
+            "model": model,
+            "service_tier": ResponseRequestBuilder::to_service_tier_name(model_request.service_tier),
+            "tools": ResponseRequestBuilder::to_tools(model_request),
+            "input": input,
+        }))
+    }
+
+    /// The developer message every request opens with: the prompt layers, as a compaction gives it back.
+    pub fn to_prompt_layers_message(model_request: &ModelRequest) -> Value {
+        json!({
             "role": "developer",
             "content": model_request
                 .prompt_layers
                 .iter()
                 .map(ResponseRequestBuilder::to_cached_content_block)
                 .collect::<Vec<Value>>(),
-        }));
-        for conversation_item in &model_request.items {
-            input.push(ResponseRequestBuilder::to_input_item(conversation_item)?);
-        }
-        Ok(ResponseRequestBuilder::build_body(model, model_request, input, None))
+        })
     }
 
     /// A request that continues `previous_response_id`, which covers the prompt layers and the first
@@ -47,10 +71,10 @@ impl ResponseRequestBuilder {
         previous_response_id: &str,
         covered_count: usize,
     ) -> ApplicationResult<Value> {
-        let input: Vec<Value> = model_request.items[covered_count..]
-            .iter()
-            .map(ResponseRequestBuilder::to_input_item)
-            .collect::<ApplicationResult<Vec<Value>>>()?;
+        let mut input: Vec<Value> = Vec::with_capacity(model_request.items.len() - covered_count);
+        for conversation_item in &model_request.items[covered_count..] {
+            input.extend(ResponseRequestBuilder::to_input_items(conversation_item)?);
+        }
         Ok(ResponseRequestBuilder::build_body(
             model,
             model_request,
@@ -65,13 +89,7 @@ impl ResponseRequestBuilder {
         input: Vec<Value>,
         previous_response_id: Option<&str>,
     ) -> Value {
-        let mut tools: Vec<Value> = model_request
-            .tools
-            .iter()
-            .map(ResponseRequestBuilder::to_function_tool)
-            .collect();
-        tools.push(json!({ "type": APPLY_PATCH }));
-
+        let tools: Vec<Value> = ResponseRequestBuilder::to_tools(model_request);
         let mut body: Value = json!({
             "model": model,
             "store": false,
@@ -100,8 +118,32 @@ impl ResponseRequestBuilder {
         body
     }
 
-    fn to_input_item(conversation_item: &ConversationItem) -> ApplicationResult<Value> {
-        Ok(match conversation_item {
+    // Every tool, in the same order on every request, so the cached prefix holds.
+    fn to_tools(model_request: &ModelRequest) -> Vec<Value> {
+        let mut tools: Vec<Value> = model_request
+            .tools
+            .iter()
+            .map(ResponseRequestBuilder::to_function_tool)
+            .collect();
+        tools.push(json!({ "type": APPLY_PATCH }));
+        tools
+    }
+
+    // An item the API returned, kept as JSON text, sent back exactly as it was.
+    fn to_returned_item(item: &str) -> ApplicationResult<Value> {
+        serde_json::from_str::<Value>(item).map_err(|exception: serde_json::Error| {
+            ApplicationBaseException::new(
+                OpenAiResponsesGatewayException::OpenAiRequest,
+                "An item the model returned, in the conversation, is not valid JSON",
+                ContextualData::new(),
+            )
+            .with_source(exception)
+        })
+    }
+
+    // The item as the API takes it: one, or a compaction's several.
+    fn to_input_items(conversation_item: &ConversationItem) -> ApplicationResult<Vec<Value>> {
+        let input_item: Value = match conversation_item {
             ConversationItem::UserMessage { text } => json!({
                 "role": "user",
                 "content": [{ "type": "input_text", "text": text }],
@@ -114,17 +156,7 @@ impl ResponseRequestBuilder {
                 "type": "configuration_update",
                 "reasoning": { "effort": reasoning_effort.name() },
             }),
-            // Sent back exactly as the API returned it.
-            ConversationItem::ModelOutput { item, .. } => {
-                serde_json::from_str::<Value>(item).map_err(|exception: serde_json::Error| {
-                    ApplicationBaseException::new(
-                        OpenAiResponsesGatewayException::OpenAiRequest,
-                        "A model output item of the conversation is not valid JSON",
-                        ContextualData::new(),
-                    )
-                    .with_source(exception)
-                })?
-            }
+            ConversationItem::ModelOutput { item, .. } => ResponseRequestBuilder::to_returned_item(item)?,
             ConversationItem::FunctionCallOutput { call_id, output } => json!({
                 "type": "function_call_output",
                 "call_id": call_id,
@@ -140,7 +172,14 @@ impl ResponseRequestBuilder {
                 "status": if *succeeded { "completed" } else { "failed" },
                 "output": output,
             }),
-        })
+            ConversationItem::Compaction { items } => {
+                return items
+                    .iter()
+                    .map(|item: &String| ResponseRequestBuilder::to_returned_item(item))
+                    .collect();
+            }
+        };
+        Ok(vec![input_item])
     }
 
     fn to_cached_content_block(prompt_layer: &PromptLayer) -> Value {

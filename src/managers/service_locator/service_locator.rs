@@ -257,6 +257,8 @@ impl ServiceLocator {
                 self.get_diff_processor()?,
                 agent_settings.max_turns,
                 check_timeout,
+                agent_settings.orchestrator_compact_tokens,
+                agent_settings.lane_compact_tokens,
             )))
         })
     }

@@ -6,6 +6,7 @@ pub mod app_name;
 pub mod cache_lifetime;
 pub mod check_result;
 pub mod command_result;
+pub mod compacted_conversation;
 pub mod conversation_item;
 pub mod finding_severity;
 pub mod format_result;

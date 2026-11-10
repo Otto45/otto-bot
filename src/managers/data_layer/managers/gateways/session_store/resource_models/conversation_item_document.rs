@@ -21,4 +21,7 @@ pub struct ConversationItemDocument {
     pub succeeded: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
+    // A compaction's items, each as the API returned it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub items: Option<Vec<String>>,
 }

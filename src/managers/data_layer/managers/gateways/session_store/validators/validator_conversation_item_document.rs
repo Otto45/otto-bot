@@ -46,6 +46,13 @@ impl ValidatorConversationItemDocument {
                 ("succeeded", document.succeeded.is_some()),
                 ("output", document.output.is_some()),
             ],
+            Some("compaction") => vec![(
+                "items (at least one)",
+                document
+                    .items
+                    .as_ref()
+                    .is_some_and(|items: &Vec<String>| !items.is_empty()),
+            )],
             Some(_) => {
                 return Err(ValidatorConversationItemDocument::to_exception(
                     "type is not a conversation item type".to_string(),

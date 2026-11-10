@@ -199,7 +199,8 @@ impl SessionStoreGateway {
         Ok(session_requests)
     }
 
-    /// The lane's conversation so far; none for a lane that hasn't started.
+    /// The lane's conversation as its next request sends it: from its last compaction on (everything before it is in
+    /// the compaction), or all of it; none for a lane that hasn't started.
     pub async fn get_conversation_items(
         &self,
         session_id: &str,
@@ -230,7 +231,11 @@ impl SessionStoreGateway {
             let document: ConversationItemDocument =
                 SessionStoreGateway::deserialize_conversation_item_document(line, line_number, &context)?;
             ValidatorConversationItemDocument::validate_conversation_item_document(&document, line_number)?;
-            conversation_items.push(ConversationItemDocumentMapper::to_conversation_item(document));
+            let conversation_item: ConversationItem = ConversationItemDocumentMapper::to_conversation_item(document);
+            if matches!(conversation_item, ConversationItem::Compaction { .. }) {
+                conversation_items.clear();
+            }
+            conversation_items.push(conversation_item);
         }
         Ok(conversation_items)
     }

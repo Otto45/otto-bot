@@ -33,4 +33,10 @@ pub enum ConversationItem {
         succeeded: bool,
         output: String,
     },
+    /// The conversation before it, compacted by the API: the items it gave back (every user and developer message,
+    /// then an encrypted `compaction` item that carries the rest), each kept exactly as the API returned it, as JSON
+    /// text, without the prompt layers, which every request opens with anyway. A lane is loaded from its last one on.
+    Compaction {
+        items: Vec<String>,
+    },
 }

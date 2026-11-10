@@ -26,6 +26,15 @@ impl ConfigurationSourceProviderProtocol for ConfigurationSourceProviderEnvironm
                 "OTTO_BOT_CHECK_TIMEOUT_SECONDS",
                 "600",
             )?),
+            orchestrator_compact_tokens: Some(ConfigurationSourceProviderEnvironment::get_integer(
+                "OTTO_BOT_ORCHESTRATOR_COMPACT_TOKENS",
+                "400000",
+            )?),
+            // gpt-6.1-sol takes up to 922,000 input tokens: this leaves room for one more turn of large reads.
+            lane_compact_tokens: Some(ConfigurationSourceProviderEnvironment::get_integer(
+                "OTTO_BOT_LANE_COMPACT_TOKENS",
+                "600000",
+            )?),
         })
     }
 

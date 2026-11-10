@@ -78,6 +78,8 @@ cargo clippy --all-targets -- -D warnings
 | `OTTO_BOT_HOME` | `~/.otto-bot` |
 | `OTTO_BOT_STACK_PACKS_DIRECTORY` | this checkout's `stack_packs/` |
 | `OTTO_BOT_MAX_TURNS` | `60` (model turns one run may take) |
+| `OTTO_BOT_ORCHESTRATOR_COMPACT_TOKENS` | `400000` (once a run ends, the session's conversation is compacted if its last request was this long) |
+| `OTTO_BOT_LANE_COMPACT_TOKENS` | `600000` (any agent's conversation is compacted between turns once a request is this long) |
 | `OTTO_BOT_CHECK_TIMEOUT_SECONDS` | `600` (per check) |
 
 ## Where things are

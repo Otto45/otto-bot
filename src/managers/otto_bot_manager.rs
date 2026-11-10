@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use chrono::{DateTime, Utc};
@@ -141,7 +142,7 @@ impl OttoBotManager {
         if live_session
             .run
             .as_ref()
-            .is_some_and(|live_run: &LiveRun| !live_run.is_finished())
+            .is_some_and(|live_run: &LiveRun| !live_run.has_ended())
         {
             return Err(ApplicationBaseException::new(
                 OttoBotManagerException::SessionBusy,
@@ -150,7 +151,15 @@ impl OttoBotManager {
             ));
         }
 
+        // The last run's task may still be compacting: it is kept, to be stopped on close, and the new run waits for it.
+        if let Some(last_run) = live_session.run.take()
+            && !last_run.is_finished()
+        {
+            live_session.compacting_run = Some(last_run);
+        }
+
         live_session.events.send(SessionEvent::RunStarted).ok();
+        let end_reported: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
         let run: JoinHandle<()> = tokio::spawn(OttoBotManager::run(
             self.agent_run_engine.clone(),
             live_session.session.clone(),
@@ -158,10 +167,17 @@ impl OttoBotManager {
             Utc::now(),
             live_session.events.clone(),
             self.data_facade.clone(),
+            live_session.work_lock.clone(),
+            end_reported.clone(),
         ));
         live_session.run = Some(LiveRun {
             abort_handle: run.abort_handle(),
-            watcher: tokio::spawn(OttoBotManager::watch(run, live_session.events.clone())),
+            watcher: tokio::spawn(OttoBotManager::watch(
+                run,
+                live_session.events.clone(),
+                end_reported.clone(),
+            )),
+            end_reported,
         });
         Ok(())
     }
@@ -173,25 +189,29 @@ impl OttoBotManager {
             .ok_or_else(|| OttoBotManager::to_session_not_found_exception(session_id))
     }
 
-    /// Stops the session's run, if one is under way; its end is reported as `RunCancelled`.
+    /// Stops the session's run, if one is under way; its end is reported as `RunCancelled`. A run that has ended is
+    /// left to finish compacting.
     pub fn cancel(&self, session_id: &str) -> ApplicationResult<()> {
         let live_sessions: MutexGuard<'_, HashMap<String, LiveSession>> = self.lock_live_sessions();
         let live_session: &LiveSession = live_sessions
             .get(session_id)
             .ok_or_else(|| OttoBotManager::to_session_not_found_exception(session_id))?;
 
-        if let Some(live_run) = live_session.run.as_ref() {
+        if let Some(live_run) = live_session.run.as_ref()
+            && !live_run.has_ended()
+        {
             live_run.abort_handle.abort();
         }
         Ok(())
     }
 
-    /// Stops every run under way and waits until each one's end is reported.
+    /// Stops every run under way, and every compaction, and waits until each one's end is reported.
     pub async fn close(&self) {
         let watchers: Vec<JoinHandle<()>> = self
             .lock_live_sessions()
             .drain()
-            .filter_map(|(_, live_session): (String, LiveSession)| live_session.run)
+            .flat_map(|(_, live_session): (String, LiveSession)| [live_session.run, live_session.compacting_run])
+            .flatten()
             .map(|live_run: LiveRun| {
                 live_run.abort_handle.abort();
                 live_run.watcher
@@ -204,7 +224,10 @@ impl OttoBotManager {
         }
     }
 
-    // The run's task: reports how the run ended unless it is aborted or panics, which its watcher reports instead.
+    // The run's task: waits for the session's last run to finish compacting, runs the request, and reports how the run
+    // ended, unless it is aborted or panics, which its watcher reports instead. A run that completed then compacts the
+    // orchestrator's conversation if it has grown long: the person reads the reply meanwhile.
+    #[allow(clippy::too_many_arguments)]
     async fn run(
         agent_run_engine: Arc<AgentRunEngine>,
         session: Session,
@@ -212,8 +235,11 @@ impl OttoBotManager {
         submitted_on: DateTime<Utc>,
         events: broadcast::Sender<SessionEvent>,
         data_facade: Arc<DataFacade>,
+        work_lock: Arc<tokio::sync::Mutex<()>>,
+        end_reported: Arc<AtomicBool>,
     ) {
-        let ran: ApplicationResult<RunSummary> = OttoBotManager::run_request(
+        let _working: tokio::sync::OwnedMutexGuard<()> = work_lock.lock_owned().await;
+        let ran: ApplicationResult<(RunSummary, i64)> = OttoBotManager::run_request(
             &agent_run_engine,
             &session,
             &user_request,
@@ -222,9 +248,12 @@ impl OttoBotManager {
             &data_facade,
         )
         .await;
-        match ran {
-            Ok(run_summary) => {
+        // Marked before it is reported, so a request sent as soon as the end is seen finds the run ended.
+        end_reported.store(true, Ordering::SeqCst);
+        let orchestrator_input_tokens: i64 = match ran {
+            Ok((run_summary, orchestrator_input_tokens)) => {
                 events.send(SessionEvent::RunCompleted { run_summary }).ok();
+                orchestrator_input_tokens
             }
             Err(exception) => {
                 // Logged here, where it is caught, so the client is only told what failed.
@@ -234,13 +263,27 @@ impl OttoBotManager {
                         message: exception.message().to_string(),
                     })
                     .ok();
+                return;
             }
+        };
+
+        let compacted: ApplicationResult<bool> = agent_run_engine
+            .compact_orchestrator(&session, orchestrator_input_tokens, &events, &data_facade)
+            .await;
+        // The run has ended: a compaction that failed is only logged, and tried again after the next run.
+        if let Err(exception) = compacted {
+            ApplicationLogger::error(
+                "The orchestrator's conversation could not be compacted",
+                ContextualData::new().with("session_id", session.id.as_str()),
+                Some(&exception),
+            );
         }
     }
 
     // The orchestrator runs on the request: it answers the person (a question back, when the request isn't clear yet)
     // or briefs the implementor. An accepted brief is kept and reported, built by the implementor and reviewed, and the
-    // orchestrator then tells the person how it went.
+    // orchestrator then tells the person how it went. The run's summary, and how many input tokens the orchestrator's
+    // last request had.
     async fn run_request(
         agent_run_engine: &AgentRunEngine,
         session: &Session,
@@ -248,7 +291,7 @@ impl OttoBotManager {
         submitted_on: DateTime<Utc>,
         events: &broadcast::Sender<SessionEvent>,
         data_facade: &DataFacade,
-    ) -> ApplicationResult<RunSummary> {
+    ) -> ApplicationResult<(RunSummary, i64)> {
         data_facade
             .append_session_request(
                 &session.id,
@@ -261,7 +304,7 @@ impl OttoBotManager {
         let agent_run_outcome: AgentRunOutcome =
             agent_run_engine.run(session, user_request, events, data_facade).await?;
         let Some(LaneEnding::BriefAccepted(implementation_brief)) = agent_run_outcome.lane_ending else {
-            return Ok(agent_run_outcome.run_summary);
+            return Ok((agent_run_outcome.run_summary, agent_run_outcome.last_input_tokens));
         };
         data_facade
             .append_implementation_brief(&session.id, &implementation_brief)
@@ -290,16 +333,26 @@ impl OttoBotManager {
                 implementation_result: implementation_result.clone(),
             })
             .ok();
-        let reply_summary: RunSummary = agent_run_engine
+        let reply_outcome: AgentRunOutcome = agent_run_engine
             .reply_after_build(session, &implementation_result, events, data_facade)
             .await?;
-        Ok(agent_run_outcome.run_summary.plus(build_summary).plus(reply_summary))
+        Ok((
+            agent_run_outcome
+                .run_summary
+                .plus(build_summary)
+                .plus(reply_outcome.run_summary),
+            reply_outcome.last_input_tokens,
+        ))
     }
 
     // Reports the end of a run that could not report it itself: cancelled, or stopped by a panic (which the panic
-    // hook has logged).
-    async fn watch(run: JoinHandle<()>, events: broadcast::Sender<SessionEvent>) {
-        match run.await {
+    // hook has logged). A task stopped after its run reported its end (while compacting) has nothing to report.
+    async fn watch(run: JoinHandle<()>, events: broadcast::Sender<SessionEvent>, end_reported: Arc<AtomicBool>) {
+        let joined: Result<(), tokio::task::JoinError> = run.await;
+        if end_reported.load(Ordering::SeqCst) {
+            return;
+        }
+        match joined {
             Ok(()) => {}
             Err(join_error) if join_error.is_cancelled() => {
                 events.send(SessionEvent::RunCancelled).ok();
@@ -322,6 +375,8 @@ impl OttoBotManager {
             session,
             events,
             run: None,
+            compacting_run: None,
+            work_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 

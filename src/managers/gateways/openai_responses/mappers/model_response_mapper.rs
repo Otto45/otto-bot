@@ -1,14 +1,14 @@
 use serde_json::Value;
 
+use crate::managers::gateways::openai_responses::mappers::usage_resource_mapper::UsageResourceMapper;
 use crate::managers::gateways::openai_responses::resource_models::output_item_resource::{
     ContentResource, OutputItemResource, PatchOperationResource,
 };
 use crate::managers::gateways::openai_responses::resource_models::response_resource::{
-    InputTokensDetailsResource, OutputTokensDetailsResource, ResponseResource, UsageResource,
+    ResponseResource, UsageResource,
 };
 use crate::managers::models::conversation_item::ConversationItem;
 use crate::managers::models::model_response::ModelResponse;
-use crate::managers::models::model_usage::ModelUsage;
 use crate::managers::models::patch_operation::PatchOperation;
 use crate::managers::models::patch_operation_kind::PatchOperationKind;
 use crate::managers::models::service_tier::ServiceTier;
@@ -62,33 +62,7 @@ impl ModelResponseMapper {
                 .into_iter()
                 .filter_map(ModelResponseMapper::to_tool_call)
                 .collect(),
-            usage: ModelUsage {
-                input_tokens: usage_resource
-                    .input_tokens
-                    .expect("validated by ValidatorResponseResource"),
-                // The details are absent when there is nothing to detail.
-                cached_input_tokens: usage_resource
-                    .input_tokens_details
-                    .as_ref()
-                    .and_then(|input_tokens_details: &InputTokensDetailsResource| input_tokens_details.cached_tokens)
-                    .unwrap_or(0),
-                cache_write_tokens: usage_resource
-                    .input_tokens_details
-                    .as_ref()
-                    .and_then(|input_tokens_details: &InputTokensDetailsResource| {
-                        input_tokens_details.cache_write_tokens
-                    })
-                    .unwrap_or(0),
-                output_tokens: usage_resource
-                    .output_tokens
-                    .expect("validated by ValidatorResponseResource"),
-                reasoning_tokens: usage_resource
-                    .output_tokens_details
-                    .and_then(|output_tokens_details: OutputTokensDetailsResource| {
-                        output_tokens_details.reasoning_tokens
-                    })
-                    .unwrap_or(0),
-            },
+            usage: UsageResourceMapper::to_model_usage(usage_resource),
             service_tier: response_resource
                 .service_tier
                 .as_deref()

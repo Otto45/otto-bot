@@ -310,7 +310,9 @@ impl ToolProcessor {
                 ConversationItem::UserMessage { .. }
                 | ConversationItem::HarnessNote { .. }
                 | ConversationItem::ConfigurationUpdate { .. }
-                | ConversationItem::ModelOutput { .. } => None,
+                | ConversationItem::ModelOutput { .. }
+                // A compaction carries no tool call of its own: the calls before it are folded into it.
+                | ConversationItem::Compaction { .. } => None,
             })
             .collect();
 

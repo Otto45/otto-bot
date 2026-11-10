@@ -59,6 +59,8 @@ impl ConfigurationProvider {
             default_service_tier: ServiceTier::from_name(&default_service_tier).expect("validated by ValidatorAgent"),
             max_turns: config.max_turns.expect("validated by ValidatorAgent"),
             check_timeout_seconds: config.check_timeout_seconds.expect("validated by ValidatorAgent"),
+            orchestrator_compact_tokens: config.orchestrator_compact_tokens.expect("validated by ValidatorAgent"),
+            lane_compact_tokens: config.lane_compact_tokens.expect("validated by ValidatorAgent"),
         })
     }
 

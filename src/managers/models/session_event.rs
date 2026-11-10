@@ -1,5 +1,6 @@
 use crate::managers::models::implementation_brief::ImplementationBrief;
 use crate::managers::models::implementation_result::ImplementationResult;
+use crate::managers::models::model_usage::ModelUsage;
 use crate::managers::models::run_summary::RunSummary;
 
 /// What happens in a session, as every client sees it. A run starts with `RunStarted` and ends with exactly one of
@@ -30,6 +31,13 @@ pub enum SessionEvent {
     },
     RunCompleted {
         run_summary: RunSummary,
+    },
+    /// An agent's conversation was compacted, so its requests stay short: during its run (a long task), or the
+    /// orchestrator's after a run has ended (which a client may see before the next run's events). `agent` is as in
+    /// `AssistantReplied`; `usage` is what compacting it used.
+    LaneCompacted {
+        agent: Option<String>,
+        usage: ModelUsage,
     },
     /// The run stopped on an exception, which has been logged; the message says what failed.
     RunFailed {

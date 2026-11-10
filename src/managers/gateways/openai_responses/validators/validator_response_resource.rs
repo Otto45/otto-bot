@@ -93,7 +93,7 @@ impl ValidatorResponseResource {
         Ok(())
     }
 
-    fn validate_usage_resource(usage_resource: &UsageResource) -> Vec<String> {
+    pub fn validate_usage_resource(usage_resource: &UsageResource) -> Vec<String> {
         [
             ("usage.input_tokens", usage_resource.input_tokens),
             ("usage.output_tokens", usage_resource.output_tokens),

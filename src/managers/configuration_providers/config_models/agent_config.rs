@@ -4,4 +4,6 @@ pub struct AgentConfig {
     pub default_service_tier: Option<String>,
     pub max_turns: Option<i64>,
     pub check_timeout_seconds: Option<f64>,
+    pub orchestrator_compact_tokens: Option<i64>,
+    pub lane_compact_tokens: Option<i64>,
 }

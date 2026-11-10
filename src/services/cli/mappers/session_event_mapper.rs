@@ -39,6 +39,12 @@ impl SessionEventMapper {
             SessionEvent::RunCompleted { run_summary } => {
                 Some(format!("\n{}\n\n", SessionEventMapper::to_summary_line(run_summary)))
             }
+            SessionEvent::LaneCompacted { agent, usage } => Some(format!(
+                "  · {}conversation compacted ({} tokens in, {} out)\n",
+                SessionEventMapper::to_agent_prefix(agent.as_deref()),
+                usage.input_tokens,
+                usage.output_tokens
+            )),
             SessionEvent::RunFailed { message } => Some(format!("\nerror: {message}\n\n")),
             SessionEvent::RunCancelled => Some("\ncancelled\n\n".to_string()),
         }

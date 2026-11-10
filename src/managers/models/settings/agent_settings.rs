@@ -8,4 +8,10 @@ pub struct AgentSettings {
     pub max_turns: i64,
     /// The longest one of a stack pack's checks may run.
     pub check_timeout_seconds: f64,
+    /// How many input tokens the orchestrator's last request may have had before its conversation is compacted, once
+    /// it has replied.
+    pub orchestrator_compact_tokens: i64,
+    /// How many input tokens any lane's last request may have had before its conversation is compacted between turns,
+    /// so a long task doesn't reach the model's limit.
+    pub lane_compact_tokens: i64,
 }

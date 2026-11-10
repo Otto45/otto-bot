@@ -30,6 +30,7 @@ use crate::managers::models::agent_report::AgentReport;
 use crate::managers::models::agent_role::AgentRole;
 use crate::managers::models::agent_run_outcome::AgentRunOutcome;
 use crate::managers::models::check_result::CheckResult;
+use crate::managers::models::compacted_conversation::CompactedConversation;
 use crate::managers::models::conversation_item::ConversationItem;
 use crate::managers::models::finding_severity::FindingSeverity;
 use crate::managers::models::format_result::FormatResult;
@@ -44,6 +45,7 @@ use crate::managers::models::patch_operation::PatchOperation;
 use crate::managers::models::patch_operation_kind::PatchOperationKind;
 use crate::managers::models::project_map_role::ProjectMapRole;
 use crate::managers::models::prompt_layer::PromptLayer;
+use crate::managers::models::reasoning_effort::ReasoningEffort;
 use crate::managers::models::report_status::ReportStatus;
 use crate::managers::models::review::Review;
 use crate::managers::models::review_finding::ReviewFinding;
@@ -93,6 +95,8 @@ pub struct AgentRunEngine {
     diff_processor: Arc<DiffProcessor>,
     max_turns: i64,
     check_timeout: Duration,
+    orchestrator_compact_tokens: i64,
+    lane_compact_tokens: i64,
 }
 
 impl AgentRunEngine {
@@ -110,6 +114,8 @@ impl AgentRunEngine {
         diff_processor: Arc<DiffProcessor>,
         max_turns: i64,
         check_timeout: Duration,
+        orchestrator_compact_tokens: i64,
+        lane_compact_tokens: i64,
     ) -> Self {
         AgentRunEngine {
             openai_responses_gateway,
@@ -124,6 +130,8 @@ impl AgentRunEngine {
             diff_processor,
             max_turns,
             check_timeout,
+            orchestrator_compact_tokens,
+            lane_compact_tokens,
         }
     }
 
@@ -269,7 +277,7 @@ impl AgentRunEngine {
         implementation_result: &ImplementationResult,
         events: &broadcast::Sender<SessionEvent>,
         data_facade: &DataFacade,
-    ) -> ApplicationResult<RunSummary> {
+    ) -> ApplicationResult<AgentRunOutcome> {
         let agent_assignment: AgentAssignment = AgentRunEngine::to_orchestrator_assignment(session);
         let (mut run_context, project_map_note): (RunContext, Option<ConversationItem>) = self
             .prepare_orchestrator(session, &agent_assignment, data_facade)
@@ -281,17 +289,124 @@ impl AgentRunEngine {
         opening_items.push(ConversationItem::HarnessNote {
             text: self.tool_processor.format_implementation_result(implementation_result),
         });
-        let agent_run_outcome: AgentRunOutcome = self
-            .run_lane(
-                session,
-                &agent_assignment,
-                &run_context,
-                opening_items,
-                events,
-                data_facade,
-            )
+        self.run_lane(
+            session,
+            &agent_assignment,
+            &run_context,
+            opening_items,
+            events,
+            data_facade,
+        )
+        .await
+    }
+
+    /// Compacts the orchestrator's conversation if its last request (`last_input_tokens` input tokens) passed the
+    /// threshold, so the session's next requests stay short. The manager calls it once a run has ended: compacting
+    /// takes a while, and the person is reading the reply meanwhile. Whether it compacted.
+    pub async fn compact_orchestrator(
+        &self,
+        session: &Session,
+        last_input_tokens: i64,
+        events: &broadcast::Sender<SessionEvent>,
+        data_facade: &DataFacade,
+    ) -> ApplicationResult<bool> {
+        if last_input_tokens < self.orchestrator_compact_tokens {
+            return Ok(false);
+        }
+        let agent_assignment: AgentAssignment = AgentRunEngine::to_orchestrator_assignment(session);
+        let run_context: RunContext = self
+            .prepare_kept_orchestrator(session, &agent_assignment, data_facade)
             .await?;
-        Ok(agent_run_outcome.run_summary)
+        let conversation_items: Vec<ConversationItem> = data_facade
+            .get_conversation_items(&session.id, &agent_assignment.lane_name)
+            .await?;
+        self.compact_lane(
+            session,
+            &agent_assignment,
+            &run_context,
+            &conversation_items,
+            events,
+            data_facade,
+        )
+        .await?;
+        Ok(true)
+    }
+
+    // The lane's conversation, compacted by the API, in place of everything in it so far: what it gives back is
+    // appended as one Compaction, then the role's reasoning effort again (the API won't take one before a compaction),
+    // in one write, so a compaction cut short leaves the lane as it was. Its usage is kept, and reported. The lane's
+    // conversation from now on.
+    async fn compact_lane(
+        &self,
+        session: &Session,
+        agent_assignment: &AgentAssignment,
+        run_context: &RunContext,
+        conversation_items: &[ConversationItem],
+        events: &broadcast::Sender<SessionEvent>,
+        data_facade: &DataFacade,
+    ) -> ApplicationResult<Vec<ConversationItem>> {
+        let compacted_conversation: CompactedConversation = self
+            .openai_responses_gateway
+            .compact_conversation(&ModelRequest {
+                lane_id: format!("{}/{}", session.id, agent_assignment.lane_name),
+                prompt_layers: run_context.prompt_layers.clone(),
+                items: conversation_items.to_vec(),
+                tools: run_context.tools.clone(),
+                allowed_tool_names: None,
+                service_tier: session.service_tier,
+            })
+            .await?;
+
+        let mut compacted_items: Vec<ConversationItem> = vec![ConversationItem::Compaction {
+            items: compacted_conversation.items,
+        }];
+        compacted_items.extend(
+            self.prompt_processor
+                .get_reasoning_effort(agent_assignment.role)
+                .map(|reasoning_effort: ReasoningEffort| ConversationItem::ConfigurationUpdate { reasoning_effort }),
+        );
+        data_facade
+            .append_conversation_items(&session.id, &agent_assignment.lane_name, &compacted_items)
+            .await?;
+        data_facade
+            .append_usage_record(&UsageRecord {
+                session_id: session.id.clone(),
+                lane_name: agent_assignment.lane_name.clone(),
+                role: agent_assignment.role,
+                response_id: compacted_conversation.id,
+                model: compacted_conversation.model,
+                requested_service_tier: session.service_tier,
+                // A compaction doesn't say which tier served it.
+                served_service_tier: None,
+                usage: compacted_conversation.usage,
+                recorded_on: Utc::now(),
+            })
+            .await?;
+        events
+            .send(SessionEvent::LaneCompacted {
+                agent: AgentRunEngine::to_agent(agent_assignment),
+                usage: compacted_conversation.usage,
+            })
+            .ok();
+        Ok(compacted_items)
+    }
+
+    // The orchestrator's run context as its last run left it: the session's kept project map, with nothing built or
+    // kept, so a compaction between runs changes nothing a run sees.
+    async fn prepare_kept_orchestrator(
+        &self,
+        session: &Session,
+        agent_assignment: &AgentAssignment,
+        data_facade: &DataFacade,
+    ) -> ApplicationResult<RunContext> {
+        let (stack_pack, rules): (Option<StackPack>, Option<String>) = self
+            .detect_stack_pack(&agent_assignment.workspace_directory, data_facade)
+            .await?;
+        let project_map: Option<String> = match AgentRunEngine::get_project_map_source(stack_pack.as_ref()) {
+            Some(_) => data_facade.get_session_project_maps(&session.id).await?.layer_map,
+            None => None,
+        };
+        Ok(self.build_run_context(agent_assignment, stack_pack, rules.as_deref(), project_map.as_deref()))
     }
 
     // The files a brief names, read, up to MAX_BRIEF_FILES; one that can't be read (one the change will create, a path
@@ -605,6 +720,7 @@ impl AgentRunEngine {
                 return Ok(AgentRunOutcome {
                     run_summary,
                     lane_ending: None,
+                    last_input_tokens: model_response.usage.input_tokens,
                 });
             }
 
@@ -625,7 +741,32 @@ impl AgentRunEngine {
                 return Ok(AgentRunOutcome {
                     run_summary,
                     lane_ending,
+                    last_input_tokens: model_response.usage.input_tokens,
                 });
+            }
+            // A task long enough to near the model's limit goes on from its conversation compacted. If that fails, it
+            // goes on as it is: the limit may never be reached.
+            if model_response.usage.input_tokens >= self.lane_compact_tokens {
+                match self
+                    .compact_lane(
+                        session,
+                        agent_assignment,
+                        run_context,
+                        &conversation_items,
+                        events,
+                        data_facade,
+                    )
+                    .await
+                {
+                    Ok(compacted_items) => conversation_items = compacted_items,
+                    Err(exception) => ApplicationLogger::error(
+                        "A lane's conversation could not be compacted; it goes on as it is",
+                        ContextualData::new()
+                            .with("session_id", session.id.as_str())
+                            .with("lane_name", lane_name),
+                        Some(&exception),
+                    ),
+                }
             }
         }
 

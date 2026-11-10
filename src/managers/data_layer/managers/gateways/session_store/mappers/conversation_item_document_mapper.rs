@@ -52,6 +52,11 @@ impl ConversationItemDocumentMapper {
                 output: Some(output.clone()),
                 ..ConversationItemDocument::default()
             },
+            ConversationItem::Compaction { items } => ConversationItemDocument {
+                item_type: Some("compaction".to_string()),
+                items: Some(items.clone()),
+                ..ConversationItemDocument::default()
+            },
         }
     }
 
@@ -100,6 +105,9 @@ impl ConversationItemDocumentMapper {
                     .succeeded
                     .expect("validated by ValidatorConversationItemDocument"),
                 output: document.output.expect("validated by ValidatorConversationItemDocument"),
+            },
+            "compaction" => ConversationItem::Compaction {
+                items: document.items.expect("validated by ValidatorConversationItemDocument"),
             },
             other => unreachable!("validated by ValidatorConversationItemDocument: {other}"),
         }
