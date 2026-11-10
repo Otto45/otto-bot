@@ -334,6 +334,22 @@ money (the currency conversion, and TypeScript's discount), fixed in the one rou
 recording an audit event in another database as high, so the fix round over-built (an outbox, a blocked report) and
 the Python app's fix failed at run time (a datetime bound as text, now a rule of the Python pack).
 
+Step 6 (resume, compaction, the HTTP API), the same nine runs at once:
+
+| Task | Rust | Python | TypeScript |
+| --- | --- | --- | --- |
+| farewell | 55s, 8 requests | 34s, 8 requests | 40s, 9 requests |
+| loyalty points | 63s, 8 requests | 44s, 8 requests | 41s, 8 requests |
+| orders | 347s, 21 requests | 261s, 16 requests | 378s, 22 requests |
+
+Every run passed its checks, through one brief, at 79-92% cache hits; no lane came near a compaction threshold. The
+small tasks are where they were. The Rust and TypeScript orders runs took longer for more work, not a slower harness:
+the packs' gateway rules now ask a gateway to retry what failed on the other side (step 5, part 6), so the currency
+gateway grew, and they wrote 25-33% more output (24.5k and 23k tokens, against 18.4k each) in the same number of
+requests; one TypeScript review response took 103 seconds. Both reviews sent two high findings back, as before: the
+exchange rates parsed as floating point (money again), and, in Rust, the retry backoff copied from the example gateway
+rather than shared, since every template keeps it inside its JSON Placeholder gateway.
+
 ## Verified
 
 What the design depends on from the API, probed with `gpt-6.1-sol` on a ~6.3k-token prefix (`store=false`):
