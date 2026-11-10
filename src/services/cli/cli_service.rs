@@ -6,12 +6,14 @@ use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::managers::models::session_event::SessionEvent;
+use crate::managers::models::session_summary::SessionSummary;
 use crate::managers::models::started_project::StartedProject;
 use crate::managers::models::user_request::UserRequest;
 use crate::otto_bot_facade::OttoBotFacade;
 use crate::services::cli::exception_handlers::application_exception_report::ApplicationExceptionReport;
 use crate::services::cli::mappers::session_event_mapper::SessionEventMapper;
 use crate::services::cli::mappers::session_options_mapper::SessionOptionsMapper;
+use crate::services::cli::mappers::session_summary_mapper::SessionSummaryMapper;
 use crate::services::cli::mappers::started_project_mapper::StartedProjectMapper;
 use crate::services::cli::wire_models::cli_arguments::CliArguments;
 use crate::services::cli::wire_models::cli_command::CliCommand;
@@ -47,33 +49,18 @@ impl CliService {
         log_path: Option<&Path>,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
         let mut stdout: Stdout = tokio::io::stdout();
-        let current_directory: PathBuf = std::env::current_dir()?;
-        let workspace_directory: PathBuf = match cli_arguments.command.as_ref() {
-            Some(CliCommand::New {
-                name,
-                stack,
-                parent_directory,
-            }) => {
-                let started_project: StartedProject = otto_bot_facade
-                    .start_project(stack, name, parent_directory.as_deref().unwrap_or(&current_directory))
-                    .await?;
-                CliService::write(&mut stdout, &StartedProjectMapper::to_output(&started_project)).await?;
-                started_project.workspace_directory
-            }
-            None => cli_arguments.workspace.clone().unwrap_or(current_directory),
+        let Some((session_id, workspace_directory)) =
+            CliService::open_session(otto_bot_facade, cli_arguments, &mut stdout).await?
+        else {
+            return Ok(());
         };
-        let session_id: String = otto_bot_facade
-            .start_session(&SessionOptionsMapper::to_session_options(
-                cli_arguments,
-                workspace_directory.clone(),
-            ))
-            .await?;
         // Subscribed before anything is submitted, so no event is missed.
         let mut events: broadcast::Receiver<SessionEvent> = otto_bot_facade.subscribe(&session_id)?;
         let mut lines: Lines<BufReader<Stdin>> = BufReader::new(tokio::io::stdin()).lines();
 
         CliService::write(&mut stdout, GREETING).await?;
         CliService::write(&mut stdout, &format!("workspace: {}\n", workspace_directory.display())).await?;
+        CliService::write(&mut stdout, &format!("session: {session_id}\n")).await?;
         if let Some(log_path) = log_path {
             CliService::write(&mut stdout, &format!("log: {}\n", log_path.display())).await?;
         }
@@ -104,6 +91,55 @@ impl CliService {
                 }
             }
         }
+    }
+
+    // The session to converse in, and its workspace: a new app's, a resumed one's, or a new one in the workspace. None
+    // when there is nothing to converse about (`otto sessions` has listed them).
+    async fn open_session(
+        otto_bot_facade: &OttoBotFacade,
+        cli_arguments: &CliArguments,
+        stdout: &mut Stdout,
+    ) -> Result<Option<(String, PathBuf)>, Box<dyn Error + Send + Sync>> {
+        let current_directory: PathBuf = std::env::current_dir()?;
+        let workspace_directory: PathBuf = match (cli_arguments.command.as_ref(), cli_arguments.session.as_deref()) {
+            (Some(CliCommand::Sessions { workspace }), _) => {
+                let session_summaries: Vec<SessionSummary> = otto_bot_facade
+                    .list_sessions(workspace.as_deref().unwrap_or(&current_directory))
+                    .await?;
+                CliService::write(stdout, &SessionSummaryMapper::to_list_output(&session_summaries)).await?;
+                return Ok(None);
+            }
+            (
+                Some(CliCommand::New {
+                    name,
+                    stack,
+                    parent_directory,
+                }),
+                _,
+            ) => {
+                let started_project: StartedProject = otto_bot_facade
+                    .start_project(stack, name, parent_directory.as_deref().unwrap_or(&current_directory))
+                    .await?;
+                CliService::write(stdout, &StartedProjectMapper::to_output(&started_project)).await?;
+                started_project.workspace_directory
+            }
+            (None, Some(session_id)) => {
+                let session_summary: SessionSummary = otto_bot_facade.resume_session(session_id).await?;
+                CliService::write(stdout, &SessionSummaryMapper::to_resumed_output(&session_summary)).await?;
+                return Ok(Some((
+                    session_summary.session.id,
+                    session_summary.session.workspace_directory,
+                )));
+            }
+            (None, None) => cli_arguments.workspace.clone().unwrap_or(current_directory),
+        };
+        let session_id: String = otto_bot_facade
+            .start_session(&SessionOptionsMapper::to_session_options(
+                cli_arguments,
+                workspace_directory.clone(),
+            ))
+            .await?;
+        Ok(Some((session_id, workspace_directory)))
     }
 
     // Prints the run's events until it ends. Ctrl-C cancels the run; its end is still reported as an event.

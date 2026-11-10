@@ -7,6 +7,7 @@ use crate::managers::data_layer::data_facade::DataFacade;
 use crate::managers::exceptions::application_base_exception::ApplicationResult;
 use crate::managers::models::session_event::SessionEvent;
 use crate::managers::models::session_options::SessionOptions;
+use crate::managers::models::session_summary::SessionSummary;
 use crate::managers::models::started_project::StartedProject;
 use crate::managers::models::user_request::UserRequest;
 use crate::managers::otto_bot_manager::OttoBotManager;
@@ -58,6 +59,17 @@ impl OttoBotFacade {
     /// Starts a session in the client's workspace and returns its id.
     pub async fn start_session(&self, session_options: &SessionOptions) -> ApplicationResult<String> {
         self.otto_bot_manager.start_session(session_options).await
+    }
+
+    /// Serves a session started before (by this client or another, in this process or an earlier one) again, as it
+    /// was left, and returns it as a client lists it. A session already being served is left as it is.
+    pub async fn resume_session(&self, session_id: &str) -> ApplicationResult<SessionSummary> {
+        self.otto_bot_manager.resume_session(session_id).await
+    }
+
+    /// The sessions kept for the workspace, most recently active first, to pick one to resume.
+    pub async fn list_sessions(&self, workspace_directory: &Path) -> ApplicationResult<Vec<SessionSummary>> {
+        self.otto_bot_manager.list_sessions(workspace_directory).await
     }
 
     /// The session's events from now on. Subscribe before submitting, so no event of the run is missed.

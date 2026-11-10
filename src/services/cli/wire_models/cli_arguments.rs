@@ -16,6 +16,10 @@ pub struct CliArguments {
     #[arg(long)]
     pub workspace: Option<PathBuf>,
 
+    /// Resumes a session started before (`otto sessions` lists them), in its workspace and at its tier
+    #[arg(long, value_name = "ID", conflicts_with_all = ["workspace", "service_tier"])]
+    pub session: Option<String>,
+
     /// The OpenAI processing tier the session runs at [default: OTTO_BOT_SERVICE_TIER, or standard]
     #[arg(long, value_enum, global = true)]
     pub service_tier: Option<ServiceTierArgument>,

@@ -4,6 +4,8 @@ pub enum SessionStoreGatewayException {
     SessionStoreIo,
     InvalidConversationItemDocument,
     InvalidProjectMapDocument,
+    InvalidSessionDocument,
+    InvalidSessionRequestDocument,
     /// A lane name that can't name a file: a bug in whatever named the lane, since names are checked before.
     InvalidLaneName,
 }
@@ -14,6 +16,8 @@ impl SessionStoreGatewayException {
             SessionStoreGatewayException::SessionStoreIo => "SessionStoreIoException",
             SessionStoreGatewayException::InvalidConversationItemDocument => "InvalidConversationItemDocumentException",
             SessionStoreGatewayException::InvalidProjectMapDocument => "InvalidProjectMapDocumentException",
+            SessionStoreGatewayException::InvalidSessionDocument => "InvalidSessionDocumentException",
+            SessionStoreGatewayException::InvalidSessionRequestDocument => "InvalidSessionRequestDocumentException",
             SessionStoreGatewayException::InvalidLaneName => "InvalidLaneNameException",
         }
     }

@@ -5,6 +5,7 @@ use crate::managers::models::implementation_brief::ImplementationBrief;
 use crate::managers::models::project_map_role::ProjectMapRole;
 use crate::managers::models::session::Session;
 use crate::managers::models::session_project_maps::SessionProjectMaps;
+use crate::managers::models::session_request::SessionRequest;
 use crate::managers::models::stack_pack::StackPack;
 use crate::managers::models::template_file::TemplateFile;
 use crate::managers::models::usage_record::UsageRecord;
@@ -24,6 +25,28 @@ impl DataFacade {
 
     pub async fn save_session(&self, session: &Session) -> ApplicationResult<()> {
         self.data_manager.save_session(session).await
+    }
+
+    pub async fn get_session(&self, session_id: &str) -> ApplicationResult<Option<Session>> {
+        self.data_manager.get_session(session_id).await
+    }
+
+    pub async fn get_sessions(&self) -> ApplicationResult<Vec<Session>> {
+        self.data_manager.get_sessions().await
+    }
+
+    pub async fn append_session_request(
+        &self,
+        session_id: &str,
+        session_request: &SessionRequest,
+    ) -> ApplicationResult<()> {
+        self.data_manager
+            .append_session_request(session_id, session_request)
+            .await
+    }
+
+    pub async fn get_session_requests(&self, session_id: &str) -> ApplicationResult<Vec<SessionRequest>> {
+        self.data_manager.get_session_requests(session_id).await
     }
 
     pub async fn get_conversation_items(

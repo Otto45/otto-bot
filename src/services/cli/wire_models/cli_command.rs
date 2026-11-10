@@ -18,4 +18,11 @@ pub enum CliCommand {
         #[arg(long = "in", value_name = "DIRECTORY")]
         parent_directory: Option<PathBuf>,
     },
+
+    /// Lists the sessions started in a workspace, most recently active first, to resume one with --session
+    Sessions {
+        /// The workspace whose sessions are listed [default: the current directory]
+        #[arg(long)]
+        workspace: Option<PathBuf>,
+    },
 }

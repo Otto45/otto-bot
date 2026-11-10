@@ -161,9 +161,10 @@ docs/DESIGN.md                  otto-bot's design
 - changed for otto-bot: its data is files, not databases, so it has no migrations and no relational gateway; the Postgres rules below apply only if one is ever added
   ```
   managers/data_layer/managers/gateways/
-      session_store/       a folder per session: session.json, and append-only conversation_items/<lane_name>.jsonl (one per lane), usage_records.jsonl, project_maps.jsonl and briefs.jsonl
+      session_store/       a folder per session, named after its id: session.json, and append-only requests.jsonl, conversation_items/<lane_name>.jsonl (one per lane), usage_records.jsonl, project_maps.jsonl and briefs.jsonl
       stack_pack_store/    the stack packs, read-only: each folder's pack.toml
   ```
+  - a session is resumed (`OttoBotFacade::resume_session`) from what its files hold, by any client, in this process or a later one: nothing a run needs is kept only in memory; a session id from a client names a folder only if it could be one the store made (lowercase letters and digits), so it never leads out of the sessions folder
   - a session's files are only ever appended to, never rewritten, so a crash mid-write loses at most the line being written; whatever needs a changed record appends a new one
   - each line is a document (a resource model, every field optional): read back, it is deserialized, validated and mapped like anything else from outside the process
 - the data layer repeats the architecture one level down: the `DataFacade` (the only entry point a manager sees) over one `DataManager`, which orchestrates every data gateway

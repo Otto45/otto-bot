@@ -8,18 +8,26 @@ use crate::managers::common::formatters::validation_error_formatter::ValidationE
 use crate::managers::data_layer::managers::gateways::session_store::mappers::conversation_item_document_mapper::ConversationItemDocumentMapper;
 use crate::managers::data_layer::managers::gateways::session_store::mappers::implementation_brief_document_mapper::ImplementationBriefDocumentMapper;
 use crate::managers::data_layer::managers::gateways::session_store::mappers::session_document_mapper::SessionDocumentMapper;
+use crate::managers::data_layer::managers::gateways::session_store::mappers::session_request_document_mapper::SessionRequestDocumentMapper;
 use crate::managers::data_layer::managers::gateways::session_store::mappers::usage_record_document_mapper::UsageRecordDocumentMapper;
 use crate::managers::data_layer::managers::gateways::session_store::resource_models::conversation_item_document::ConversationItemDocument;
 use crate::managers::data_layer::managers::gateways::session_store::resource_models::project_map_document::ProjectMapDocument;
+use crate::managers::data_layer::managers::gateways::session_store::resource_models::session_document::SessionDocument;
+use crate::managers::data_layer::managers::gateways::session_store::resource_models::session_request_document::SessionRequestDocument;
 use crate::managers::data_layer::managers::gateways::session_store::validators::validator_conversation_item_document::ValidatorConversationItemDocument;
+use crate::managers::data_layer::managers::gateways::session_store::validators::validator_session_document::ValidatorSessionDocument;
+use crate::managers::data_layer::managers::gateways::session_store::validators::validator_session_request_document::ValidatorSessionRequestDocument;
 use crate::managers::exceptions::application_base_exception::{ApplicationBaseException, ApplicationResult};
 use crate::managers::exceptions::contextual_data::ContextualData;
 use crate::managers::exceptions::session_store_gateway_exception::SessionStoreGatewayException;
+use crate::managers::logger::application_logger::ApplicationLogger;
+use crate::managers::logger::log_level::LogLevel;
 use crate::managers::models::conversation_item::ConversationItem;
 use crate::managers::models::implementation_brief::ImplementationBrief;
 use crate::managers::models::project_map_role::ProjectMapRole;
 use crate::managers::models::session::Session;
 use crate::managers::models::session_project_maps::SessionProjectMaps;
+use crate::managers::models::session_request::SessionRequest;
 use crate::managers::models::usage_record::UsageRecord;
 
 const SESSION_FILE_NAME: &str = "session.json";
@@ -28,11 +36,13 @@ const CONVERSATION_ITEMS_DIRECTORY_NAME: &str = "conversation_items";
 const USAGE_RECORDS_FILE_NAME: &str = "usage_records.jsonl";
 const PROJECT_MAPS_FILE_NAME: &str = "project_maps.jsonl";
 const BRIEFS_FILE_NAME: &str = "briefs.jsonl";
+const REQUESTS_FILE_NAME: &str = "requests.jsonl";
 
-/// Keeps each session in a folder of its own: `session.json`, and append-only JSON Lines files: each lane's
-/// conversation (every item in the order the model saw it, `conversation_items/<lane_name>.jsonl`), the usage ledger
-/// (one line per model response), the project maps and the accepted plans. Nothing is ever rewritten, so a session's history is never lost
-/// to a crash halfway through a write.
+/// Keeps each session in a folder named after its id: `session.json`, and append-only JSON Lines files: the requests
+/// it was given, each lane's conversation (every item in the order the model saw it,
+/// `conversation_items/<lane_name>.jsonl`), the usage ledger (one line per model response), the project maps and the
+/// accepted briefs. Nothing is ever rewritten, so a session's history is never lost to a crash halfway through a
+/// write.
 pub struct SessionStoreGateway {
     sessions_directory: PathBuf,
 }
@@ -60,6 +70,133 @@ impl SessionStoreGateway {
             .map_err(|exception: std::io::Error| {
                 SessionStoreGateway::to_io_exception(exception, "saving a session", &context)
             })
+    }
+
+    /// The session with the id; None if there is none, or the id couldn't be one (so it never leads out of the
+    /// sessions folder).
+    pub async fn get_session(&self, session_id: &str) -> ApplicationResult<Option<Session>> {
+        if !SessionStoreGateway::is_session_id(session_id) {
+            return Ok(None);
+        }
+        let context: ContextualData = ContextualData::new().with("session_id", session_id);
+        let content: String = match tokio::fs::read_to_string(self.get_file_path(session_id, SESSION_FILE_NAME)).await {
+            Ok(content) => content,
+            Err(exception) if exception.kind() == ErrorKind::NotFound => return Ok(None),
+            Err(exception) => {
+                return Err(SessionStoreGateway::to_io_exception(
+                    exception,
+                    "reading a session",
+                    &context,
+                ));
+            }
+        };
+        let mut deserializer: serde_json::Deserializer<serde_json::de::StrRead<'_>> =
+            serde_json::Deserializer::from_str(&content);
+        let document: SessionDocument = serde_path_to_error::deserialize(&mut deserializer).map_err(
+            |exception: serde_path_to_error::Error<serde_json::Error>| {
+                ApplicationBaseException::new(
+                    SessionStoreGatewayException::InvalidSessionDocument,
+                    "A session in the session store could not be deserialized",
+                    context
+                        .clone()
+                        .with("errors", ValidationErrorFormatter::format(&exception, "session")),
+                )
+            },
+        )?;
+        ValidatorSessionDocument::validate_session_document(&document, session_id)?;
+        Ok(Some(SessionDocumentMapper::to_session(document)))
+    }
+
+    /// Every session kept, in no order. A folder that isn't a session's is passed over, and so is a session that
+    /// can't be read, with a warning: one damaged session doesn't hide the others.
+    pub async fn get_sessions(&self) -> ApplicationResult<Vec<Session>> {
+        let context: ContextualData = ContextualData::new();
+        let mut entries: tokio::fs::ReadDir = match tokio::fs::read_dir(&self.sessions_directory).await {
+            Ok(entries) => entries,
+            Err(exception) if exception.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(exception) => {
+                return Err(SessionStoreGateway::to_io_exception(
+                    exception,
+                    "listing the sessions",
+                    &context,
+                ));
+            }
+        };
+
+        let mut sessions: Vec<Session> = Vec::new();
+        while let Some(entry) = entries.next_entry().await.map_err(|exception: std::io::Error| {
+            SessionStoreGateway::to_io_exception(exception, "listing the sessions", &context)
+        })? {
+            let Some(session_id) = entry.file_name().to_str().map(str::to_string) else {
+                continue;
+            };
+            match self.get_session(&session_id).await {
+                Ok(Some(session)) => sessions.push(session),
+                Ok(None) => {}
+                Err(exception) => ApplicationLogger::log_exception(&exception, LogLevel::Warning),
+            }
+        }
+        Ok(sessions)
+    }
+
+    /// Keeps a request the session was given, after those before it.
+    pub async fn append_session_request(
+        &self,
+        session_id: &str,
+        session_request: &SessionRequest,
+    ) -> ApplicationResult<()> {
+        let line: String = serde_json::to_string(&SessionRequestDocumentMapper::to_session_request_document(
+            session_request,
+        ))
+        .expect("a session request document serializes to JSON");
+        self.append_lines(
+            &self.get_file_path(session_id, REQUESTS_FILE_NAME),
+            &[line],
+            &ContextualData::new().with("session_id", session_id),
+        )
+        .await
+    }
+
+    /// The requests the session was given, oldest first; none before its first.
+    pub async fn get_session_requests(&self, session_id: &str) -> ApplicationResult<Vec<SessionRequest>> {
+        let context: ContextualData = ContextualData::new().with("session_id", session_id);
+        let content: String = match tokio::fs::read_to_string(self.get_file_path(session_id, REQUESTS_FILE_NAME)).await
+        {
+            Ok(content) => content,
+            Err(exception) if exception.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(exception) => {
+                return Err(SessionStoreGateway::to_io_exception(
+                    exception,
+                    "reading a session's requests",
+                    &context,
+                ));
+            }
+        };
+
+        let mut session_requests: Vec<SessionRequest> = Vec::new();
+        for (line_index, line) in content.lines().enumerate() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let line_number: i64 = i64::try_from(line_index + 1).unwrap_or(i64::MAX);
+            let mut deserializer: serde_json::Deserializer<serde_json::de::StrRead<'_>> =
+                serde_json::Deserializer::from_str(line);
+            let document: SessionRequestDocument = serde_path_to_error::deserialize(&mut deserializer).map_err(
+                |exception: serde_path_to_error::Error<serde_json::Error>| {
+                    ApplicationBaseException::new(
+                        SessionStoreGatewayException::InvalidSessionRequestDocument,
+                        "A request in the session store could not be deserialized",
+                        context
+                            .clone()
+                            .with("line_number", line_number)
+                            .with("errors", ValidationErrorFormatter::format(&exception, "document")),
+                    )
+                },
+            )?;
+            ValidatorSessionRequestDocument::validate_session_request_document(&document, session_id, line_number)?;
+            session_requests.push(SessionRequestDocumentMapper::to_session_request(document));
+        }
+        Ok(session_requests)
     }
 
     /// The lane's conversation so far; none for a lane that hasn't started.
@@ -238,6 +375,14 @@ impl SessionStoreGateway {
 
     /// Holds no open file between calls, so there is nothing to close.
     pub fn close(&self) {}
+
+    // A session's id names its folder, so it is a word of lowercase letters and digits, as the ids made are.
+    fn is_session_id(session_id: &str) -> bool {
+        !session_id.is_empty()
+            && session_id
+                .chars()
+                .all(|character: char| character.is_ascii_lowercase() || character.is_ascii_digit())
+    }
 
     fn get_file_path(&self, session_id: &str, file_name: &str) -> PathBuf {
         self.sessions_directory.join(session_id).join(file_name)

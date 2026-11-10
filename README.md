@@ -26,6 +26,8 @@ export OPENAI_API_KEY=...
 cargo run -- --workspace ../my-app      # the interactive CLI, working in ../my-app (default: the current directory)
 cargo run -- --service-tier fast        # a session at the fast tier
 cargo run -- new orders-app --stack python --in ..   # start ../orders-app from the Python template, then converse in it
+cargo run -- sessions --workspace ../my-app         # the sessions started in ../my-app, most recently active first
+cargo run -- --session <id>             # resume one, in its workspace and at its tier, where it was left
 cargo run -- --help
 ```
 
@@ -34,13 +36,14 @@ cargo run -- --help
 the example components stay as the pattern for each kind, for the first brief to replace.
 
 Type a request and press Enter: otto works on it until it is done, showing each tool it uses, then the run's turns
-and tokens. Ctrl-C cancels a run under way; Ctrl-D, `/exit` or Ctrl-C at the prompt quits.
+and tokens. Ctrl-C cancels a run under way; Ctrl-D, `/exit` or Ctrl-C at the prompt quits. The session's id is shown
+when it starts: `--session <id>` carries on with it later, its conversation, project map and briefs as they were.
 
 otto reads and writes nothing outside the workspace, and never reads `.env` files or `.git/`. Its checks run without
 `OPENAI_API_KEY` in their environment.
 
 Everything otto keeps is under `~/.otto-bot/` (`OTTO_BOT_HOME`): `logs/otto.log` (one JSON object per line) and
-`sessions/<id>/`, with each agent's conversation (`conversation_items/<lane>.jsonl`, the session's own agent being
+`sessions/<id>/`, with the session (`session.json`), the requests it was given (`requests.jsonl`), each agent's conversation (`conversation_items/<lane>.jsonl`, the session's own agent being
 `orchestrator`), token usage (`usage_records.jsonl`) and accepted briefs (`briefs.jsonl`); each brief's implementor and reviewer are
 `implementor_<n>` and `reviewer_<n>`.
 

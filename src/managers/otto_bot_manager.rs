@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 
@@ -22,6 +22,8 @@ use crate::managers::models::run_summary::RunSummary;
 use crate::managers::models::session::Session;
 use crate::managers::models::session_event::SessionEvent;
 use crate::managers::models::session_options::SessionOptions;
+use crate::managers::models::session_request::SessionRequest;
+use crate::managers::models::session_summary::SessionSummary;
 use crate::managers::models::started_project::StartedProject;
 use crate::managers::models::user_request::UserRequest;
 use crate::managers::processors::session::session_processor::SessionProcessor;
@@ -81,18 +83,49 @@ impl OttoBotManager {
         self.data_facade.save_session(&session).await?;
 
         let session_id: String = session.id.clone();
-        let (events, _): (broadcast::Sender<SessionEvent>, broadcast::Receiver<SessionEvent>) =
-            broadcast::channel(SESSION_EVENT_CAPACITY);
-
-        self.lock_live_sessions().insert(
-            session_id.clone(),
-            LiveSession {
-                session,
-                events,
-                run: None,
-            },
-        );
+        self.lock_live_sessions()
+            .insert(session_id.clone(), OttoBotManager::to_live_session(session));
         Ok(session_id)
+    }
+
+    /// Serves a session kept in the session store again, as it was left: its orchestrator's conversation, its project
+    /// map and its briefs carry on. A session already being served is left as it is.
+    pub async fn resume_session(&self, session_id: &str) -> ApplicationResult<SessionSummary> {
+        let session: Session = self
+            .data_facade
+            .get_session(session_id)
+            .await?
+            .ok_or_else(|| OttoBotManager::to_session_not_found_exception(session_id))?;
+        // Its workspace must still be there.
+        self.workspace_gateway
+            .resolve_workspace_directory(&session.workspace_directory)
+            .await?;
+        let session_requests: Vec<SessionRequest> = self.data_facade.get_session_requests(&session.id).await?;
+
+        self.lock_live_sessions()
+            .entry(session.id.clone())
+            .or_insert_with(|| OttoBotManager::to_live_session(session.clone()));
+        Ok(self.session_processor.summarize_session(session, &session_requests))
+    }
+
+    /// The sessions kept for the workspace, most recently active first.
+    pub async fn list_sessions(&self, workspace_directory: &Path) -> ApplicationResult<Vec<SessionSummary>> {
+        let workspace_directory: PathBuf = self
+            .workspace_gateway
+            .resolve_workspace_directory(workspace_directory)
+            .await?;
+        let sessions: Vec<Session> = self.data_facade.get_sessions().await?;
+
+        let mut session_summaries: Vec<SessionSummary> = Vec::new();
+        for session in sessions {
+            if session.workspace_directory != workspace_directory {
+                continue;
+            }
+            let session_requests: Vec<SessionRequest> = self.data_facade.get_session_requests(&session.id).await?;
+            session_summaries.push(self.session_processor.summarize_session(session, &session_requests));
+        }
+        self.session_processor.sort_session_summaries(&mut session_summaries);
+        Ok(session_summaries)
     }
 
     /// Starts running the request in the background and returns; what happens is reported on the session's events,
@@ -122,6 +155,7 @@ impl OttoBotManager {
             self.agent_run_engine.clone(),
             live_session.session.clone(),
             user_request.clone(),
+            Utc::now(),
             live_session.events.clone(),
             self.data_facade.clone(),
         ));
@@ -175,11 +209,19 @@ impl OttoBotManager {
         agent_run_engine: Arc<AgentRunEngine>,
         session: Session,
         user_request: UserRequest,
+        submitted_on: DateTime<Utc>,
         events: broadcast::Sender<SessionEvent>,
         data_facade: Arc<DataFacade>,
     ) {
-        let ran: ApplicationResult<RunSummary> =
-            OttoBotManager::run_request(&agent_run_engine, &session, &user_request, &events, &data_facade).await;
+        let ran: ApplicationResult<RunSummary> = OttoBotManager::run_request(
+            &agent_run_engine,
+            &session,
+            &user_request,
+            submitted_on,
+            &events,
+            &data_facade,
+        )
+        .await;
         match ran {
             Ok(run_summary) => {
                 events.send(SessionEvent::RunCompleted { run_summary }).ok();
@@ -203,9 +245,19 @@ impl OttoBotManager {
         agent_run_engine: &AgentRunEngine,
         session: &Session,
         user_request: &UserRequest,
+        submitted_on: DateTime<Utc>,
         events: &broadcast::Sender<SessionEvent>,
         data_facade: &DataFacade,
     ) -> ApplicationResult<RunSummary> {
+        data_facade
+            .append_session_request(
+                &session.id,
+                &SessionRequest {
+                    text: user_request.text.clone(),
+                    submitted_on,
+                },
+            )
+            .await?;
         let agent_run_outcome: AgentRunOutcome =
             agent_run_engine.run(session, user_request, events, data_facade).await?;
         let Some(LaneEnding::BriefAccepted(implementation_brief)) = agent_run_outcome.lane_ending else {
@@ -259,6 +311,17 @@ impl OttoBotManager {
                     })
                     .ok();
             }
+        }
+    }
+
+    // A session served from now on, with a channel for its events and no run yet.
+    fn to_live_session(session: Session) -> LiveSession {
+        let (events, _): (broadcast::Sender<SessionEvent>, broadcast::Receiver<SessionEvent>) =
+            broadcast::channel(SESSION_EVENT_CAPACITY);
+        LiveSession {
+            session,
+            events,
+            run: None,
         }
     }
 

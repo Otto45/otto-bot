@@ -9,6 +9,8 @@ use crate::managers::exceptions::exception_kind::ExceptionKind;
 use crate::managers::models::service_tier::ServiceTier;
 use crate::managers::models::session::Session;
 use crate::managers::models::session_options::SessionOptions;
+use crate::managers::models::session_request::SessionRequest;
+use crate::managers::models::session_summary::SessionSummary;
 use crate::managers::models::user_request::UserRequest;
 
 // Decides what a session is from what its client asked for, and whether a request can be run.
@@ -35,6 +37,32 @@ impl SessionProcessor {
             service_tier: session_options.service_tier.unwrap_or(self.default_service_tier),
             started_on,
         }
+    }
+
+    /// The session as a client lists it, from the requests it was given (oldest first).
+    pub fn summarize_session(&self, session: Session, session_requests: &[SessionRequest]) -> SessionSummary {
+        SessionSummary {
+            first_request: session_requests
+                .first()
+                .map(|session_request: &SessionRequest| session_request.text.clone()),
+            request_count: session_requests.len(),
+            last_active_on: session_requests
+                .last()
+                .map_or(session.started_on, |session_request: &SessionRequest| {
+                    session_request.submitted_on
+                }),
+            session,
+        }
+    }
+
+    /// Most recently active first, so the session last worked on heads the list.
+    pub fn sort_session_summaries(&self, session_summaries: &mut [SessionSummary]) {
+        session_summaries.sort_by(|left: &SessionSummary, right: &SessionSummary| {
+            right
+                .last_active_on
+                .cmp(&left.last_active_on)
+                .then_with(|| left.session.id.cmp(&right.session.id))
+        });
     }
 
     pub fn check_user_request(&self, user_request: &UserRequest) -> ApplicationResult<()> {

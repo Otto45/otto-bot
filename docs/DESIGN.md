@@ -263,6 +263,10 @@ stack_packs/rust/, stack_packs/python/, stack_packs/typescript/
   stream of `SessionEvent`, a domain enum: brief accepted, tool used, brief implemented, usage, done.
   Each service maps the events to its own wire format.
 - **Any client can resume any session**, because the session log is the whole record of it.
+  `resume_session(id)` serves a kept session again: the orchestrator's lane, the kept project map (so the cached
+  prefix carries over) and the brief numbering go on where they were; a WebSocket lane opens a new connection and
+  sends the whole conversation once. `list_sessions(workspace)` lists a workspace's sessions, most recently active
+  first, from `requests.jsonl` (each request and when it came). The CLI: `otto sessions`, `otto --session <id>`.
 - **Session options** (such as the service tier) are passed to `start_session` and override configured defaults,
   which only the configuration provider reads from the environment.
 

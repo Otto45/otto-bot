@@ -35,6 +35,8 @@ pub mod session;
 pub mod session_event;
 pub mod session_options;
 pub mod session_project_maps;
+pub mod session_request;
+pub mod session_summary;
 pub mod settings;
 pub mod stack_pack;
 pub mod stack_pack_check;
