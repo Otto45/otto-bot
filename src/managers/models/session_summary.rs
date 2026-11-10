@@ -9,6 +9,6 @@ pub struct SessionSummary {
     /// None for a session that was never given a request.
     pub first_request: Option<String>,
     pub request_count: usize,
-    /// When its last request came, or when it started if none has.
+    /// When the person or the orchestrator last said anything, or when it started if nothing has been said.
     pub last_active_on: DateTime<Utc>,
 }

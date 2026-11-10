@@ -5,6 +5,13 @@ pub enum OttoBotManagerException {
     SessionNotFound,
     /// A request was submitted while the session's previous one was still running.
     SessionBusy,
+    /// No app of the name is kept where apps started by name are.
+    AppNotFound,
+    /// An app of the name is already kept there.
+    AppAlreadyExists,
+    /// A request was submitted while another session of the same app (workspace) was running one: two runs would
+    /// change the same files.
+    AppBusy,
 }
 
 impl OttoBotManagerException {
@@ -12,6 +19,9 @@ impl OttoBotManagerException {
         match self {
             OttoBotManagerException::SessionNotFound => "SessionNotFoundException",
             OttoBotManagerException::SessionBusy => "SessionBusyException",
+            OttoBotManagerException::AppNotFound => "AppNotFoundException",
+            OttoBotManagerException::AppAlreadyExists => "AppAlreadyExistsException",
+            OttoBotManagerException::AppBusy => "AppBusyException",
         }
     }
 }

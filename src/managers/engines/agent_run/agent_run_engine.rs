@@ -60,6 +60,8 @@ use crate::managers::models::stack_pack_lint::StackPackLint;
 use crate::managers::models::stack_pack_project_map::StackPackProjectMap;
 use crate::managers::models::tool_call::ToolCall;
 use crate::managers::models::tool_request::ToolRequest;
+use crate::managers::models::transcript_entry::TranscriptEntry;
+use crate::managers::models::transcript_speaker::TranscriptSpeaker;
 use crate::managers::models::usage_record::UsageRecord;
 use crate::managers::models::user_request::UserRequest;
 use crate::managers::models::workspace_file::WorkspaceFile;
@@ -704,6 +706,19 @@ impl AgentRunEngine {
             conversation_items.extend(model_response.output_items.iter().cloned());
 
             if let Some(text) = model_response.text.as_ref() {
+                // What the orchestrator says is said to the person: it is their conversation's.
+                if agent_assignment.role == AgentRole::Orchestrator {
+                    data_facade
+                        .append_transcript_entry(
+                            &session.id,
+                            &TranscriptEntry {
+                                speaker: TranscriptSpeaker::Assistant,
+                                text: text.clone(),
+                                said_on: Utc::now(),
+                            },
+                        )
+                        .await?;
+                }
                 events
                     .send(SessionEvent::AssistantReplied {
                         agent: agent.clone(),

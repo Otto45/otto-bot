@@ -3,10 +3,14 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use std::time::{Duration, Instant};
+
 use chrono::{DateTime, Utc};
 use tokio::sync::broadcast;
+use tokio::sync::broadcast::error::RecvError;
 use tokio::task::JoinHandle;
 
+use crate::managers::configuration_providers::configuration_provider::ConfigurationProvider;
 use crate::managers::data_layer::data_facade::DataFacade;
 use crate::managers::engines::agent_run::agent_run_engine::AgentRunEngine;
 use crate::managers::engines::project_bootstrap::project_bootstrap_engine::ProjectBootstrapEngine;
@@ -20,20 +24,29 @@ use crate::managers::models::agent_run_outcome::AgentRunOutcome;
 use crate::managers::models::implementation_result::ImplementationResult;
 use crate::managers::models::lane_ending::LaneEnding;
 use crate::managers::models::run_summary::RunSummary;
+use crate::managers::models::service_tier::ServiceTier;
 use crate::managers::models::session::Session;
 use crate::managers::models::session_event::SessionEvent;
+use crate::managers::models::session_event_record::SessionEventRecord;
+use crate::managers::models::session_event_replay::SessionEventReplay;
 use crate::managers::models::session_options::SessionOptions;
-use crate::managers::models::session_request::SessionRequest;
 use crate::managers::models::session_summary::SessionSummary;
 use crate::managers::models::started_project::StartedProject;
+use crate::managers::models::transcript_entry::TranscriptEntry;
+use crate::managers::models::transcript_speaker::TranscriptSpeaker;
 use crate::managers::models::user_request::UserRequest;
 use crate::managers::processors::session::session_processor::SessionProcessor;
 use crate::managers::runtime::live_run::LiveRun;
 use crate::managers::runtime::live_session::LiveSession;
+use crate::managers::runtime::session_event_log::SessionEventLog;
 use crate::managers::service_locator::service_locator::ServiceLocator;
 
-// How many events a session's channel holds for a client that is behind; one further behind misses the oldest.
+// How many events a session's channel holds for its relay to number; the relay keeps up, so it never fills.
 const SESSION_EVENT_CAPACITY: usize = 1024;
+// How often sessions left idle are looked for.
+const IDLE_SWEEP_INTERVAL: Duration = Duration::from_secs(60);
+
+type LiveSessions = Arc<Mutex<HashMap<String, LiveSession>>>;
 
 /// Serves sessions: starts them, runs each request in the background, and reports what happens as SessionEvents to
 /// every client that subscribes. It owns its live sessions and their runs, and its close() stops them.
@@ -44,19 +57,94 @@ pub struct OttoBotManager {
     workspace_gateway: Arc<WorkspaceGateway>,
     // Shared with the Domain Facade, which owns it and closes it.
     data_facade: Arc<DataFacade>,
-    live_sessions: Mutex<HashMap<String, LiveSession>>,
+    live_sessions: LiveSessions,
+    // Where apps started by name are kept, each in a folder named after it.
+    workspaces_directory: PathBuf,
+    // Lets go of sessions idle for the configured time; stopped on close.
+    idle_sweeper: JoinHandle<()>,
 }
 
 impl OttoBotManager {
+    /// Created inside a Tokio runtime: it starts the loop that lets go of idle sessions.
     pub fn new(service_locator: &ServiceLocator, data_facade: Arc<DataFacade>) -> ApplicationResult<Self> {
+        let configuration_provider: Arc<ConfigurationProvider> = service_locator.get_configuration_provider()?;
+        let idle_session_minutes: u64 =
+            u64::try_from(configuration_provider.get_agent_settings().idle_session_minutes).unwrap_or(u64::MAX);
+        let live_sessions: LiveSessions = Arc::new(Mutex::new(HashMap::new()));
         Ok(OttoBotManager {
             session_processor: service_locator.get_session_processor()?,
             agent_run_engine: service_locator.get_agent_run_engine()?,
             project_bootstrap_engine: service_locator.get_project_bootstrap_engine()?,
             workspace_gateway: service_locator.get_workspace_gateway()?,
             data_facade,
-            live_sessions: Mutex::new(HashMap::new()),
+            idle_sweeper: tokio::spawn(OttoBotManager::sweep_idle_sessions(
+                live_sessions.clone(),
+                Duration::from_secs(idle_session_minutes.saturating_mul(60)),
+            )),
+            live_sessions,
+            workspaces_directory: configuration_provider
+                .get_storage_settings()
+                .workspaces_directory
+                .clone(),
         })
+    }
+
+    /// Starts a new app of the stack, kept with the others started by name (in a folder named after it), from the
+    /// stack pack's template.
+    pub async fn start_app(&self, stack_name: &str, app_name: &str) -> ApplicationResult<StartedProject> {
+        let kebab_name: String = self.project_bootstrap_engine.to_app_name(app_name)?.kebab;
+        let app_directory: PathBuf = self.workspaces_directory.join(&kebab_name);
+        if self
+            .workspace_gateway
+            .resolve_workspace_directory(&app_directory)
+            .await
+            .is_ok()
+        {
+            return Err(ApplicationBaseException::new(
+                OttoBotManagerException::AppAlreadyExists,
+                format!("An app named {kebab_name} already exists"),
+                ContextualData::new().with("app_name", app_name),
+            ));
+        }
+        self.start_project(stack_name, app_name, &self.workspaces_directory)
+            .await
+    }
+
+    /// Starts a session in the app (named by its kebab-case name, as `start_app` returned it).
+    pub async fn start_app_session(
+        &self,
+        app_name: &str,
+        service_tier: Option<ServiceTier>,
+    ) -> ApplicationResult<String> {
+        let workspace_directory: PathBuf = self.find_app(app_name).await?;
+        self.start_session(&SessionOptions {
+            workspace_directory,
+            service_tier,
+        })
+        .await
+    }
+
+    /// The app's sessions, most recently active first.
+    pub async fn list_app_sessions(&self, app_name: &str) -> ApplicationResult<Vec<SessionSummary>> {
+        let workspace_directory: PathBuf = self.find_app(app_name).await?;
+        self.list_sessions(&workspace_directory).await
+    }
+
+    /// Serves the app's session again, as `resume_session` does. A session of another app, or outside where apps
+    /// are kept, is not found.
+    pub async fn resume_app_session(&self, app_name: &str, session_id: &str) -> ApplicationResult<SessionSummary> {
+        let session: Session = self.get_app_session(app_name, session_id).await?;
+        self.serve_session(session).await
+    }
+
+    /// What the person and the orchestrator said in the app's session, oldest first.
+    pub async fn get_app_session_transcript(
+        &self,
+        app_name: &str,
+        session_id: &str,
+    ) -> ApplicationResult<Vec<TranscriptEntry>> {
+        let session: Session = self.get_app_session(app_name, session_id).await?;
+        self.data_facade.get_transcript(&session.id).await
     }
 
     /// Starts a new app of the stack in `<parent_directory>/<its name>`, from the stack pack's template. A session is
@@ -97,16 +185,55 @@ impl OttoBotManager {
             .get_session(session_id)
             .await?
             .ok_or_else(|| OttoBotManager::to_session_not_found_exception(session_id))?;
+        self.serve_session(session).await
+    }
+
+    // The kept session served, unless it already is, and summarized.
+    async fn serve_session(&self, session: Session) -> ApplicationResult<SessionSummary> {
         // Its workspace must still be there.
         self.workspace_gateway
             .resolve_workspace_directory(&session.workspace_directory)
             .await?;
-        let session_requests: Vec<SessionRequest> = self.data_facade.get_session_requests(&session.id).await?;
+        let transcript_entries: Vec<TranscriptEntry> = self.data_facade.get_transcript(&session.id).await?;
 
         self.lock_live_sessions()
             .entry(session.id.clone())
-            .or_insert_with(|| OttoBotManager::to_live_session(session.clone()));
-        Ok(self.session_processor.summarize_session(session, &session_requests))
+            .or_insert_with(|| OttoBotManager::to_live_session(session.clone()))
+            .last_used = Instant::now();
+        Ok(self.session_processor.summarize_session(session, &transcript_entries))
+    }
+
+    // The app's folder, by the app's kebab-case name: a name in any other form, or with no folder, is no app's.
+    async fn find_app(&self, app_name: &str) -> ApplicationResult<PathBuf> {
+        let to_app_not_found_exception = || -> ApplicationBaseException {
+            ApplicationBaseException::new(
+                OttoBotManagerException::AppNotFound,
+                format!("There is no app named {app_name}"),
+                ContextualData::new().with("app_name", app_name),
+            )
+        };
+        let kebab_name: String = self
+            .project_bootstrap_engine
+            .to_app_name(app_name)
+            .map_err(|_: ApplicationBaseException| to_app_not_found_exception())?
+            .kebab;
+        if kebab_name != app_name {
+            return Err(to_app_not_found_exception());
+        }
+        self.workspace_gateway
+            .resolve_workspace_directory(&self.workspaces_directory.join(&kebab_name))
+            .await
+            .map_err(|_: ApplicationBaseException| to_app_not_found_exception())
+    }
+
+    // The app's session, kept in the session store, in the app's folder.
+    async fn get_app_session(&self, app_name: &str, session_id: &str) -> ApplicationResult<Session> {
+        let workspace_directory: PathBuf = self.find_app(app_name).await?;
+        self.data_facade
+            .get_session(session_id)
+            .await?
+            .filter(|session: &Session| session.workspace_directory == workspace_directory)
+            .ok_or_else(|| OttoBotManager::to_session_not_found_exception(session_id))
     }
 
     /// The sessions kept for the workspace, most recently active first.
@@ -122,8 +249,8 @@ impl OttoBotManager {
             if session.workspace_directory != workspace_directory {
                 continue;
             }
-            let session_requests: Vec<SessionRequest> = self.data_facade.get_session_requests(&session.id).await?;
-            session_summaries.push(self.session_processor.summarize_session(session, &session_requests));
+            let transcript_entries: Vec<TranscriptEntry> = self.data_facade.get_transcript(&session.id).await?;
+            session_summaries.push(self.session_processor.summarize_session(session, &transcript_entries));
         }
         self.session_processor.sort_session_summaries(&mut session_summaries);
         Ok(session_summaries)
@@ -135,18 +262,31 @@ impl OttoBotManager {
         self.session_processor.check_user_request(user_request)?;
 
         let mut live_sessions: MutexGuard<'_, HashMap<String, LiveSession>> = self.lock_live_sessions();
+        let workspace_directory: PathBuf = live_sessions
+            .get(session_id)
+            .ok_or_else(|| OttoBotManager::to_session_not_found_exception(session_id))?
+            .session
+            .workspace_directory
+            .clone();
+        let app_busy: bool = live_sessions.iter().any(|(other_id, other): (&String, &LiveSession)| {
+            other_id != session_id && other.session.workspace_directory == workspace_directory && other.is_running()
+        });
         let live_session: &mut LiveSession = live_sessions
             .get_mut(session_id)
             .ok_or_else(|| OttoBotManager::to_session_not_found_exception(session_id))?;
+        live_session.last_used = Instant::now();
 
-        if live_session
-            .run
-            .as_ref()
-            .is_some_and(|live_run: &LiveRun| !live_run.has_ended())
-        {
+        if live_session.is_running() {
             return Err(ApplicationBaseException::new(
                 OttoBotManagerException::SessionBusy,
                 "The session is still working on its last request",
+                ContextualData::new().with("session_id", session_id),
+            ));
+        }
+        if app_busy {
+            return Err(ApplicationBaseException::new(
+                OttoBotManagerException::AppBusy,
+                "The app is busy with another request; send this once it is done",
                 ContextualData::new().with("session_id", session_id),
             ));
         }
@@ -182,11 +322,22 @@ impl OttoBotManager {
         Ok(())
     }
 
-    pub fn subscribe(&self, session_id: &str) -> ApplicationResult<broadcast::Receiver<SessionEvent>> {
-        self.lock_live_sessions()
-            .get(session_id)
-            .map(|live_session: &LiveSession| live_session.events.subscribe())
-            .ok_or_else(|| OttoBotManager::to_session_not_found_exception(session_id))
+    /// The session's kept events the replay asks for, then every event from now on, each once.
+    pub fn subscribe(
+        &self,
+        session_id: &str,
+        session_event_replay: SessionEventReplay,
+    ) -> ApplicationResult<(Vec<SessionEventRecord>, broadcast::Receiver<SessionEventRecord>)> {
+        let mut live_sessions: MutexGuard<'_, HashMap<String, LiveSession>> = self.lock_live_sessions();
+        let live_session: &mut LiveSession = live_sessions
+            .get_mut(session_id)
+            .ok_or_else(|| OttoBotManager::to_session_not_found_exception(session_id))?;
+        live_session.last_used = Instant::now();
+        Ok(live_session
+            .event_log
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .subscribe(session_event_replay))
     }
 
     /// Stops the session's run, if one is under way; its end is reported as `RunCancelled`. A run that has ended is
@@ -207,10 +358,15 @@ impl OttoBotManager {
 
     /// Stops every run under way, and every compaction, and waits until each one's end is reported.
     pub async fn close(&self) {
+        self.idle_sweeper.abort();
         let watchers: Vec<JoinHandle<()>> = self
             .lock_live_sessions()
             .drain()
-            .flat_map(|(_, live_session): (String, LiveSession)| [live_session.run, live_session.compacting_run])
+            .flat_map(|(_, live_session): (String, LiveSession)| {
+                // A relay ends on its own once the session's runs have; stopped here so nothing outlives the facade.
+                live_session.relay.abort();
+                [live_session.run, live_session.compacting_run]
+            })
             .flatten()
             .map(|live_run: LiveRun| {
                 live_run.abort_handle.abort();
@@ -293,11 +449,12 @@ impl OttoBotManager {
         data_facade: &DataFacade,
     ) -> ApplicationResult<(RunSummary, i64)> {
         data_facade
-            .append_session_request(
+            .append_transcript_entry(
                 &session.id,
-                &SessionRequest {
+                &TranscriptEntry {
+                    speaker: TranscriptSpeaker::Person,
                     text: user_request.text.clone(),
-                    submitted_on,
+                    said_on: submitted_on,
                 },
             )
             .await?;
@@ -367,16 +524,79 @@ impl OttoBotManager {
         }
     }
 
-    // A session served from now on, with a channel for its events and no run yet.
+    // A session served from now on, with a channel for its runs' events, relayed into its event log, and no run yet.
+    // Its events are numbered from the time it is served (in thousandths of a millisecond), above any number an
+    // earlier process gave them.
     fn to_live_session(session: Session) -> LiveSession {
-        let (events, _): (broadcast::Sender<SessionEvent>, broadcast::Receiver<SessionEvent>) =
+        let (events, relayed): (broadcast::Sender<SessionEvent>, broadcast::Receiver<SessionEvent>) =
             broadcast::channel(SESSION_EVENT_CAPACITY);
+        let first_event_id: u64 = u64::try_from(Utc::now().timestamp_millis())
+            .unwrap_or(0)
+            .saturating_mul(1000);
+        let event_log: Arc<Mutex<SessionEventLog>> = Arc::new(Mutex::new(SessionEventLog::new(first_event_id)));
         LiveSession {
+            relay: tokio::spawn(OttoBotManager::relay(relayed, event_log.clone(), session.id.clone())),
             session,
             events,
+            event_log,
             run: None,
             compacting_run: None,
             work_lock: Arc::new(tokio::sync::Mutex::new(())),
+            last_used: Instant::now(),
+        }
+    }
+
+    // Records each event the session's runs send in its event log, until the session and its runs are gone.
+    async fn relay(
+        mut relayed: broadcast::Receiver<SessionEvent>,
+        event_log: Arc<Mutex<SessionEventLog>>,
+        session_id: String,
+    ) {
+        loop {
+            match relayed.recv().await {
+                Ok(session_event) => event_log
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .record(session_event),
+                Err(RecvError::Lagged(missed_count)) => ApplicationLogger::warning(
+                    "A session's events came faster than they could be recorded; some were lost",
+                    ContextualData::new()
+                        .with("session_id", session_id.as_str())
+                        .with("missed_count", i64::try_from(missed_count).unwrap_or(i64::MAX)),
+                    None,
+                ),
+                Err(RecvError::Closed) => return,
+            }
+        }
+    }
+
+    // Every minute, lets go of the sessions left idle for `idle_session_timeout`: nothing running, no client following.
+    // A session let go is resumed from the session store when it is next used.
+    async fn sweep_idle_sessions(live_sessions: LiveSessions, idle_session_timeout: Duration) {
+        let mut interval: tokio::time::Interval = tokio::time::interval(IDLE_SWEEP_INTERVAL);
+        loop {
+            interval.tick().await;
+            let let_go: Vec<LiveSession> = {
+                let mut live_sessions: MutexGuard<'_, HashMap<String, LiveSession>> =
+                    live_sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                let idle_ids: Vec<String> = live_sessions
+                    .iter()
+                    .filter(|(_, live_session): &(&String, &LiveSession)| {
+                        live_session.is_idle() && live_session.last_used.elapsed() >= idle_session_timeout
+                    })
+                    .map(|(session_id, _): (&String, &LiveSession)| session_id.clone())
+                    .collect();
+                idle_ids
+                    .iter()
+                    .filter_map(|session_id: &String| live_sessions.remove(session_id))
+                    .collect()
+            };
+            for live_session in let_go {
+                ApplicationLogger::info(
+                    "An idle session was let go",
+                    ContextualData::new().with("session_id", live_session.session.id.as_str()),
+                );
+            }
         }
     }
 

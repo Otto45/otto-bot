@@ -1,26 +1,35 @@
 use chrono::DateTime;
 
-use crate::managers::data_layer::managers::gateways::session_store::resource_models::session_request_document::SessionRequestDocument;
+use crate::managers::data_layer::managers::gateways::session_store::resource_models::transcript_entry_document::TranscriptEntryDocument;
 use crate::managers::exceptions::application_base_exception::{ApplicationBaseException, ApplicationResult};
 use crate::managers::exceptions::contextual_data::ContextualData;
 use crate::managers::exceptions::session_store_gateway_exception::SessionStoreGatewayException;
+use crate::managers::models::transcript_speaker::TranscriptSpeaker;
 
-pub struct ValidatorSessionRequestDocument;
+pub struct ValidatorTranscriptEntryDocument;
 
-impl ValidatorSessionRequestDocument {
-    pub fn validate_session_request_document(
-        document: &SessionRequestDocument,
+impl ValidatorTranscriptEntryDocument {
+    pub fn validate_transcript_entry_document(
+        document: &TranscriptEntryDocument,
         session_id: &str,
         line_number: i64,
     ) -> ApplicationResult<()> {
-        let checks: [(&str, bool); 2] = [
+        let checks: [(&str, bool); 3] = [
+            (
+                "speaker (person or assistant)",
+                document
+                    .speaker
+                    .as_deref()
+                    .and_then(TranscriptSpeaker::from_name)
+                    .is_some(),
+            ),
             ("text", document.text.is_some()),
             (
-                "submitted_on (an RFC 3339 time)",
+                "said_on (an RFC 3339 time)",
                 document
-                    .submitted_on
+                    .said_on
                     .as_deref()
-                    .is_some_and(|submitted_on: &str| DateTime::parse_from_rfc3339(submitted_on).is_ok()),
+                    .is_some_and(|said_on: &str| DateTime::parse_from_rfc3339(said_on).is_ok()),
             ),
         ];
         let errors: Vec<String> = checks
@@ -30,10 +39,10 @@ impl ValidatorSessionRequestDocument {
             .collect();
         if !errors.is_empty() {
             return Err(ApplicationBaseException::new(
-                SessionStoreGatewayException::InvalidSessionRequestDocument,
-                "A request in the session store is invalid",
+                SessionStoreGatewayException::InvalidTranscriptEntryDocument,
+                "A transcript entry in the session store is invalid",
                 ContextualData::new()
-                    .with("resource_name", "session_request")
+                    .with("resource_name", "transcript_entry")
                     .with("session_id", session_id)
                     .with("line_number", line_number)
                     .with("errors", errors.join("; ")),

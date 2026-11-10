@@ -30,6 +30,10 @@ impl ConfigurationSourceProviderProtocol for ConfigurationSourceProviderEnvironm
                 "OTTO_BOT_ORCHESTRATOR_COMPACT_TOKENS",
                 "400000",
             )?),
+            idle_session_minutes: Some(ConfigurationSourceProviderEnvironment::get_integer(
+                "OTTO_BOT_IDLE_SESSION_MINUTES",
+                "30",
+            )?),
             // gpt-6.1-sol takes up to 922,000 input tokens: this leaves room for one more turn of large reads.
             lane_compact_tokens: Some(ConfigurationSourceProviderEnvironment::get_integer(
                 "OTTO_BOT_LANE_COMPACT_TOKENS",
@@ -51,6 +55,7 @@ impl ConfigurationSourceProviderProtocol for ConfigurationSourceProviderEnvironm
                 "OTTO_BOT_STACK_PACKS_DIRECTORY",
                 DEFAULT_STACK_PACKS_DIRECTORY,
             )),
+            workspaces_directory: std::env::var("OTTO_BOT_WORKSPACES_DIRECTORY").ok(),
         })
     }
 

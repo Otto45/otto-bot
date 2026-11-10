@@ -33,7 +33,7 @@ The architecture is what makes these reachable. Every file's role follows from i
 | Target stacks | Rust, Python, TypeScript |
 | Model | `gpt-6.1-sol` for every role (one model, one shared prompt cache) |
 | Service tier | `--service-tier standard\|fast\|ultrafast`, default `standard` (sent as `"default"`) |
-| Clients | several, all over one domain facade; an interactive CLI first |
+| Clients | several, all over one domain facade: the interactive CLI (`otto`), and the HTTP API (`otto-http`) for the software factory platform |
 | Data retention | `store=false`; the harness keeps every conversation itself |
 | Session store | append-only JSON Lines files, one folder per session under `~/.otto-bot/sessions/` (no database, no migrations) |
 | Approvals | none: runs are unattended, and will run in their own sandbox VM |
@@ -277,7 +277,19 @@ stack_packs/rust/, stack_packs/python/, stack_packs/typescript/
   `resume_session(id)` serves a kept session again: the orchestrator's lane, the kept project map (so the cached
   prefix carries over) and the brief numbering go on where they were; a WebSocket lane opens a new connection and
   sends the whole conversation once. `list_sessions(workspace)` lists a workspace's sessions, most recently active
-  first, from `requests.jsonl` (each request and when it came). The CLI: `otto sessions`, `otto --session <id>`.
+  first, from `transcript.jsonl` (what the person and the orchestrator said, and when). The CLI: `otto sessions`,
+  `otto --session <id>`.
+- **The HTTP API** (`otto-http`) is the platform's client. Apps are addressed by name, never by path: the facade
+  keeps them under `OTTO_BOT_WORKSPACES_DIRECTORY`, one folder per kebab-case name, and a session of another app is
+  not found. Every request but `/health` bears a shared bearer token. Each session route resumes its session first,
+  so restarts and idle eviction (`OTTO_BOT_IDLE_SESSION_MINUTES`) are invisible to the platform.
+- **Events are numbered and replayable.** A live session's runs report on a channel that a relay task numbers and
+  records in its event log, which keeps the current run's events and fans them out to clients. A subscriber says
+  what to replay (nothing, the run from its start, or what came after an id), so the HTTP API's server-sent events
+  survive a dropped connection (`Last-Event-ID`) and a stream opened just after a message misses nothing. The
+  orchestrator's replies are the events meant for the person (`to_person`); the platform shows those, and an operator
+  view can show the rest.
+- **One run per app**: two sessions of one workspace never run at once, since both would change the same files.
 - **Session options** (such as the service tier) are passed to `start_session` and override configured defaults,
   which only the configuration provider reads from the environment.
 
@@ -291,7 +303,8 @@ stack_packs/rust/, stack_packs/python/, stack_packs/typescript/
    aside: the roles are now the orchestrator, one implementor and the reviewer, and the implementor builds the plan
    with no skeleton step); (6) review.
 5. The Python pack, then the TypeScript pack, their templates written from the Rust template; starting new projects.
-6. Resume, compaction, a second client.
+6. Resume (`otto --session`, `otto sessions`); compaction (`/responses/compact` at boundaries); the HTTP API
+   (`otto-http`, server-sent events, apps by name).
 
 A fixed set of feature tasks on template apps is run against every change to the harness, recording wall time,
 cost, cache hit rate, lint violations and whether the checks pass, so speed and quality trade-offs are measured.

@@ -14,4 +14,7 @@ pub struct AgentSettings {
     /// How many input tokens any lane's last request may have had before its conversation is compacted between turns,
     /// so a long task doesn't reach the model's limit.
     pub lane_compact_tokens: i64,
+    /// How long a session with no run and no client following it is kept in memory; it is resumed from the session
+    /// store when it is next used.
+    pub idle_session_minutes: i64,
 }

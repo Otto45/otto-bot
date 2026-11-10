@@ -8,9 +8,9 @@ use crate::managers::models::implementation_brief::ImplementationBrief;
 use crate::managers::models::project_map_role::ProjectMapRole;
 use crate::managers::models::session::Session;
 use crate::managers::models::session_project_maps::SessionProjectMaps;
-use crate::managers::models::session_request::SessionRequest;
 use crate::managers::models::stack_pack::StackPack;
 use crate::managers::models::template_file::TemplateFile;
+use crate::managers::models::transcript_entry::TranscriptEntry;
 use crate::managers::models::usage_record::UsageRecord;
 use crate::managers::service_locator::service_locator::ServiceLocator;
 
@@ -39,18 +39,18 @@ impl DataManager {
         self.session_store_gateway.get_sessions().await
     }
 
-    pub async fn append_session_request(
+    pub async fn append_transcript_entry(
         &self,
         session_id: &str,
-        session_request: &SessionRequest,
+        transcript_entry: &TranscriptEntry,
     ) -> ApplicationResult<()> {
         self.session_store_gateway
-            .append_session_request(session_id, session_request)
+            .append_transcript_entry(session_id, transcript_entry)
             .await
     }
 
-    pub async fn get_session_requests(&self, session_id: &str) -> ApplicationResult<Vec<SessionRequest>> {
-        self.session_store_gateway.get_session_requests(session_id).await
+    pub async fn get_transcript(&self, session_id: &str) -> ApplicationResult<Vec<TranscriptEntry>> {
+        self.session_store_gateway.get_transcript(session_id).await
     }
 
     pub async fn get_conversation_items(

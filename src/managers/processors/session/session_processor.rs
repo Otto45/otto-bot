@@ -9,8 +9,9 @@ use crate::managers::exceptions::exception_kind::ExceptionKind;
 use crate::managers::models::service_tier::ServiceTier;
 use crate::managers::models::session::Session;
 use crate::managers::models::session_options::SessionOptions;
-use crate::managers::models::session_request::SessionRequest;
 use crate::managers::models::session_summary::SessionSummary;
+use crate::managers::models::transcript_entry::TranscriptEntry;
+use crate::managers::models::transcript_speaker::TranscriptSpeaker;
 use crate::managers::models::user_request::UserRequest;
 
 // Decides what a session is from what its client asked for, and whether a request can be run.
@@ -39,17 +40,22 @@ impl SessionProcessor {
         }
     }
 
-    /// The session as a client lists it, from the requests it was given (oldest first).
-    pub fn summarize_session(&self, session: Session, session_requests: &[SessionRequest]) -> SessionSummary {
+    /// The session as a client lists it, from its transcript (oldest first): its first request, how many requests it
+    /// was given, and when anything was last said.
+    pub fn summarize_session(&self, session: Session, transcript_entries: &[TranscriptEntry]) -> SessionSummary {
+        let requests: Vec<&TranscriptEntry> = transcript_entries
+            .iter()
+            .filter(|transcript_entry: &&TranscriptEntry| transcript_entry.speaker == TranscriptSpeaker::Person)
+            .collect();
         SessionSummary {
-            first_request: session_requests
+            first_request: requests
                 .first()
-                .map(|session_request: &SessionRequest| session_request.text.clone()),
-            request_count: session_requests.len(),
-            last_active_on: session_requests
+                .map(|transcript_entry: &&TranscriptEntry| transcript_entry.text.clone()),
+            request_count: requests.len(),
+            last_active_on: transcript_entries
                 .last()
-                .map_or(session.started_on, |session_request: &SessionRequest| {
-                    session_request.submitted_on
+                .map_or(session.started_on, |transcript_entry: &TranscriptEntry| {
+                    transcript_entry.said_on
                 }),
             session,
         }

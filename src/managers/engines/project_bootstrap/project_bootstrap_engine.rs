@@ -41,6 +41,12 @@ impl ProjectBootstrapEngine {
         }
     }
 
+    /// The app's name in each of its forms (its folder is named after its kebab-case form); fails for a name that
+    /// can't be one.
+    pub fn to_app_name(&self, app_name: &str) -> ApplicationResult<AppName> {
+        self.app_name_processor.to_app_name(app_name)
+    }
+
     /// Makes `<parent_directory>/<the app's name in kebab case>` and copies the stack's template into it, renamed. The
     /// folder must be new or empty, so nothing of someone's is overwritten.
     pub async fn start_project(

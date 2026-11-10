@@ -12,6 +12,14 @@ default-run = "otto"
 name = "otto"
 path = "src/bin/otto.rs"
 
+[[bin]]
+name = "otto-http"
+path = "src/bin/otto-http.rs"
+
+[[bin]]
+name = "export-openapi"
+path = "src/bin/export-openapi.rs"
+
 [dependencies]
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
@@ -32,7 +40,12 @@ tree-sitter-python = "0.25.0"
 tree-sitter-typescript = "0.23.2"
 globset = "0.4.21"
 tokio-tungstenite = { version = "0.28", features = ["rustls-tls-native-roots"] }
-futures-util = { version = "0.3", default-features = false, features = ["sink"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+axum = { version = "0.8.9", features = ["macros"] }
+utoipa = { version = "6.0.0", features = ["chrono"] }
+utoipa-axum = "0.3.0"
+tokio-stream = { version = "0.1.19", features = ["sync"] }
+subtle = "2.6.1"
 similar = "2"
 
 [lints.rust]

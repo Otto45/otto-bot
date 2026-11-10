@@ -5,10 +5,13 @@ use tokio::sync::broadcast;
 
 use crate::managers::data_layer::data_facade::DataFacade;
 use crate::managers::exceptions::application_base_exception::ApplicationResult;
-use crate::managers::models::session_event::SessionEvent;
+use crate::managers::models::service_tier::ServiceTier;
+use crate::managers::models::session_event_record::SessionEventRecord;
+use crate::managers::models::session_event_replay::SessionEventReplay;
 use crate::managers::models::session_options::SessionOptions;
 use crate::managers::models::session_summary::SessionSummary;
 use crate::managers::models::started_project::StartedProject;
+use crate::managers::models::transcript_entry::TranscriptEntry;
 use crate::managers::models::user_request::UserRequest;
 use crate::managers::otto_bot_manager::OttoBotManager;
 use crate::managers::service_locator::service_locator::ServiceLocator;
@@ -72,9 +75,52 @@ impl OttoBotFacade {
         self.otto_bot_manager.list_sessions(workspace_directory).await
     }
 
-    /// The session's events from now on. Subscribe before submitting, so no event of the run is missed.
-    pub fn subscribe(&self, session_id: &str) -> ApplicationResult<broadcast::Receiver<SessionEvent>> {
-        self.otto_bot_manager.subscribe(session_id)
+    /// The session's kept events the replay asks for (none, the current run's from its start, or those after the one
+    /// a client saw last), then every event from now on, each once and numbered.
+    pub fn subscribe(
+        &self,
+        session_id: &str,
+        session_event_replay: SessionEventReplay,
+    ) -> ApplicationResult<(Vec<SessionEventRecord>, broadcast::Receiver<SessionEventRecord>)> {
+        self.otto_bot_manager.subscribe(session_id, session_event_replay)
+    }
+
+    /// Starts a new app of the stack (e.g. "python"), kept with the other apps started by name
+    /// (`OTTO_BOT_WORKSPACES_DIRECTORY`), from the stack pack's template. Clients that address apps by name (the HTTP
+    /// API) start them here, and never name a path.
+    pub async fn start_app(&self, stack_name: &str, app_name: &str) -> ApplicationResult<StartedProject> {
+        self.otto_bot_manager.start_app(stack_name, app_name).await
+    }
+
+    /// Starts a session in the app, named by its kebab-case name (as `start_app` returned it), and returns its id.
+    pub async fn start_app_session(
+        &self,
+        app_name: &str,
+        service_tier: Option<ServiceTier>,
+    ) -> ApplicationResult<String> {
+        self.otto_bot_manager.start_app_session(app_name, service_tier).await
+    }
+
+    /// The app's sessions, most recently active first.
+    pub async fn list_app_sessions(&self, app_name: &str) -> ApplicationResult<Vec<SessionSummary>> {
+        self.otto_bot_manager.list_app_sessions(app_name).await
+    }
+
+    /// Serves the app's session (resuming it if it isn't served yet) and returns it as a client lists it. A session
+    /// of another app, or of a workspace that isn't an app's, is not found.
+    pub async fn resume_app_session(&self, app_name: &str, session_id: &str) -> ApplicationResult<SessionSummary> {
+        self.otto_bot_manager.resume_app_session(app_name, session_id).await
+    }
+
+    /// What the person and the orchestrator said in the app's session, oldest first, in plain words.
+    pub async fn get_app_session_transcript(
+        &self,
+        app_name: &str,
+        session_id: &str,
+    ) -> ApplicationResult<Vec<TranscriptEntry>> {
+        self.otto_bot_manager
+            .get_app_session_transcript(app_name, session_id)
+            .await
     }
 
     /// Starts running the request in the background. Fails if the session is still running its last one.

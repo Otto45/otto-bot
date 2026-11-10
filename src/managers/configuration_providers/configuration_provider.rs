@@ -61,6 +61,7 @@ impl ConfigurationProvider {
             check_timeout_seconds: config.check_timeout_seconds.expect("validated by ValidatorAgent"),
             orchestrator_compact_tokens: config.orchestrator_compact_tokens.expect("validated by ValidatorAgent"),
             lane_compact_tokens: config.lane_compact_tokens.expect("validated by ValidatorAgent"),
+            idle_session_minutes: config.idle_session_minutes.expect("validated by ValidatorAgent"),
         })
     }
 
@@ -90,8 +91,11 @@ impl ConfigurationProvider {
         ValidatorStorage::validate_storage_config(&config)?;
         let home_directory: PathBuf = PathBuf::from(config.home_directory.expect("validated by ValidatorStorage"));
         Ok(StorageSettings {
-            sessions_directory: home_directory.join("sessions"),
             stack_packs_directory: PathBuf::from(config.stack_packs_directory.expect("validated by ValidatorStorage")),
+            workspaces_directory: config
+                .workspaces_directory
+                .map_or_else(|| home_directory.join("apps"), PathBuf::from),
+            sessions_directory: home_directory.join("sessions"),
         })
     }
 }

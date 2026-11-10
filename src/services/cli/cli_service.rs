@@ -6,6 +6,8 @@ use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::managers::models::session_event::SessionEvent;
+use crate::managers::models::session_event_record::SessionEventRecord;
+use crate::managers::models::session_event_replay::SessionEventReplay;
 use crate::managers::models::session_summary::SessionSummary;
 use crate::managers::models::started_project::StartedProject;
 use crate::managers::models::user_request::UserRequest;
@@ -55,7 +57,9 @@ impl CliService {
             return Ok(());
         };
         // Subscribed before anything is submitted, so no event is missed.
-        let mut events: broadcast::Receiver<SessionEvent> = otto_bot_facade.subscribe(&session_id)?;
+        // The CLI sends its requests itself, so it follows the events from now on.
+        let (_, mut events): (Vec<SessionEventRecord>, broadcast::Receiver<SessionEventRecord>) =
+            otto_bot_facade.subscribe(&session_id, SessionEventReplay::FromNow)?;
         let mut lines: Lines<BufReader<Stdin>> = BufReader::new(tokio::io::stdin()).lines();
 
         CliService::write(&mut stdout, GREETING).await?;
@@ -146,13 +150,14 @@ impl CliService {
     async fn follow_run(
         otto_bot_facade: &OttoBotFacade,
         session_id: &str,
-        events: &mut broadcast::Receiver<SessionEvent>,
+        events: &mut broadcast::Receiver<SessionEventRecord>,
         stdout: &mut Stdout,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
         loop {
             tokio::select! {
                 received = events.recv() => match received {
-                    Ok(session_event) => {
+                    Ok(session_event_record) => {
+                        let session_event: SessionEvent = session_event_record.event;
                         if let Some(output) = SessionEventMapper::to_output(&session_event) {
                             CliService::write(stdout, &output).await?;
                         }

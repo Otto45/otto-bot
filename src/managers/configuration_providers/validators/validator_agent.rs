@@ -25,6 +25,9 @@ impl ValidatorAgent {
         if config.lane_compact_tokens.is_none() {
             missing.push("lane_compact_tokens is missing".to_string());
         }
+        if config.idle_session_minutes.is_none() {
+            missing.push("idle_session_minutes is missing".to_string());
+        }
         if !missing.is_empty() {
             return Err(ValidatorAgent::to_exception(
                 ConfigurationProviderException::MissingConfiguration,
@@ -46,6 +49,7 @@ impl ValidatorAgent {
         for (setting_name, tokens) in [
             ("orchestrator_compact_tokens", config.orchestrator_compact_tokens),
             ("lane_compact_tokens", config.lane_compact_tokens),
+            ("idle_session_minutes", config.idle_session_minutes),
         ] {
             if let Some(tokens) = tokens
                 && tokens <= 0

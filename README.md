@@ -43,9 +43,48 @@ otto reads and writes nothing outside the workspace, and never reads `.env` file
 `OPENAI_API_KEY` in their environment.
 
 Everything otto keeps is under `~/.otto-bot/` (`OTTO_BOT_HOME`): `logs/otto.log` (one JSON object per line) and
-`sessions/<id>/`, with the session (`session.json`), the requests it was given (`requests.jsonl`), each agent's conversation (`conversation_items/<lane>.jsonl`, the session's own agent being
+`sessions/<id>/`, with the session (`session.json`), what the person and otto said (`transcript.jsonl`), each agent's conversation (`conversation_items/<lane>.jsonl`, the session's own agent being
 `orchestrator`), token usage (`usage_records.jsonl`) and accepted briefs (`briefs.jsonl`); each brief's implementor and reviewer are
 `implementor_<n>` and `reviewer_<n>`.
+
+## The HTTP API
+
+`otto-http` is otto's second client, for the software factory platform: it starts apps by name, holds sessions in
+them, and streams what happens as server-sent events. Apps are kept under `OTTO_BOT_WORKSPACES_DIRECTORY` (default
+`~/.otto-bot/apps/`), each in a folder named after it; a client names an app, never a path.
+
+```sh
+export OPENAI_API_KEY=... OTTO_BOT_HTTP_API_TOKEN=...   # every request but /health bears it: Authorization: Bearer ...
+cargo run --bin otto-http                               # serves on http://127.0.0.1:8650 (HOST and PORT override it)
+cargo run --bin export-openapi                          # rewrites openapi.json (--check: fails if it is out of date)
+```
+
+The contract is [openapi.json](openapi.json).
+
+| Method | Path | What it does |
+| --- | --- | --- |
+| `POST` | `/apps` (body: `name`, `stack`) | Starts an app from its stack's template (201); its kebab-case name addresses it from then on |
+| `GET` | `/apps/{app_name}/sessions` | Lists the app's sessions, most recently active first |
+| `POST` | `/apps/{app_name}/sessions` (body: `service_tier`, optional) | Starts a session (201, with its id) |
+| `GET` | `/apps/{app_name}/sessions/{session_id}` | The session: when it started and was last active, its first request |
+| `POST` | `/apps/{app_name}/sessions/{session_id}/messages` (body: `text`) | Sends the person's message (202); 409 while the session, or another session of the app, is working |
+| `GET` | `/apps/{app_name}/sessions/{session_id}/messages` | What the person and otto said, oldest first, in plain words |
+| `POST` | `/apps/{app_name}/sessions/{session_id}/cancel` | Stops the run under way (204) |
+| `GET` | `/apps/{app_name}/sessions/{session_id}/events` | The session's events, as server-sent events, for as long as the client stays |
+| `GET` | `/health` | Whether the service is up (no token) |
+
+- **Events** are JSON with a `type` (`run_started`, `assistant_replied`, `tool_used`, `brief_accepted`,
+  `brief_implemented`, `lane_compacted`, `run_completed`, `run_failed`, `run_cancelled`), each with a numbered `id`.
+  What is meant for the person is an `assistant_replied` with `to_person: true`: plain words, for someone who isn't
+  technical. A stream opened without an id first replays the current run from its start (so one opened just after a
+  message was sent misses nothing); one opened with `?after=<id>` or `Last-Event-ID` (which an `EventSource` sends when
+  it reconnects) replays what came after that event.
+- **Sessions resume on their own**: after a restart, or once one was let go after `OTTO_BOT_IDLE_SESSION_MINUTES`
+  with no run and no client following it, the next request to it serves it again, where it was left.
+- **One run per app**: a message for an app another of its sessions is working for is refused (409), since both runs
+  would change the same files.
+- Errors are answered as `{"error": "..."}`: a 4xx says what to fix; a 5xx (and a failed run's event) says only that
+  the request failed, and the details are in the log, which goes to stderr, one JSON object per line.
 
 ## Benchmarks
 
@@ -61,6 +100,7 @@ The tasks are in `benchmarks/tasks/`; results go to `target/benchmarks/`. The la
 ```sh
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
+cargo run --bin export-openapi -- --check
 ```
 
 ## Configuration
@@ -81,6 +121,10 @@ cargo clippy --all-targets -- -D warnings
 | `OTTO_BOT_ORCHESTRATOR_COMPACT_TOKENS` | `400000` (once a run ends, the session's conversation is compacted if its last request was this long) |
 | `OTTO_BOT_LANE_COMPACT_TOKENS` | `600000` (any agent's conversation is compacted between turns once a request is this long) |
 | `OTTO_BOT_CHECK_TIMEOUT_SECONDS` | `600` (per check) |
+| `OTTO_BOT_WORKSPACES_DIRECTORY` | `~/.otto-bot/apps` (where the HTTP API keeps the apps it starts) |
+| `OTTO_BOT_IDLE_SESSION_MINUTES` | `30` (a session with no run and no client following it is let go after this long, and resumed when next used) |
+| `OTTO_BOT_HTTP_API_TOKEN` | none: `otto-http` won't start without it |
+| `HOST`, `PORT` (`otto-http` only) | `127.0.0.1`, `8650` |
 
 ## Where things are
 
@@ -88,4 +132,5 @@ cargo clippy --all-targets -- -D warnings
 - `src/managers/`: the domain: sessions, the agent's runs (`engines/agent_run/`), the gateways to the OpenAI API, the
   workspace and its commands, and the data layer (sessions and stack packs, as files).
 - `src/services/cli/`: the interactive CLI, a thin layer over the facade.
+- `src/services/http/`: the HTTP API (`otto-http`), another thin layer over the same facade.
 - `stack_packs/rust/`: what otto-bot knows about building Rust apps: the template app and its rules.

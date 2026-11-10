@@ -70,6 +70,9 @@ docs/DESIGN.md                  otto-bot's design
 - managers never call other managers; anything they share goes through the `DataFacade`, a processor or an engine
 - what a manager owns while the app runs (otto-bot's live sessions, their runs and event channels) lives in `managers/runtime/`, one type per file; it holds tasks and channels, so it is not a domain model, only its manager uses it, and its manager's `close()` releases it
   - a run is a Tokio task; the error of each run is logged where the run catches it, and its end is reported as an event; a run that is cancelled or panics has its end reported by a watcher task (`OttoBotManager::watch`)
+  - a session's runs send its events on a channel the session's relay task reads: it numbers each one and records it in the session's `SessionEventLog`, which keeps the current run's events (a run's start forgets the last run's) and sends each to every client; a client subscribing gets the kept events its `SessionEventReplay` asks for, then the ones to come, each once, because both happen under the log's lock
+  - one run per workspace: a request for a session whose workspace another live session is running a request in is refused (`AppBusy`), since both runs would change the same files
+  - a live session with no run, no compaction and no client following it is let go once idle for `OTTO_BOT_IDLE_SESSION_MINUTES` (`OttoBotManager::sweep_idle_sessions`, every minute); a client's next use resumes it from the session store
 - stateless helpers used by more than one component live in `managers/common/` (e.g. `common/validators/validator_string.rs`, `common/formatters/validation_error_formatter.rs`)
   - associated functions only, no I/O; never registered in the `ServiceLocator`
   - never copy a common helper into a component as a private function
@@ -109,7 +112,7 @@ docs/DESIGN.md                  otto-bot's design
 - unexpected exceptions are panics, and every entry point installs a panic hook (see Logger)
 
 ## Configuration
-- configuration is read from the environment only by `ConfigurationSourceProviderEnvironment`, inside its methods, never in a `static`, except where a service listens, which its entry point reads (see Service)
+- configuration is read from the environment only by `ConfigurationSourceProviderEnvironment`, inside its methods, never in a `static`, except where a service listens and the token it requires (`OTTO_BOT_HTTP_API_TOKEN`), which its entry point reads (see Service)
 - the `ConfigurationProvider` requires its `ConfigurationSourceProviderProtocol`; only the `ServiceLocatorSeams` (`create_configuration_source_provider`) knows the default source
 - each setting group flows config model -> validator -> settings: the `ConfigurationProvider` loads and validates every group when it is created, then maps each with `expect("validated by <Validator>")`
 
@@ -164,7 +167,7 @@ docs/DESIGN.md                  otto-bot's design
 - changed for otto-bot: its data is files, not databases, so it has no migrations and no relational gateway; the Postgres rules below apply only if one is ever added
   ```
   managers/data_layer/managers/gateways/
-      session_store/       a folder per session, named after its id: session.json, and append-only requests.jsonl, conversation_items/<lane_name>.jsonl (one per lane, read from its last compaction on), usage_records.jsonl, project_maps.jsonl and briefs.jsonl
+      session_store/       a folder per session, named after its id: session.json, and append-only transcript.jsonl (what the person and the orchestrator said), conversation_items/<lane_name>.jsonl (one per lane, read from its last compaction on), usage_records.jsonl, project_maps.jsonl and briefs.jsonl
       stack_pack_store/    the stack packs, read-only: each folder's pack.toml
   ```
   - a session is resumed (`OttoBotFacade::resume_session`) from what its files hold, by any client, in this process or a later one: nothing a run needs is kept only in memory; a session id from a client names a folder only if it could be one the store made (lowercase letters and digits), so it never leads out of the sessions folder
@@ -224,7 +227,25 @@ docs/DESIGN.md                  otto-bot's design
   - it decides, for every exception kind, whether the client can put it right (e.g. `CliErrorMapper::is_client_error`, naming every family with no `_` arm); a client error is logged as a warning and told as its own message, anything else is logged as an error with its stack
     - changed for otto-bot: the CLI's person is its operator, so it also shows a server error's own message (which never holds a secret: see Exceptions) and says the details are in the log; a service that answers anyone else (e.g. an HTTP API) answers generically, so tables, queries and upstream details never leak
   - it creates the domain facade once when it starts and closes it when it stops (`CliService::run`), on every path; nothing builds one per request
-  - a client subscribes to a session's events before it submits a request, and follows them until the run ends (`SessionEvent::ends_run`); runs never wait on a person, so no service asks one anything mid-run
+  - a client follows a session's events, numbered (`SessionEventRecord`), from what it asks the facade to replay: the CLI subscribes before it submits (`SessionEventReplay::FromNow`); the HTTP API's stream starts from the current run's start, or after the last event a reconnecting client saw; it follows them until the run ends (`SessionEvent::ends_run`); runs never wait on a person, so no service asks one anything mid-run
   - the CLI logs to a file (`$OTTO_BOT_HOME/logs/otto.log`, by default `~/.otto-bot/logs/otto.log`), because its terminal is the conversation; its entry point opens the log before anything else runs, the way a service's entry point reads where it listens
   - the CLI reads nothing from the environment itself: its arguments override what configuration holds (e.g. `--service-tier` over `OTTO_BOT_SERVICE_TIER`), through the options it passes the facade
-  - an HTTP service, when there is one, follows the Rust pack's HTTP rules (`stack_packs/rust/template/AGENTS.md`, Service): axum, utoipa and `openapi.json`, its `JsonBody` and `PathParameters` extractors, `HOST` and `PORT`, graceful shutdown on Ctrl-C and SIGTERM
+  - the HTTP API (`services/http/`, binary `otto-http`) follows the Rust pack's HTTP rules (`stack_packs/rust/template/AGENTS.md`, Service): axum, utoipa and `openapi.json` at the repository's root (`cargo run --bin export-openapi`, and `-- --check`), its `JsonBody`, `PathParameters` and `QueryParameters` extractors, `HOST` and `PORT`, graceful shutdown on Ctrl-C and SIGTERM
+    ```
+    services/http/
+        main.rs                 entry point: logger, tracing bridge, panic hook, HOST, PORT and OTTO_BOT_HTTP_API_TOKEN, serve
+        http_service.rs         HttpService: creates the facade, serves until shutdown, closes it; router and contract
+        http_service_state.rs   the router's state: the facade, the token, whether the service is shutting down
+        routers/                apps, sessions (each route resumes its session first), and /health
+        wire_models/            serde + utoipa request and response models; SessionEventResponse is the events' union, tagged by `type`
+        extractors/             JsonBody, PathParameters and QueryParameters, answering with an ErrorResponse
+        mappers/                wire models <-> domain models, events -> server-sent events, exceptions -> HTTP errors (HttpErrorMapper)
+        exception_handlers/     ApplicationExceptionResponse
+        middleware/             BearerTokenMiddleware (on every route but /health), UnexpectedErrorMiddleware
+        logging_bridges/        TracingLoggingBridge
+        export_openapi.rs       writes the contract to openapi.json
+    ```
+    - it addresses apps by name, never by path: the facade's app operations (`start_app`, `start_app_session`, `list_app_sessions`, `resume_app_session`, `get_app_session_transcript`) keep apps under `OTTO_BOT_WORKSPACES_DIRECTORY`, each in a folder named after its kebab-case name, and a session that isn't the named app's is not found; no response holds a path
+    - every request but `/health` bears `OTTO_BOT_HTTP_API_TOKEN` (compared in constant time), which the entry point reads with `HOST` and `PORT`; without it the service doesn't start
+    - a session's events stream as server-sent events (`id`: the event's number; `data`: its `SessionEventResponse`), with keep-alives; a client too far behind is cut off and reconnects with `Last-Event-ID`; shutting down ends every stream (`HttpServiceState::shutting_down`), so graceful shutdown isn't held open
+    - a failed run's event says only that it failed: its message, like a 5xx's, can describe internals

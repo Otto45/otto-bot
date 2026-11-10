@@ -6,4 +6,5 @@ pub struct AgentConfig {
     pub check_timeout_seconds: Option<f64>,
     pub orchestrator_compact_tokens: Option<i64>,
     pub lane_compact_tokens: Option<i64>,
+    pub idle_session_minutes: Option<i64>,
 }
