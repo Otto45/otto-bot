@@ -1,20 +1,24 @@
-/// A lock the lock store holds for a run: on an app, while the run changes its files, or on a session, while its run
-/// works on its conversation (compaction included). It is released when it is dropped, so a run that ends, is
-/// cancelled or panics lets go of it, and by the operating system when the process exits, however it exits, so a lock
-/// is never left behind. The lock store makes it; the manager's run holds it.
+use crate::managers::runtime::lock_guard_protocol::LockGuardProtocol;
+
+/// A lock the lock's store holds for a run: on an app, while the run changes its files, or on a session, while its
+/// run works on its conversation (compaction included). The store decides what holds it (an operating system's file
+/// lock, or a Postgres advisory lock), so its holder never learns which. `release` lets go of it and returns once it
+/// is free, so a request sent as soon as a run's end is seen finds the lock free; if it is only dropped (a run that
+/// is cancelled or panics) it is let go of as soon as it can be, and when the process exits, however it exits, so a
+/// lock is never left behind. The store makes it; the manager's run holds it.
 pub struct HeldLock {
-    file: std::fs::File,
+    guard: Option<Box<dyn LockGuardProtocol>>,
 }
 
 impl HeldLock {
-    pub fn new(file: std::fs::File) -> Self {
-        HeldLock { file }
+    pub fn new(guard: Box<dyn LockGuardProtocol>) -> Self {
+        HeldLock { guard: Some(guard) }
     }
-}
 
-impl Drop for HeldLock {
-    fn drop(&mut self) {
-        // Closing the file would release it too; unlocking first says so. An unlock that fails is released on close.
-        self.file.unlock().ok();
+    /// Lets go of the lock, returning once another holder can take it.
+    pub async fn release(mut self) {
+        if let Some(guard) = self.guard.take() {
+            guard.release().await;
+        }
     }
 }

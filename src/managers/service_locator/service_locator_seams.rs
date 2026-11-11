@@ -1,7 +1,10 @@
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use rustls_platform_verifier::BuilderVerifierExt;
+use sqlx::PgPool;
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 
 use crate::managers::configuration_providers::configuration_source_providers::configuration_source_provider_environment::ConfigurationSourceProviderEnvironment;
 use crate::managers::configuration_providers::configuration_source_providers::configuration_source_provider_protocol::ConfigurationSourceProviderProtocol;
@@ -11,9 +14,14 @@ use crate::managers::exceptions::contextual_data::ContextualData;
 use crate::managers::exceptions::openai_responses_gateway_exception::OpenAiResponsesGatewayException;
 use crate::managers::gateways::openai_responses::clients::responses_web_socket_connector::ResponsesWebSocketConnector;
 use crate::managers::models::settings::openai_responses_settings::OpenAiResponsesSettings;
+use crate::managers::models::settings::relational_database_settings::RelationalDatabaseSettings;
 use crate::managers::service_locator::service_locator_seams_protocol::ServiceLocatorSeamsProtocol;
 
-/// The production seams: the environment and the network.
+/// How long a statement waits for a connection: long enough for a database that sleeps to wake, short enough that
+/// one that can't be reached fails the request rather than hanging it.
+const RELATIONAL_DATABASE_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The production seams: the environment, the network and the database.
 pub struct ServiceLocatorSeams;
 
 impl ServiceLocatorSeamsProtocol for ServiceLocatorSeams {
@@ -71,6 +79,33 @@ impl ServiceLocatorSeamsProtocol for ServiceLocatorSeams {
             ServiceLocatorSeams::to_timeout(openai_responses_settings.timeout_seconds, "timeout_seconds")?,
             ServiceLocatorSeams::to_timeout(openai_responses_settings.idle_timeout_seconds, "idle_timeout_seconds")?,
         ))
+    }
+
+    fn create_relational_database_pool(
+        &self,
+        relational_database_settings: &RelationalDatabaseSettings,
+    ) -> ApplicationResult<PgPool> {
+        // Only parsed here: nothing connects until the gateway first sends a statement. The parser's own error is
+        // not kept, because it can quote the connection string's password.
+        let connect_options: PgConnectOptions =
+            PgConnectOptions::from_str(&relational_database_settings.connection_string).map_err(|_: sqlx::Error| {
+                ApplicationBaseException::new(
+                    ConfigurationProviderException::InvalidConfiguration,
+                    "Relational database configuration is invalid",
+                    ContextualData::new()
+                        .with("setting_name", "relational_database")
+                        .with("errors", "connection_string is not a Postgres connection string"),
+                )
+            })?;
+
+        // It keeps no connection open while otto-bot is idle, so a database that sleeps when nothing is connected
+        // to it can. A held lock's connection is taken out of the pool, so locks never use up its connections.
+        Ok(PgPoolOptions::new()
+            .min_connections(0)
+            .max_connections(10)
+            .idle_timeout(Duration::from_secs(60))
+            .acquire_timeout(RELATIONAL_DATABASE_ACQUIRE_TIMEOUT)
+            .connect_lazy_with(connect_options))
     }
 }
 

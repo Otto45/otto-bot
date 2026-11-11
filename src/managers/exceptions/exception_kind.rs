@@ -5,6 +5,7 @@ use crate::managers::exceptions::lock_store_gateway_exception::LockStoreGatewayE
 use crate::managers::exceptions::openai_responses_gateway_exception::OpenAiResponsesGatewayException;
 use crate::managers::exceptions::otto_bot_manager_exception::OttoBotManagerException;
 use crate::managers::exceptions::project_bootstrap_engine_exception::ProjectBootstrapEngineException;
+use crate::managers::exceptions::relational_database_gateway_exception::RelationalDatabaseGatewayException;
 use crate::managers::exceptions::session_store_gateway_exception::SessionStoreGatewayException;
 use crate::managers::exceptions::stack_pack_store_gateway_exception::StackPackStoreGatewayException;
 use crate::managers::exceptions::workspace_gateway_exception::WorkspaceGatewayException;
@@ -21,6 +22,7 @@ pub enum ExceptionKind {
     OpenAiResponsesGateway(OpenAiResponsesGatewayException),
     OttoBotManager(OttoBotManagerException),
     ProjectBootstrapEngine(ProjectBootstrapEngineException),
+    RelationalDatabaseGateway(RelationalDatabaseGatewayException),
     SessionStoreGateway(SessionStoreGatewayException),
     StackPackStoreGateway(StackPackStoreGatewayException),
     WorkspaceGateway(WorkspaceGatewayException),
@@ -43,6 +45,7 @@ impl ExceptionKind {
             ExceptionKind::OpenAiResponsesGateway(exception) => exception.name(),
             ExceptionKind::OttoBotManager(exception) => exception.name(),
             ExceptionKind::ProjectBootstrapEngine(exception) => exception.name(),
+            ExceptionKind::RelationalDatabaseGateway(exception) => exception.name(),
             ExceptionKind::SessionStoreGateway(exception) => exception.name(),
             ExceptionKind::StackPackStoreGateway(exception) => exception.name(),
             ExceptionKind::WorkspaceGateway(exception) => exception.name(),
@@ -91,6 +94,12 @@ impl From<ProjectBootstrapEngineException> for ExceptionKind {
 impl From<OttoBotManagerException> for ExceptionKind {
     fn from(exception: OttoBotManagerException) -> Self {
         ExceptionKind::OttoBotManager(exception)
+    }
+}
+
+impl From<RelationalDatabaseGatewayException> for ExceptionKind {
+    fn from(exception: RelationalDatabaseGatewayException) -> Self {
+        ExceptionKind::RelationalDatabaseGateway(exception)
     }
 }
 

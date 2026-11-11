@@ -4,6 +4,7 @@ use crate::managers::configuration_providers::configuration_source_providers::co
 use crate::managers::exceptions::application_base_exception::ApplicationResult;
 use crate::managers::gateways::openai_responses::clients::responses_web_socket_connector::ResponsesWebSocketConnector;
 use crate::managers::models::settings::openai_responses_settings::OpenAiResponsesSettings;
+use crate::managers::models::settings::relational_database_settings::RelationalDatabaseSettings;
 
 /// The ServiceLocator's `create_*` seams: the objects that reach outside the process, built from settings the
 /// locator hands in. The locator is given its seams, so whatever needs others builds the same production
@@ -20,4 +21,10 @@ pub trait ServiceLocatorSeamsProtocol: Send + Sync {
         &self,
         openai_responses_settings: &OpenAiResponsesSettings,
     ) -> ApplicationResult<ResponsesWebSocketConnector>;
+
+    /// The Postgres pool the session store and its locks use, built without connecting.
+    fn create_relational_database_pool(
+        &self,
+        relational_database_settings: &RelationalDatabaseSettings,
+    ) -> ApplicationResult<sqlx::PgPool>;
 }

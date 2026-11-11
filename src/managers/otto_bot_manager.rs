@@ -409,12 +409,13 @@ impl OttoBotManager {
         }
         .await;
         // The app's files are done with, so another session's request may run while this one compacts; let go before
-        // the end is reported, so a request sent as soon as it is seen finds the app free.
-        drop(app_lock);
+        // the end is reported, so a request sent as soon as it is seen finds the app free (a lock kept in a database
+        // is free only once the database says so, so this waits for it).
+        app_lock.release().await;
         // Marked before it is reported, so a request sent as soon as the end is seen finds the run ended.
         end_reported.store(true, Ordering::SeqCst);
         // The session's lock is kept through the compaction.
-        let (orchestrator_input_tokens, _session_lock): (i64, HeldLock) = match ran {
+        let (orchestrator_input_tokens, session_lock): (i64, HeldLock) = match ran {
             Ok((run_summary, orchestrator_input_tokens, session_lock)) => {
                 events.send(SessionEvent::RunCompleted { run_summary }).ok();
                 (orchestrator_input_tokens, session_lock)
@@ -442,6 +443,8 @@ impl OttoBotManager {
                 Some(&exception),
             );
         }
+        // Compacted or not, the session is free for its next run, here or in another process.
+        session_lock.release().await;
     }
 
     // The orchestrator runs on the request: it answers the person (a question back, when the request isn't clear yet)

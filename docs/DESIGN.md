@@ -35,7 +35,7 @@ The architecture is what makes these reachable. Every file's role follows from i
 | Service tier | `--service-tier standard\|fast\|ultrafast`, default `standard` (sent as `"default"`) |
 | Clients | several, all over one domain facade: the interactive CLI (`otto`), and the HTTP API (`otto-http`) for the software factory platform |
 | Data retention | `store=false`; the harness keeps every conversation itself |
-| Session store | append-only JSON Lines files, one folder per session under `~/.otto-bot/sessions/` (no database, no migrations) |
+| Session store | by default append-only JSON Lines files, one folder per session under `~/.otto-bot/sessions/`, and file locks; with `OTTO_BOT_RELATIONAL_DATABASE_CONNECTION_STRING`, Postgres (insert-only tables, `migrations/` applied by dbmate) and advisory locks, for a deployed `otto-http` |
 | Approvals | none: runs are unattended, and will run in their own sandbox VM |
 | Tests in generated apps | deferred; packs keep an empty `test` command slot |
 
@@ -266,8 +266,9 @@ src/
             data_facade.rs, managers/data_manager.rs
             managers/gateways/
                 session_store/      JSONL files: sessions, transcripts, briefs, lane item logs, project maps, usage
-                stack_pack_store/   the stack packs
                 lock_store/         file locks: one per app, one per session
+                relational_database/ the same records and locks in Postgres (tables, advisory locks), when configured
+                stack_pack_store/   the stack packs
         common/                     calculators (retry delay), formatters, matchers (path globs), tree_sitter,
                                     validators
         models/, exceptions/, logger/, configuration_providers/, service_locator/
@@ -296,9 +297,21 @@ stack_packs/rust/, stack_packs/python/, stack_packs/typescript/
   orchestrator's replies are the events meant for the person (`to_person`); the platform shows those, and an operator
   view can show the rest.
 - **One run per app**: two sessions of one workspace never run at once, since both would change the same files, even
-  in two processes (the CLI and the HTTP API): a run holds the app's lock, an operating-system file lock under
-  `OTTO_BOT_HOME/locks/`, until it ends, and its session's lock through its compaction too, so a run of a session
-  compacting elsewhere waits for it. The operating system releases a process's locks when it exits, crashed or not.
+  in two processes (the CLI and the HTTP API): a run holds the app's lock until it ends, and its session's lock
+  through its compaction too, so a run of a session compacting elsewhere waits for it. By default a lock is an
+  operating-system file lock under `OTTO_BOT_HOME/locks/`, which keeps processes on one machine apart; with Postgres
+  configured it is an advisory lock, which keeps apart processes on any machine sharing the database. Either is
+  released when its process exits, crashed or not: the operating system closes the file, or Postgres sees the
+  connection end. Two limits of the advisory lock: a run holds two Postgres connections of its own (its app's lock
+  and its session's), beyond the pool's; and if a machine vanishes (no clean close, no reset), its locks are freed
+  only once Postgres notices the connection is dead, which TCP keepalive decides.
+- **Where sessions are kept is configuration.** With `OTTO_BOT_RELATIONAL_DATABASE_CONNECTION_STRING` the sessions
+  live in Postgres: one table per file of a session's folder, rows only inserted, a lane's items appended together in
+  one transaction and read from its last compaction on. The schema itself refuses what the domain can't hold
+  (`NOT NULL`, `CHECK`s on the fixed names, and a check per conversation item type), and the gateway still validates
+  every row it reads. A string that isn't a Postgres connection string stops the service before it starts; a
+  database that can't be reached fails the request (or the run) after the pool's 10-second wait, and the service
+  goes on. There is no import from session folders: a Postgres store starts empty.
 - **Session options** (such as the service tier) are passed to `start_session` and override configured defaults,
   which only the configuration provider reads from the environment.
 
@@ -314,6 +327,7 @@ stack_packs/rust/, stack_packs/python/, stack_packs/typescript/
 5. The Python pack, then the TypeScript pack, their templates written from the Rust template; starting new projects.
 6. Resume (`otto --session`, `otto sessions`); compaction (`/responses/compact` at boundaries); the HTTP API
    (`otto-http`, server-sent events, apps by name).
+7. Toward deploying `otto-http`: the Postgres session store and advisory locks, chosen by configuration.
 
 ## Verified
 
@@ -361,8 +375,25 @@ a fact, two parallel `read_files` calls with their outputs, replies; about 14.9k
 On a multi-component task (orders priced with a discount and a currency conversion) the orchestrator's lane holds 60-76KB of file contents per request and 2-3KB of messages and
 notes, so a compaction keeps about 3% of what a request adds.
 
+The Postgres session store (2026-11-11, Postgres 18, two `otto-http` processes sharing one database, a scripted model
+stand-in):
+- **The schema refuses what the domain can't hold**: each of 16 rows breaking a rule (a missing required column, an
+  unknown name, a conversation item without what its type needs, a session that doesn't exist) is refused; the
+  migration goes up, down and up.
+- **A session is the same in either store**: every record lands in its table; a restarted service resumes the
+  session with its whole conversation; after a compaction the next request starts from it.
+- **The locks keep processes apart**: a second process's request for a busy app is refused (409) while a run holds
+  it, and accepted once the run has ended; `kill -9` of the holder frees both its locks within a second; a request
+  for a session compacting in the other process waits until the compaction is done (8 seconds), then runs from it.
+- **A database that stalls fails only what needs it**: a request answers 500 after the pool's 10 seconds, a run
+  fails with `run_failed` (its message generic), and the next request goes through once the database is back.
+
 ## Open
 
 - Tests in generated apps.
+- Deploying `otto-http`. Sessions and locks can be kept in Postgres, but the apps' folders
+  (`OTTO_BOT_WORKSPACES_DIRECTORY`) and the stack packs are still on disk: several instances need them on shared
+  storage mounted at the same path, because an app's lock is keyed by its folder's path. Not done yet: the service's
+  container, and running dbmate before it starts.
 - Benchmarks: the tasks and scripts that measured otto on new apps (wall time, requests, cache hits, the checks) were
   removed on 2026-11-11, to be rethought; they and their results are in the history before then.

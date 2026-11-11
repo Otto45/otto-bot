@@ -1316,6 +1316,7 @@ impl AgentRunEngine {
             | ExceptionKind::OttoBotManager(_)
             | ExceptionKind::ProjectBootstrapEngine(_)
             | ExceptionKind::LockStoreGateway(_)
+            | ExceptionKind::RelationalDatabaseGateway(_)
             | ExceptionKind::SessionStoreGateway(_)
             | ExceptionKind::StackPackStoreGateway(_)
             | ExceptionKind::InvalidUserRequest

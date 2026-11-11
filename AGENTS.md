@@ -25,7 +25,7 @@ src/
     managers/
         otto_bot_manager.rs     Manager: serves sessions and coordinates their runs
         service_locator/        ServiceLocator, ServiceLocatorSeamsProtocol, ServiceLocatorSeams
-        runtime/                what a manager owns while the app runs: live sessions, runs, event channels
+        runtime/                what a manager owns while the app runs: live sessions, runs, event channels, held locks
         common/                 stateless helpers shared by more than one component
         configuration_providers/ config models -> validators -> settings
         processors/             domain logic the Manager delegates to, one subfolder per processor type
@@ -36,6 +36,7 @@ src/
         exceptions/             ApplicationBaseException and its kinds
         logger/                 ApplicationLogger
 stack_packs/<stack>/            what otto-bot knows about building apps in one language (see docs/DESIGN.md)
+migrations/                     the Postgres session store's schema, applied by dbmate (see Data layer)
 docs/DESIGN.md                  otto-bot's design
 ```
 
@@ -73,7 +74,8 @@ docs/DESIGN.md                  otto-bot's design
   - a session's runs send its events on a channel the session's relay task reads: it numbers each one and records it in the session's `SessionEventLog`, which keeps the current run's events (a run's start forgets the last run's) and sends each to every client; a client subscribing gets the kept events its `SessionEventReplay` asks for, then the ones to come, each once, because both happen under the log's lock
   - one run per workspace, whichever process runs it (the CLI, the HTTP API, or two of either): `submit` takes the app's lock from the lock store, and a request it can't have is refused (`AppBusy`), since both runs would change the same files; the run holds it until it has ended, not through its compaction, which changes no file
   - a run also holds its session's lock from start to finish, compaction included, so a run of a session still compacting in another process waits for it, as one in this process waits on the session's `work_lock`
-  - a lock is the operating system's file lock (`HeldLock`, in `runtime/`, which the lock store makes): released when it is dropped, so a run that ends, is cancelled or panics lets go of it, and when the process exits, however it exits, so none is ever left behind
+  - a lock is a `HeldLock` (in `runtime/`), which the store that keeps the sessions makes, and which holds whatever the store holds it with (a `LockGuardProtocol`), so the manager never learns which: the lock store's is the operating system's file lock, and the relational database's a Postgres advisory lock on a connection of its own
+  - a run lets go of its locks with `release().await` where it ends, which returns once another holder can take the lock, so a request sent as soon as the run's end is seen finds it free; a lock only dropped (a run cancelled or panicking) is let go of as soon as it can be, and every lock is let go of when its process exits, however it exits (the operating system closes the file, or Postgres sees the connection end), so none is ever left behind
   - a live session with no run, no compaction and no client following it is let go once idle for `OTTO_BOT_IDLE_SESSION_MINUTES` (`OttoBotManager::sweep_idle_sessions`, every minute); a client's next use resumes it from the session store
 - stateless helpers used by more than one component live in `managers/common/` (e.g. `common/validators/validator_string.rs`, `common/formatters/validation_error_formatter.rs`)
   - associated functions only, no I/O; never registered in the `ServiceLocator`
@@ -166,16 +168,21 @@ docs/DESIGN.md                  otto-bot's design
   - a request the API failed on its side, whatever the transport, is sent again, up to `OTTO_BOT_OPENAI_MAX_RETRIES` times (3 by default), after a wait that doubles from a second (up to 20 seconds, with jitter) or the `Retry-After` the API asks for (up to a minute): an error status of 429, 500, 502, 503 or 504, an error event or a failed response of type `server_error` or a rate limit, a request that couldn't connect or timed out, and a connection lost again after its resend are `OpenAiUnavailable` (`ApiErrorMapper` decides, from the status, type and code); a refusal sending again won't change (a malformed request, a bad key, `insufficient_quota`) is `OpenAiRequest`, and a response that ran past the whole response timeout isn't sent again either; each retry is logged as a warning
 
 ## Data layer
-- changed for otto-bot: its data is files, not databases, so it has no migrations and no relational gateway; the Postgres rules below apply only if one is ever added
+- changed for otto-bot: the sessions and their locks are kept where configuration says (`SessionStorage`, which `DataManager` picks and matches on in every session and lock operation): by default in files under otto-bot's home folder (the session store and the lock store), so the CLI needs no database; with `OTTO_BOT_RELATIONAL_DATABASE_CONNECTION_STRING`, in Postgres (the relational database gateway), so processes on several machines can share them; only the gateways of the one configured are built
   ```
-  managers/data_layer/managers/gateways/
-      session_store/       a folder per session, named after its id: session.json, and append-only transcript.jsonl (what the person and the orchestrator said), conversation_items/<lane_name>.jsonl (one per lane, read from its last compaction on), usage_records.jsonl, project_maps.jsonl and briefs.jsonl
-      stack_pack_store/    the stack packs, read-only: each folder's pack.toml
-      lock_store/          locks/: one lock file per app (apps/<SHA-256 of its folder's path>.lock) and per session (sessions/<id>.lock), never written, only locked
+  managers/data_layer/managers/
+      session_storage.rs   SessionStorage: Files { session store, lock store } or RelationalDatabase { relational database gateway }
+      gateways/
+          session_store/       a folder per session, named after its id: session.json, and append-only transcript.jsonl (what the person and the orchestrator said), conversation_items/<lane_name>.jsonl (one per lane, read from its last compaction on), usage_records.jsonl, project_maps.jsonl and briefs.jsonl
+          lock_store/          locks/: one lock file per app (apps/<SHA-256 of its folder's path>.lock) and per session (sessions/<id>.lock), never written, only locked; guards/ (FileLockGuard)
+          relational_database/ the session store's six tables (sessions, transcript_entries, conversation_items, usage_records, project_maps, implementation_briefs) and advisory locks (one key per app and per session, the first 8 bytes of a SHA-256); query_builders/, resource_models/, validators/, mappers/, guards/ (AdvisoryLockGuard)
+          stack_pack_store/    the stack packs, read-only: each folder's pack.toml
   ```
+  - both keep the same records with the same operations, so a session behaves alike in either; nothing above `DataManager` learns which one keeps it
+  - an advisory lock is held on a connection taken out of the pool (`detach`), so the lock never goes back to the pool with it: a run holds two connections of its own while it runs (its app's and its session's), and a lock refused leaves its connection in the pool
   - a session is resumed (`OttoBotFacade::resume_session`) from what its files hold, by any client, in this process or a later one: nothing a run needs is kept only in memory; a session id from a client names a folder only if it could be one the store made (lowercase letters and digits), so it never leads out of the sessions folder
-  - a session's files are only ever appended to, never rewritten, so a crash mid-write loses at most the line being written; whatever needs a changed record appends a new one
-  - each line is a document (a resource model, every field optional): read back, it is deserialized, validated and mapped like anything else from outside the process
+  - a session's files are only ever appended to, never rewritten, so a crash mid-write loses at most the line being written; whatever needs a changed record appends a new one; in Postgres its rows are only ever inserted, never updated, and a lane's items appended together are one transaction
+  - each line is a document, and each row a row (a resource model, every field optional): read back, it is deserialized, validated and mapped like anything else from outside the process
 - the data layer repeats the architecture one level down: the `DataFacade` (the only entry point a manager sees) over one `DataManager`, which orchestrates every data gateway
   ```
   managers/data_layer/
@@ -196,6 +203,7 @@ docs/DESIGN.md                  otto-bot's design
   - the pool keeps no connection open while the app is idle, so a database that sleeps while nothing is connected to it can: `min_connections(0)`, and a connection unused for a minute is closed (`idle_timeout`); a refused connection is retried until `acquire_timeout` (10 seconds), then fails the request
 - the schema changes only through a new file in `migrations/`, named `<timestamp>_<what_it_does>.sql` with a `-- migrate:up` and a `-- migrate:down` section; never edit a file that has run
   - the app never applies migrations: dbmate applies them to its database before it starts, in development as in a deployment
+  - the schema refuses what the domain can't hold, though every resource model is all `Option` and validated in code: a column the domain requires is `NOT NULL`, a column holding one of a fixed set of names `CHECK`s it is one of them, and a row whose required columns depend on its type (a conversation item) has a `CHECK` saying what each type requires; a name added to one of those sets (a service tier, a reasoning effort, a role) changes its `CHECK` through a new migration
 - `InMemoryDocumentDatabaseClient` (`document_database/clients/`) is a stand-in so the template needs no second server: its store is shared by every client with the same connection string and outlives `close()`; replace it with a real driver client rather than copying it into production code
 
 ## Logger

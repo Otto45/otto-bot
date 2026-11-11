@@ -53,6 +53,9 @@ subtle = "2.6.1"
 # Names an app's lock file after its folder's path, whatever its length.
 sha2 = "0.10"
 similar = "2"
+# The session store and its locks, when a Postgres database is configured. TLS through rustls with aws-lc-rs, as the
+# other transports, because a hosted Postgres usually requires it; no macros, so building needs no database.
+sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "postgres", "derive", "chrono", "tls-rustls-aws-lc-rs"] }
 
 [lints.rust]
 unsafe_code = "forbid"

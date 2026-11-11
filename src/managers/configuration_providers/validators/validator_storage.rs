@@ -8,7 +8,7 @@ pub struct ValidatorStorage;
 
 impl ValidatorStorage {
     pub fn validate_storage_config(config: &StorageConfig) -> ApplicationResult<()> {
-        let errors: Vec<String> = [
+        let mut errors: Vec<String> = [
             (
                 "home_directory (OTTO_BOT_HOME, or HOME)",
                 config.home_directory.as_deref(),
@@ -20,6 +20,15 @@ impl ValidatorStorage {
             ValidatorString::validate(property_name, property_value)
         })
         .collect();
+        // Optional, but a connection string that is set says nothing if it is blank.
+        if let Some(connection_string) = config.relational_database_connection_string.as_deref()
+            && let Some(error) = ValidatorString::validate(
+                "relational_database_connection_string (OTTO_BOT_RELATIONAL_DATABASE_CONNECTION_STRING)",
+                Some(connection_string),
+            )
+        {
+            errors.push(error);
+        }
 
         if !errors.is_empty() {
             return Err(ApplicationBaseException::new(

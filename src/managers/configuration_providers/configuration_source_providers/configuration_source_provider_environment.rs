@@ -56,6 +56,7 @@ impl ConfigurationSourceProviderProtocol for ConfigurationSourceProviderEnvironm
                 DEFAULT_STACK_PACKS_DIRECTORY,
             )),
             workspaces_directory: std::env::var("OTTO_BOT_WORKSPACES_DIRECTORY").ok(),
+            relational_database_connection_string: std::env::var("OTTO_BOT_RELATIONAL_DATABASE_CONNECTION_STRING").ok(),
         })
     }
 

@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use crate::managers::configuration_providers::configuration_provider::ConfigurationProvider;
 use crate::managers::data_layer::managers::gateways::lock_store::lock_store_gateway::LockStoreGateway;
+use crate::managers::data_layer::managers::gateways::relational_database::relational_database_gateway::RelationalDatabaseGateway;
 use crate::managers::data_layer::managers::gateways::session_store::session_store_gateway::SessionStoreGateway;
 use crate::managers::data_layer::managers::gateways::stack_pack_store::stack_pack_store_gateway::StackPackStoreGateway;
 use crate::managers::engines::agent_run::agent_run_engine::AgentRunEngine;
@@ -44,6 +45,7 @@ pub struct ServiceLocator {
     command_runner_gateway: Mutex<Option<Arc<CommandRunnerGateway>>>,
     session_store_gateway: Mutex<Option<Arc<SessionStoreGateway>>>,
     lock_store_gateway: Mutex<Option<Arc<LockStoreGateway>>>,
+    relational_database_gateway: Mutex<Option<Arc<RelationalDatabaseGateway>>>,
     stack_pack_store_gateway: Mutex<Option<Arc<StackPackStoreGateway>>>,
     session_processor: Mutex<Option<Arc<SessionProcessor>>>,
     prompt_processor: Mutex<Option<Arc<PromptProcessor>>>,
@@ -81,6 +83,7 @@ impl ServiceLocator {
             command_runner_gateway: Mutex::new(None),
             session_store_gateway: Mutex::new(None),
             lock_store_gateway: Mutex::new(None),
+            relational_database_gateway: Mutex::new(None),
             stack_pack_store_gateway: Mutex::new(None),
             session_processor: Mutex::new(None),
             prompt_processor: Mutex::new(None),
@@ -174,6 +177,35 @@ impl ServiceLocator {
             let gateway_to_close: Arc<LockStoreGateway> = lock_store_gateway.clone();
             self.register_close(Box::new(move || Box::pin(async move { gateway_to_close.close() })));
             Ok(lock_store_gateway)
+        })
+    }
+
+    /// The gateway to the Postgres database that keeps the sessions and their locks; only asked for when one is
+    /// configured, so its absence is a missing configuration.
+    pub fn get_relational_database_gateway(&self) -> ApplicationResult<Arc<RelationalDatabaseGateway>> {
+        ServiceLocator::get_or_create(&self.relational_database_gateway, || {
+            let configuration_provider: Arc<ConfigurationProvider> = self.get_configuration_provider()?;
+            let Some(relational_database_settings) = configuration_provider
+                .get_storage_settings()
+                .relational_database
+                .as_ref()
+            else {
+                return Err(ApplicationBaseException::new(
+                    ConfigurationProviderException::MissingConfiguration,
+                    "Relational database configuration is missing",
+                    ContextualData::new().with("setting_name", "relational_database"),
+                ));
+            };
+            let pool: sqlx::PgPool = self
+                .seams
+                .create_relational_database_pool(relational_database_settings)?;
+            let relational_database_gateway: Arc<RelationalDatabaseGateway> =
+                Arc::new(RelationalDatabaseGateway::new(pool));
+            let gateway_to_close: Arc<RelationalDatabaseGateway> = relational_database_gateway.clone();
+            self.register_close(Box::new(move || {
+                Box::pin(async move { gateway_to_close.close().await })
+            }));
+            Ok(relational_database_gateway)
         })
     }
 

@@ -5,4 +5,6 @@ pub struct StorageConfig {
     pub stack_packs_directory: Option<String>,
     /// Where apps started by name are kept, each in a folder named after it; None for the home folder's apps/.
     pub workspaces_directory: Option<String>,
+    /// The Postgres database that keeps the sessions and their locks; None for the folders under the home folder.
+    pub relational_database_connection_string: Option<String>,
 }

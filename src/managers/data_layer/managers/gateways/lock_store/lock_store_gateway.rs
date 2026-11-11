@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 
+use crate::managers::data_layer::managers::gateways::lock_store::guards::file_lock_guard::FileLockGuard;
 use crate::managers::exceptions::application_base_exception::{ApplicationBaseException, ApplicationResult};
 use crate::managers::exceptions::contextual_data::ContextualData;
 use crate::managers::exceptions::lock_store_gateway_exception::LockStoreGatewayException;
@@ -113,7 +114,7 @@ impl LockStoreGateway {
     // Locks the file without waiting: a lock held elsewhere is None, and so the file is closed again.
     fn try_lock(file: std::fs::File, context: &ContextualData) -> ApplicationResult<Option<HeldLock>> {
         match file.try_lock() {
-            Ok(()) => Ok(Some(HeldLock::new(file))),
+            Ok(()) => Ok(Some(HeldLock::new(Box::new(FileLockGuard::new(file))))),
             Err(TryLockError::WouldBlock) => Ok(None),
             Err(TryLockError::Error(exception)) => {
                 Err(LockStoreGateway::to_io_exception(exception, "taking a lock", context))

@@ -13,6 +13,7 @@ use crate::managers::models::openai_transport::OpenAiTransport;
 use crate::managers::models::service_tier::ServiceTier;
 use crate::managers::models::settings::agent_settings::AgentSettings;
 use crate::managers::models::settings::openai_responses_settings::OpenAiResponsesSettings;
+use crate::managers::models::settings::relational_database_settings::RelationalDatabaseSettings;
 use crate::managers::models::settings::storage_settings::StorageSettings;
 
 /// Loads, validates and maps every setting on construction, so malformed configuration fails the moment the
@@ -97,6 +98,9 @@ impl ConfigurationProvider {
                 .map_or_else(|| home_directory.join("apps"), PathBuf::from),
             sessions_directory: home_directory.join("sessions"),
             locks_directory: home_directory.join("locks"),
+            relational_database: config
+                .relational_database_connection_string
+                .map(|connection_string: String| RelationalDatabaseSettings { connection_string }),
         })
     }
 }
