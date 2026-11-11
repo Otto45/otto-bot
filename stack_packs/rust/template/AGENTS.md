@@ -210,7 +210,7 @@ openapi.json                    the HTTP service's contract, generated
   - a panic in a response's body, after the response has started, is past the middleware: the server ends that connection, and the panic hook logs it
 
 ## Starting an app from the template
-1. Copy `rust-template/`, then rename `example-app` / `example_app` (`Cargo.toml`, the `example_app::` paths in `src/main.rs` and `src/bin/`), `ExampleAppFacade`, `ExampleAppManager` and the `EXAMPLE_APP_` prefix of the environment variables.
+1. Copy the template, then rename `example-app` / `example_app` (`Cargo.toml`, the `example_app::` paths in `src/main.rs` and `src/bin/`), `ExampleAppFacade`, `ExampleAppManager` and the `EXAMPLE_APP_` prefix of the environment variables.
 2. Replace `processors/greeting/`, `processors/customer/`, `engines/customer_onboarding/` and the example settings with the app's own domain logic and configuration.
 3. Replace the example databases, `Customer` and `AuditEvent` (and `migrations/`) with the app's own.
 4. Replace the JSON Placeholder gateway and `UserProfile` with the HTTP services the app depends on.
