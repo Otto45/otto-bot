@@ -241,29 +241,34 @@ repositories.
 
 ```
 src/
-    otto_bot_facade.rs              start_session, submit, subscribe, cancel, close
-    services/cli/                   interactive CLI (first client); later e.g. services/stdio/, services/http/
+    otto_bot_facade.rs              sessions: start_session, resume_session, list_sessions, submit, subscribe, cancel;
+                                    apps by name: start_app, start_app_session, list_app_sessions, resume_app_session,
+                                    get_app_session_transcript; start_project (otto new); close
+    bin/                            otto, otto-http, export-openapi
+    services/cli/                   the interactive CLI (otto)
+    services/http/                  the HTTP API (otto-http): apps, sessions, server-sent events
     managers/
         otto_bot_manager.rs         coordinates orchestrator -> (brief ->) implementor -> reviewer -> orchestrator
+        runtime/                    live sessions and runs, each session's event log
         processors/
-            brief/                  checks a brief: it has a task and says what done looks like
-            prompt_assembly/        builds the layered prompt, renders it deterministically, places breakpoints
-            architecture_map/       the project map, from tree-sitter parses
-            architecture_lint/      deterministic rule checks
+            session/                session summaries, sorted
         engines/
-            agent_run/              runs one agent to completion: model turn -> tool calls -> results; applies
-                                    patches, holds each role to its tools
+            agent_run/              runs one agent to completion: model turn -> tool calls -> results; holds each
+                                    role to its tools; compacts lanes
+                processors/         brief, prompt (the layers), project_map, architecture_lint, tool, patch, diff
             project_bootstrap/      copies and renames a pack's template (no model)
+                processors/         app_name
         gateways/
-            openai_responses/       WebSocket and HTTP transport, lanes, replay from the session log
+            openai_responses/       WebSocket and HTTP transport, lanes, retries, compaction
             workspace/              reads many files, applies V4A patches, lists the tree
             command_runner/         runs a pack's declared commands
         data_layer/
             data_facade.rs, managers/data_manager.rs
             managers/gateways/
-                session_store/      JSONL files: sessions, briefs, lane item logs, usage ledger
+                session_store/      JSONL files: sessions, transcripts, briefs, lane item logs, project maps, usage
                 stack_pack_store/   the stack packs
-        common/                     diagnostics parsing (used by the engine and the manager)
+        common/                     calculators (retry delay), formatters, matchers (path globs), tree_sitter,
+                                    validators
         models/, exceptions/, logger/, configuration_providers/, service_locator/
 stack_packs/rust/, stack_packs/python/, stack_packs/typescript/
 ```
