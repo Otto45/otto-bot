@@ -3,11 +3,11 @@
 otto-bot is a coding agent harness, written in Rust, that builds and changes apps following the Domain Container
 architecture, in Rust, Python and TypeScript. It is itself a Domain Container app.
 
-Status: build steps 1-5 are done: the layered cache, WebSocket lanes, the project map, the architecture lint
-(steps 1-3), and the three roles (step 4, reworked in step 5): the orchestrator, which holds the conversation with
-the person and briefs the implementor; the implementor, which plans and builds each brief from a fresh start; and the
-reviewer, whose high-severity findings the implementor fixes. Step 5 is done too: the Python and TypeScript packs,
-`otto new`, and the benchmarks (see Benchmarks).
+Status: build steps 1-6 are done: the layered cache, WebSocket lanes, the project map, the architecture lint
+(steps 1-3); the three roles (step 4, reworked in step 5): the orchestrator, which holds the conversation with the
+person and briefs the implementor; the implementor, which plans and builds each brief from a fresh start; and the
+reviewer, whose high-severity findings the implementor fixes; the Python and TypeScript packs and `otto new` (step 5);
+resume, compaction and the HTTP API (step 6).
 
 ## Goals
 
@@ -112,7 +112,7 @@ Output dominates the cost, which is why the speed levers below also cut cost.
 - **`store=false`.** The harness's session log holds every lane's full ordered item list, including encrypted
   reasoning (`include: ["reasoning.encrypted_content"]`) and compaction items. When a lane is lost (disconnect, the
   60-minute limit, an error that evicts it), the gateway replays the item list from the log; the prefix is unchanged,
-  so the replay is a cache hit. A forked lane's `response.in_progress` is awaited before its parent lane advances.
+  so the replay is a cache hit.
 - **Edits use the native `apply_patch` tool** (V4A diffs, one file operation per call, several calls per response).
   The harness applies them and answers each `call_id` with `apply_patch_call_output`; a mismatch is rejected with a
   precise reason.
@@ -182,7 +182,7 @@ agent (a lane) in a role.
    every finding is listed in the run's result.
 
 Until step 5 the orchestrator made a small change itself and planned a bigger one as steps for the implementor. The
-step 5 benchmarks showed why that was set aside: on small tasks the orchestrator often made the change and then
+step 5's test runs showed why that was set aside: on small tasks the orchestrator often made the change and then
 submitted a plan anyway, so an implementor started only to find nothing to do; and an implementor that kept one
 conversation across plans carried every earlier plan's context. Now the conversation is the orchestrator's, each build
 starts fresh, and every change is reviewed.
@@ -306,65 +306,6 @@ stack_packs/rust/, stack_packs/python/, stack_packs/typescript/
 6. Resume (`otto --session`, `otto sessions`); compaction (`/responses/compact` at boundaries); the HTTP API
    (`otto-http`, server-sent events, apps by name).
 
-A fixed set of feature tasks on template apps is run against every change to the harness, recording wall time,
-cost, cache hit rate, lint violations and whether the checks pass, so speed and quality trade-offs are measured.
-
-## Benchmarks
-
-The tasks are in `benchmarks/tasks/` (farewell and loyalty points, small; orders, the multi-component one), worded for
-any stack. `benchmarks/run.sh <stack> <task>` starts a new app with `otto new`, gives otto the task, then runs the
-stack's checks on what it left, independently of otto (`benchmarks/check.sh`), and summarizes the session
-(`benchmarks/summarize.py`: wall time, requests and tokens per lane, cache hit rate, briefs, the implementor's and the
-reviewer's reports). Results go to `target/benchmarks/`.
-
-Step 5, all nine runs at once (so the times are under load), with the roles as they are now:
-
-| Task | Rust | Python | TypeScript |
-| --- | --- | --- | --- |
-| farewell | 55s, 9 requests | 35s, 8 requests | 36s, 8 requests |
-| loyalty points | 62s, 9 requests | 49s, 9 requests | 40s, 9 requests |
-| orders | 260s, 22 requests | 259s, 14 requests | 247s, 22 requests |
-
-Every run passed its checks, every task went through one brief, and the cache hit rate was 80-94%. Each orders app
-was then run against Postgres: the discount (none at exactly 100 dollars), the conversion to EUR, and the errors for
-an unknown currency, order or customer were all right. On orders the reviewer's high findings were floating-point
-money (the currency conversion, and TypeScript's discount), fixed in the one round. With the roles as they were before
-(the orchestrator making small changes itself and planning bigger ones), the same runs took 68/43/41s, 88/68/67s and
-412/306/284s: the small tasks were planned anyway, and the reviewer graded the app's own pattern of saving and then
-recording an audit event in another database as high, so the fix round over-built (an outbox, a blocked report) and
-the Python app's fix failed at run time (a datetime bound as text, now a rule of the Python pack).
-
-Step 6 (resume, compaction, the HTTP API), the same nine runs at once:
-
-| Task | Rust | Python | TypeScript |
-| --- | --- | --- | --- |
-| farewell | 55s, 8 requests | 34s, 8 requests | 40s, 9 requests |
-| loyalty points | 63s, 8 requests | 44s, 8 requests | 41s, 8 requests |
-| orders | 347s, 21 requests | 261s, 16 requests | 378s, 22 requests |
-
-Every run passed its checks, through one brief, at 79-92% cache hits; no lane came near a compaction threshold. The
-small tasks are where they were. The Rust and TypeScript orders runs took longer for more work, not a slower harness:
-the packs' gateway rules now ask a gateway to retry what failed on the other side (step 5, part 6), so the currency
-gateway grew, and they wrote 25-33% more output (24.5k and 23k tokens, against 18.4k each) in the same number of
-requests; one TypeScript review response took 103 seconds. Both reviews sent two high findings back, as before: the
-exchange rates parsed as floating point (money again), and, in Rust, the retry backoff copied from the example gateway
-rather than shared, since every template keeps it inside its JSON Placeholder gateway.
-
-With the backoff moved into each template's `common/calculators/retry_delay_calculator` (and a pack rule that every
-gateway waits through it), the three orders runs again, at once: Rust 257s (16 requests), Python 204s (16),
-TypeScript 240s (20), every check passing. Each new exchange-rates gateway used the shared calculator, and no review
-found a copy. Each review still sent back one high finding, and the same one: money converted through binary floating
-point.
-
-With a money rule in every pack (amounts in integer minor units; rates and percentages a decimal read from its text,
-never through a float; one rounding at the end, half to even) and a `MoneyCalculator` in each template's
-`common/calculators/`, the orders runs: Python 213s (15 requests) and TypeScript 275s (16), with no high finding,
-so no fix round. Rust's review found two, both the decimal library's: `rust_decimal` keeps 28 digits, so 11 cents
-times a 28-digit rate was rounded to 9.5 before the rounding to cents (10, not 9), and it rounds the mantissa of
-scientific notation. With `bigdecimal` (exact, of any precision) instead, Rust ran 272s (15 requests), with no finding.
-Probed first: pydantic's `model_validate_json` reads a JSON number as a float, so a decimal loses digits
-(`json.loads(parse_float=Decimal)` doesn't), and Node 24's `JSON.parse` gives a reviver a number's source text.
-
 ## Verified
 
 What the design depends on from the API, probed with `gpt-6.1-sol` on a ~6.3k-token prefix (`store=false`):
@@ -408,11 +349,11 @@ a fact, two parallel `read_files` calls with their outputs, replies; about 14.9k
   `previous_response_id`. The items keep their ids, which `store=false` doesn't mind.
 - **Parallel tool calls compact** (call, call, output, output), unlike the server-side compaction bug reported.
 
-On the orders benchmark the orchestrator's lane holds 60-76KB of file contents per request and 2-3KB of messages and
+On a multi-component task (orders priced with a discount and a currency conversion) the orchestrator's lane holds 60-76KB of file contents per request and 2-3KB of messages and
 notes, so a compaction keeps about 3% of what a request adds.
-
-Not yet verified: forking a WebSocket lane (not needed while each lane has its own connection).
 
 ## Open
 
 - Tests in generated apps.
+- Benchmarks: the tasks and scripts that measured otto on new apps (wall time, requests, cache hits, the checks) were
+  removed on 2026-11-11, to be rethought; they and their results are in the history before then.

@@ -86,15 +86,6 @@ The contract is [openapi.json](openapi.json).
 - Errors are answered as `{"error": "..."}`: a 4xx says what to fix; a 5xx (and a failed run's event) says only that
   the request failed, and the details are in the log, which goes to stderr, one JSON object per line.
 
-## Benchmarks
-
-```sh
-benchmarks/run.sh python orders   # a new app, one task, its checks run independently, and a summary of the session
-```
-
-The tasks are in `benchmarks/tasks/`; results go to `target/benchmarks/`. The latest numbers are in
-[docs/DESIGN.md](docs/DESIGN.md) (Benchmarks).
-
 ## Checks
 
 ```sh
