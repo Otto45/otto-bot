@@ -356,6 +356,15 @@ TypeScript 240s (20), every check passing. Each new exchange-rates gateway used 
 found a copy. Each review still sent back one high finding, and the same one: money converted through binary floating
 point.
 
+With a money rule in every pack (amounts in integer minor units; rates and percentages a decimal read from its text,
+never through a float; one rounding at the end, half to even) and a `MoneyCalculator` in each template's
+`common/calculators/`, the orders runs: Python 213s (15 requests) and TypeScript 275s (16), with no high finding,
+so no fix round. Rust's review found two, both the decimal library's: `rust_decimal` keeps 28 digits, so 11 cents
+times a 28-digit rate was rounded to 9.5 before the rounding to cents (10, not 9), and it rounds the mantissa of
+scientific notation. With `bigdecimal` (exact, of any precision) instead, Rust ran 272s (15 requests), with no finding.
+Probed first: pydantic's `model_validate_json` reads a JSON number as a float, so a decimal loses digits
+(`json.loads(parse_float=Decimal)` doesn't), and Node 24's `JSON.parse` gives a reviver a number's source text.
+
 ## Verified
 
 What the design depends on from the API, probed with `gpt-6.1-sol` on a ~6.3k-token prefix (`store=false`):

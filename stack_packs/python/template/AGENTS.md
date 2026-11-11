@@ -92,6 +92,17 @@ pyproject.toml                  dependencies, the entry points ([project.scripts
 - config models are `@dataclass(slots=True)` and resource models are pydantic `BaseModel`s; every field of theirs is optional (`str | None = None`), so anything from outside deserializes and the validator can say what is wrong with it
 - domain models are never serialized: what goes over the wire is a service's own wire model
 
+## Money
+- money is kept exact: an amount is an integer number of its currency's minor units (cents), kept with its currency, and never a floating-point number, which can't hold 0.1 and drifts by a cent once multiplied and rounded
+- what an amount is multiplied or divided by (an exchange rate, a percentage, a tax rate) is a decimal, `decimal.Decimal`, read from its text, never through a float: a rate a float has held has already lost digits, and no rounding gets them back
+- arithmetic is done in decimals and rounded once, at the end, to minor units, half to even (banker's rounding: half a cent goes to the even cent) unless the person asked for another rounding; comparisons against a threshold (e.g. "orders over 100 dollars") are made in minor units
+- `MoneyCalculator` (`common/calculators/money_calculator.py`) does it: `multiply` (an amount times a factor, e.g. a rate), `take_percentage` (e.g. a 10% discount) and `parse_decimal` (a decimal from text); never round money by hand
+  - it computes in a 100-digit context: the default context's 28 digits would round a large amount times a long rate halfway through
+- from outside the process:
+  - a JSON body with a decimal is read with `MoneyCalculator.parse_json` (`json.loads(body, parse_float=Decimal)`), then `model_validate`, its resource model's field a `Decimal`; `model_validate_json` reads every JSON number as a float first, and loses digits (a `json.JSONDecodeError` is a `ValueError`, raised as the gateway's invalid-response exception)
+  - Postgres: an amount in minor units is a `bigint` column, an `int`; a decimal is a `numeric` column, which asyncpg reads and binds as a `Decimal`
+  - a wire model carries an amount as an `int` in minor units, with its currency, and a decimal as a `Decimal`, which pydantic writes as a JSON string, so no client reads it as a float either
+
 ## Exceptions
 - every exception the application raises is an `ApplicationBaseException` (`managers/exceptions/application_base_exception.py`): a message and a context; Python keeps the stack where it was raised (its traceback), and `get_name()` gives the name it is logged under (its class's, e.g. `"CustomerNotFoundException"`)
   - each component's exceptions are a family: a base class suffixed `Exception` that subclasses `ApplicationBaseException` (e.g. `RelationalDatabaseGatewayException`), in its own file, with each of its exceptions a `@final` subclass in a file of its own (e.g. `CustomerNotFoundException`); a new exception is a new subclass

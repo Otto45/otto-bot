@@ -26,14 +26,18 @@ chrono = { version = "0.4", features = ["serde"] }
 regex = "1"
 reqwest = "0.13.5"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# arbitrary_precision: a JSON number is read from its text, so a decimal (BigDecimal) keeps every digit.
+serde_json = { version = "1", features = ["arbitrary_precision"] }
 serde_path_to_error = "0.1"
-sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "postgres", "derive"] }
+sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "postgres", "derive", "bigdecimal"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "net", "sync"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["registry", "std"] }
 utoipa = { version = "6.0.0", features = ["chrono"] }
 utoipa-axum = "0.3.0"
+# Exact decimals for money's factors (exchange rates, percentages), of any precision: read from a JSON number's text,
+# bound as numeric.
+bigdecimal = { version = "0.4", features = ["serde-json"] }
 uuid = { version = "1", features = ["v4"] }
 
 [lints.rust]

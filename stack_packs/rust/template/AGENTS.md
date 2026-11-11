@@ -90,6 +90,18 @@ openapi.json                    the HTTP service's contract, generated
 - config models and resource models derive `Default`, and every field of theirs is an `Option` (`#[serde(default)]`), so anything from outside deserializes and the validator can say what is wrong with it
 - domain models never derive `Serialize`: what goes over the wire is a service's own wire model
 
+## Money
+- money is kept exact: an amount is an integer number of its currency's minor units (cents), kept with its currency, and never a floating-point number, which can't hold 0.1 and drifts by a cent once multiplied and rounded
+- what an amount is multiplied or divided by (an exchange rate, a percentage, a tax rate) is a decimal, `bigdecimal::BigDecimal`, read from its text, never through a float: a rate a float has held has already lost digits, and no rounding gets them back
+- arithmetic is done in decimals and rounded once, at the end, to minor units, half to even (banker's rounding: half a cent goes to the even cent) unless the person asked for another rounding; comparisons against a threshold (e.g. "orders over 100 dollars") are made in minor units
+- `MoneyCalculator` (`common/calculators/money_calculator.rs`) does it: `multiply` (an amount times a factor, e.g. a rate), `take_percentage` (e.g. a 10% discount) and `parse_decimal` (a decimal from text); never round money by hand
+  - `multiply` and `take_percentage` give `None` for a result that doesn't fit an `i64` of minor units; the caller raises its own exception for it (e.g. an order too large to price)
+  - a `BigDecimal` keeps every digit and multiplies exactly; a fixed-precision decimal (`rust_decimal`, 28 digits) rounds a product that needs more halfway (11 cents times a 28-digit rate), and rounds the mantissa of scientific notation, so it is not used for money
+- from outside the process:
+  - a JSON body: a resource model's field is a `BigDecimal` (`Option<BigDecimal>`), which reads a JSON number from its text (scientific notation included), because serde_json's `arbitrary_precision` feature is on; never an `f64`
+  - Postgres: an amount in minor units is a `bigint` column, read as `i64`; a decimal is a `numeric` column, read as `BigDecimal` (sqlx's `bigdecimal` feature) and bound as `SqlParameter::Decimal(BigDecimal)`, added with the first query that binds one
+  - a wire model carries an amount as an integer in minor units, with its currency, and a decimal as a string, which is how a `BigDecimal` serializes (with `#[schema(value_type = String)]` for the contract), so no client reads it as a float either
+
 ## Exceptions
 - the exceptions are one type, `ApplicationBaseException` (`managers/exceptions/application_base_exception.rs`): a message, a context, the error it was raised from, and the stack where it was raised (Rust errors carry none of their own, so one is captured when it is created); `kind()` says which exception it is
   - each component's exceptions are a family: an enum suffixed `Exception` in its own file (e.g. `RelationalDatabaseGatewayException::CustomerNotFound`), nested in `ExceptionKind`; a new exception is a new variant, and `name()` gives it the name it is logged under (e.g. `"CustomerNotFoundException"`)

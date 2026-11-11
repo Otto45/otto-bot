@@ -97,6 +97,17 @@ package.json                    dependencies, the entry points (scripts), and th
 - resource models are zod schemas whose every field is optional (`z.string().nullish()`, missing or null), and the types they give (`z.infer`), so anything from outside is read and the validator can say what is wrong with it
 - domain models are never serialized: what goes over the wire is a service's own wire model
 
+## Money
+- money is kept exact: an amount is an integer number of its currency's minor units (cents), kept with its currency, and never a floating-point number, which can't hold 0.1 and drifts by a cent once multiplied and rounded
+- what an amount is multiplied or divided by (an exchange rate, a percentage, a tax rate) is a decimal, a decimal.js `Decimal`, read from its text, never through a float: a rate a float has held has already lost digits, and no rounding gets them back
+- arithmetic is done in decimals and rounded once, at the end, to minor units, half to even (banker's rounding: half a cent goes to the even cent) unless the person asked for another rounding; comparisons against a threshold (e.g. "orders over 100 dollars") are made in minor units
+- `MoneyCalculator` (`common/calculators/money_calculator.ts`) does it: `multiply` (an amount times a factor, e.g. a rate), `takePercentage` (e.g. a 10% discount) and `parseDecimal` (a decimal from text); never round money by hand
+  - an amount in minor units is a `number` that is a safe integer (`Number.isSafeInteger`); a result beyond one is a bug, a `RangeError`; it computes at 100 significant digits, since decimal.js rounds every operation to 20 by default
+- from outside the process:
+  - a JSON body with a decimal is read with `MoneyCalculator.parseJson` (`JSON.parse` with a reviver that reads each number that isn't a safe integer from its source text, as a `Decimal`), and its resource model's field is `z.instanceof(Decimal)`; `JSON.parse` alone (or `response.json()`) reads it as a `number`, and loses digits
+  - Postgres: an amount in minor units is a `bigint` column, which pg reads as a string: its resource model's field is `z.string()`, and its validator checks it is a safe integer before the mapper makes it a `number`; a decimal is a `numeric` column, which pg also reads as a string, made a `Decimal` with `MoneyCalculator.parseDecimal`, and bound as `decimal.toString()`
+  - a wire model carries an amount as an integer in minor units, with its currency, and a decimal as a string (`decimal.toString()`; a request's is parsed with `MoneyCalculator.parseDecimal`), so no client reads it as a float either
+
 ## Exceptions
 - every exception the application throws is an `ApplicationBaseException` (`managers/exceptions/application_base_exception.ts`), an abstract `Error`: a message and a context; JavaScript keeps the stack where it was thrown, and its `name` is its class's, which it is logged under (e.g. `"CustomerNotFoundException"`)
   - each component's exceptions are a family: a class suffixed `Exception` that extends `ApplicationBaseException` (e.g. `RelationalDatabaseGatewayException`), in its own file, with each of its exceptions a subclass in a file of its own (e.g. `CustomerNotFoundException`); a new exception is a new subclass
