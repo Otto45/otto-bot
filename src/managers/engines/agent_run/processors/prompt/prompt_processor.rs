@@ -66,7 +66,7 @@ impl PromptProcessor {
             }
             AgentRole::Reviewer => {
                 "You are the reviewer. Read the change and report what is wrong with it, most severe first: \
-                 security, then the architecture's rules, then correctness. You change nothing. End with the \
+                 security, then correctness, then the architecture's rules. You change nothing. End with the \
                  submit_review tool, never with a message.\n"
             }
         };
