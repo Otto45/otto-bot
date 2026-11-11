@@ -195,7 +195,7 @@ package.json                    dependencies, the entry points (scripts), and th
       routers/                each route maps the request in, calls one facade operation, maps the result out
       wire_models/            zod-openapi request and response schemas
       mappers/                wire models <-> domain models, and exceptions -> HTTP errors (HttpErrorMapper)
-      exception_handlers/     ApplicationExceptionHandler, RequestRejectionHandler, UnexpectedErrorHandler: Hono's onError
+      exception_handlers/     ApplicationExceptionHandler, RequestRejectionHandler, UnexpectedErrorHandler: Hono's onError; UnmatchedRequestHandler: its notFound
       shutdown_signal.ts      Ctrl-C and SIGTERM
       export_openapi.ts       writes the service's contract to openapi.json
   ```
@@ -206,7 +206,7 @@ package.json                    dependencies, the entry points (scripts), and th
   - every domain model the facade returns is mapped to the service's own response model (`wire_models/`) before it is serialized, so the domain can change without changing the API
   - it maps `ApplicationBaseException` families to protocol errors (e.g. `HttpErrorMapper`); a client error (4xx) is answered with the exception's own message, everything else is logged and answered generically so tables, SQL and upstream details never leak
   - a route lets the facade's exception propagate to Hono's `onError`, which hands it to `ApplicationExceptionHandler`, which maps, logs and answers it; a route never catches an exception itself
-  - Hono's own answer to a request that doesn't fit is given in the same `ErrorResponse` shape, so callers handle one shape of error: a body or a path parameter that doesn't fit its schema is a 422 (`defaultHook`), and a body that isn't JSON a 400 (`RequestRejectionHandler`)
+  - Hono's own answer to a request that doesn't fit is given in the same `ErrorResponse` shape, so callers handle one shape of error: a body or a path parameter that doesn't fit its schema is a 422 (`defaultHook`), and a body that isn't JSON a 400 (`RequestRejectionHandler`); a path that is no route's is a 404, and one a route takes by another method a 405 with `Allow` (`UnmatchedRequestHandler`, Hono's `notFound`: Hono has no 405 of its own)
   - it creates the domain facade once when it starts and closes it when it stops (`HttpService.serve`); requests share that instance through the context (`context.get("exampleAppFacade")`, set by a middleware), and nothing builds one per request
   - a request model says what shape a request has (its fields and their types) and no more: whether a value is acceptable is decided inside the domain container, so the caller is answered with the domain's own message
   - each route names the responses it can answer with in its `responses` (e.g. `404: { description, content: { "application/json": { schema: ErrorResponseSchema } } }`), so they are part of the service's contract

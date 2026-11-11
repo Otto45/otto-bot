@@ -10,6 +10,7 @@ use utoipa::openapi::{ComponentsBuilder, Info, OpenApi, OpenApiBuilder};
 use utoipa_axum::router::OpenApiRouter;
 
 use crate::otto_bot_facade::OttoBotFacade;
+use crate::services::http::exception_handlers::unmatched_request_handler::UnmatchedRequestHandler;
 use crate::services::http::http_service_state::HttpServiceState;
 use crate::services::http::middleware::bearer_token_middleware::BearerTokenMiddleware;
 use crate::services::http::middleware::unexpected_error_middleware::UnexpectedErrorMiddleware;
@@ -66,6 +67,8 @@ impl HttpService {
                 BearerTokenMiddleware::handle,
             ))
             .merge(open)
+            .fallback(UnmatchedRequestHandler::handle_not_found)
+            .method_not_allowed_fallback(UnmatchedRequestHandler::handle_method_not_allowed)
             .layer(axum::middleware::from_fn(UnexpectedErrorMiddleware::handle))
             .with_state(http_service_state)
     }

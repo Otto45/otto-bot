@@ -44,7 +44,8 @@ type Lanes = Mutex<HashMap<String, Arc<tokio::sync::Mutex<ResponsesWebSocketLane
 /// latest response in memory: a request that only adds to the conversation that response covers continues it
 /// (`previous_response_id`) and sends just the new items. When the connection no longer holds it (evicted, or a new
 /// connection), or the connection is lost, the request is sent once more with the whole conversation on a fresh
-/// connection; its prefix is cached, so that costs little. If no connection can be opened, the request goes over HTTP.
+/// connection; its prefix is cached, so that costs little. If no connection can be opened, the request goes over HTTP,
+/// and so do the lane's next requests, without another handshake, for ten minutes (`ResponsesWebSocketLane::is_over_http`).
 ///
 /// A request the API failed on its side (an error status like 500 or 503, a rate limit, a response that failed with a
 /// server error), or that couldn't reach it, is sent again, up to `max_retries` times, after a growing wait (or the
@@ -297,6 +298,10 @@ impl OpenAiResponsesGateway {
             lane.request_in_flight = false;
         }
 
+        if lane.is_over_http() {
+            return self.create_response_over_http(model_request, context).await;
+        }
+
         let mut resent: bool = false;
         loop {
             if lane
@@ -308,9 +313,17 @@ impl OpenAiResponsesGateway {
                 lane.continuation = None;
                 lane.connection = None;
                 match self.web_socket_connector.connect().await {
-                    Ok(connection) => lane.connection = Some(connection),
+                    Ok(connection) => {
+                        lane.connection = Some(connection);
+                        lane.connect_failed_on = None;
+                    }
                     Err(exception) => {
-                        ApplicationLogger::log_exception(&exception, LogLevel::Warning);
+                        ApplicationLogger::warning(
+                            "No WebSocket connection could be opened: the lane's requests go over HTTP for a while",
+                            exception.context().clone(),
+                            Some(&exception),
+                        );
+                        lane.record_connect_failed();
                         return self.create_response_over_http(model_request, context).await;
                     }
                 }

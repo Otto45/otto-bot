@@ -3,12 +3,14 @@ from typing import Any, final
 import uvicorn
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException
 
 from example_app.example_app_facade import ExampleAppFacade
 from example_app.managers.exceptions.application_base_exception import ApplicationBaseException
 from example_app.managers.logger.application_logger import ApplicationLogger
 from example_app.managers.logger.uncaught_exception_logger import UncaughtExceptionLogger
 from example_app.services.http.exception_handlers.application_exception_handler import ApplicationExceptionHandler
+from example_app.services.http.exception_handlers.http_exception_handler import HttpExceptionHandler
 from example_app.services.http.exception_handlers.request_validation_exception_handler import (
     RequestValidationExceptionHandler,
 )
@@ -55,6 +57,7 @@ class HttpService:
         application.include_router(UserProfileRouter.create_router())
         application.add_exception_handler(ApplicationBaseException, ApplicationExceptionHandler.handle)
         application.add_exception_handler(RequestValidationError, RequestValidationExceptionHandler.handle)
+        application.add_exception_handler(HTTPException, HttpExceptionHandler.handle)
         application.add_middleware(UnexpectedErrorMiddleware)
         return application
 

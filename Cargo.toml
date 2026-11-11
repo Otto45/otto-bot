@@ -40,6 +40,10 @@ tree-sitter-python = "0.25.0"
 tree-sitter-typescript = "0.23.2"
 globset = "0.4.21"
 tokio-tungstenite = { version = "0.28", features = ["rustls-tls-native-roots"] }
+# The WebSocket transport's TLS: aws-lc-rs named explicitly (as reqwest does for the HTTP transport) and the
+# platform's certificate verifier (as reqwest uses), so neither depends on a process-wide default provider.
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
+rustls-platform-verifier = "0.7"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 axum = { version = "0.8.9", features = ["macros"] }
 utoipa = { version = "6.0.0", features = ["chrono"] }

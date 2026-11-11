@@ -10,6 +10,7 @@ import { ApplicationLogger } from "#src/managers/logger/application_logger.ts";
 import { ApplicationExceptionHandler } from "#src/services/http/exception_handlers/application_exception_handler.ts";
 import { RequestRejectionHandler } from "#src/services/http/exception_handlers/request_rejection_handler.ts";
 import { UnexpectedErrorHandler } from "#src/services/http/exception_handlers/unexpected_error_handler.ts";
+import { UnmatchedRequestHandler } from "#src/services/http/exception_handlers/unmatched_request_handler.ts";
 import type { HttpEnvironment } from "#src/services/http/http_environment.ts";
 import { RequestRejectionMapper } from "#src/services/http/mappers/request_rejection_mapper.ts";
 import { CustomerRouter } from "#src/services/http/routers/customer_router.ts";
@@ -59,6 +60,7 @@ export class HttpService {
     }
     CustomerRouter.register(application);
     UserProfileRouter.register(application);
+    application.notFound((context): Response => UnmatchedRequestHandler.handle(application, context));
     application.onError((error, context): Response => {
       if (error instanceof ApplicationBaseException) {
         return ApplicationExceptionHandler.handle(error, context);

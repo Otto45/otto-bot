@@ -189,7 +189,7 @@ openapi.json                    the HTTP service's contract, generated
       wire_models/            serde + utoipa request and response models
       extractors/             JsonBody and PathParameters: axum's Json and Path, answering with an ErrorResponse
       mappers/                wire models <-> domain models, and exceptions -> HTTP errors (HttpErrorMapper)
-      exception_handlers/     ApplicationExceptionResponse: the facade's exception as a response, logged
+      exception_handlers/     ApplicationExceptionResponse: the facade's exception as a response, logged; UnmatchedRequestHandler: the router's fallbacks
       middleware/             UnexpectedErrorMiddleware: a panic in a request, logged and answered generically
       logging_bridges/        TracingLoggingBridge
       export_openapi.rs       writes the service's contract to openapi.json
@@ -200,7 +200,7 @@ openapi.json                    the HTTP service's contract, generated
   - every domain model the facade returns is mapped to the service's own response model (`wire_models/`) before it is serialized, so the domain can change without changing the API
   - it maps `ApplicationBaseException` kinds to protocol errors (e.g. `HttpErrorMapper`); a client error (4xx) is answered with the exception's own message, everything else is logged and answered generically so tables, SQL and upstream details never leak
   - a route returns `Result<_, ApplicationExceptionResponse>`, whose `IntoResponse` maps, logs and answers the exception; a route never matches on an exception itself
-  - axum's own rejections (a path parameter or body that doesn't fit: 400, 422) are answered in the same `ErrorResponse` shape, through the service's `JsonBody` and `PathParameters` extractors, so callers handle one shape of error
+  - axum's own rejections (a path parameter or body that doesn't fit: 400, 422) are answered in the same `ErrorResponse` shape, through the service's `JsonBody` and `PathParameters` extractors, so callers handle one shape of error; so is a request no route takes (a path that is no route's: 404; a method its route doesn't accept: 405, with `Allow`), by the router's `fallback` and `method_not_allowed_fallback` (`UnmatchedRequestHandler`), since axum's own have no body
   - it creates the domain facade once when it starts and closes it when it stops (`HttpService::serve`); requests share that instance through the router's state (`State<Arc<ExampleAppFacade>>`), and nothing builds one per request
   - a request model says what shape a request has (its fields and their types) and no more: whether a value is acceptable is decided inside the domain container, so the caller is answered with the domain's own message
   - each route names the responses it can answer with in its `#[utoipa::path]` (e.g. `(status = NOT_FOUND, body = ErrorResponse)`), so they are part of the service's contract

@@ -1,6 +1,8 @@
 use std::fmt;
+use std::sync::Arc;
 use std::time::Duration;
 
+use tokio_tungstenite::Connector;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::{HeaderValue, Request};
 
@@ -18,6 +20,9 @@ pub struct ResponsesWebSocketConnector {
     url: String,
     // Sent in the handshake's Authorization header; never logged, never put in a context.
     api_key: String,
+    // The TLS configuration every wss handshake uses (an ws URL, as a local stand-in has, ignores it): built by the
+    // seam with its crypto provider named, so the handshake never falls back to rustls' process-wide default.
+    tls_configuration: Arc<rustls::ClientConfig>,
     response_timeout: Duration,
     idle_timeout: Duration,
 }
@@ -25,7 +30,13 @@ pub struct ResponsesWebSocketConnector {
 impl ResponsesWebSocketConnector {
     /// `base_url` is the API's HTTP base URL (e.g. https://api.openai.com/v1); the connector speaks to its
     /// /responses endpoint over wss (ws for an http URL).
-    pub fn new(base_url: &str, api_key: String, response_timeout: Duration, idle_timeout: Duration) -> Self {
+    pub fn new(
+        base_url: &str,
+        api_key: String,
+        tls_configuration: Arc<rustls::ClientConfig>,
+        response_timeout: Duration,
+        idle_timeout: Duration,
+    ) -> Self {
         let base_url: &str = base_url.trim_end_matches('/');
         let web_socket_base_url: String = match base_url.strip_prefix("https://") {
             Some(rest) => format!("wss://{rest}"),
@@ -37,6 +48,7 @@ impl ResponsesWebSocketConnector {
         ResponsesWebSocketConnector {
             url: format!("{web_socket_base_url}/responses"),
             api_key,
+            tls_configuration,
             response_timeout,
             idle_timeout,
         }
@@ -63,18 +75,26 @@ impl ResponsesWebSocketConnector {
         request.headers_mut().insert("Authorization", authorization);
 
         let (web_socket, _): (WebSocket, tokio_tungstenite::tungstenite::handshake::client::Response) =
-            tokio::time::timeout(self.response_timeout, tokio_tungstenite::connect_async(request))
-                .await
-                .map_err(|_: tokio::time::error::Elapsed| {
-                    ApplicationBaseException::new(
-                        OpenAiResponsesGatewayException::OpenAiConnection,
-                        "Connecting to the OpenAI API timed out",
-                        context.clone().with("error_type", "TimeoutError"),
-                    )
-                })?
-                .map_err(|exception: tokio_tungstenite::tungstenite::Error| {
-                    ResponsesWebSocketConnector::to_connection_exception(exception, &context)
-                })?;
+            tokio::time::timeout(
+                self.response_timeout,
+                tokio_tungstenite::connect_async_tls_with_config(
+                    request,
+                    None,
+                    false,
+                    Some(Connector::Rustls(self.tls_configuration.clone())),
+                ),
+            )
+            .await
+            .map_err(|_: tokio::time::error::Elapsed| {
+                ApplicationBaseException::new(
+                    OpenAiResponsesGatewayException::OpenAiConnection,
+                    "Connecting to the OpenAI API timed out",
+                    context.clone().with("error_type", "TimeoutError"),
+                )
+            })?
+            .map_err(|exception: tokio_tungstenite::tungstenite::Error| {
+                ResponsesWebSocketConnector::to_connection_exception(exception, &context)
+            })?;
         Ok(ResponsesWebSocketConnection::new(
             web_socket,
             self.response_timeout,
@@ -106,6 +126,7 @@ impl fmt::Debug for ResponsesWebSocketConnector {
             .debug_struct("ResponsesWebSocketConnector")
             .field("url", &self.url)
             .field("api_key", &"[REDACTED]")
+            .field("tls_configuration", &"aws-lc-rs, platform verifier")
             .field("response_timeout", &self.response_timeout)
             .field("idle_timeout", &self.idle_timeout)
             .finish()

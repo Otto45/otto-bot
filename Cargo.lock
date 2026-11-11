@@ -1096,6 +1096,8 @@ dependencies = [
  "ignore",
  "regex",
  "reqwest",
+ "rustls",
+ "rustls-platform-verifier",
  "serde",
  "serde_json",
  "serde_path_to_error",

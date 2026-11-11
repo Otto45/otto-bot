@@ -8,6 +8,7 @@ use utoipa::openapi::{Info, OpenApi, OpenApiBuilder};
 use utoipa_axum::router::OpenApiRouter;
 
 use crate::example_app_facade::ExampleAppFacade;
+use crate::services::http::exception_handlers::unmatched_request_handler::UnmatchedRequestHandler;
 use crate::services::http::middleware::unexpected_error_middleware::UnexpectedErrorMiddleware;
 use crate::services::http::routers::customer_router::CustomerRouter;
 use crate::services::http::routers::user_profile_router::UserProfileRouter;
@@ -41,6 +42,8 @@ impl HttpService {
     pub fn get_application(example_app_facade: Arc<ExampleAppFacade>) -> Router {
         let (router, _contract): (Router<Arc<ExampleAppFacade>>, OpenApi) = HttpService::build().split_for_parts();
         router
+            .fallback(UnmatchedRequestHandler::handle_not_found)
+            .method_not_allowed_fallback(UnmatchedRequestHandler::handle_method_not_allowed)
             .layer(axum::middleware::from_fn(UnexpectedErrorMiddleware::handle))
             .with_state(example_app_facade)
     }

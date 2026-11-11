@@ -192,7 +192,7 @@ pyproject.toml                  dependencies, the entry points ([project.scripts
       wire_models/            pydantic request and response models
       dependencies/           ExampleAppFacadeDependency: hands a route the one facade (FastAPI's Depends)
       mappers/                wire models <-> domain models, and exceptions -> HTTP errors (HttpErrorMapper)
-      exception_handlers/     ApplicationExceptionHandler, RequestValidationExceptionHandler: errors answered as an ErrorResponse, logged
+      exception_handlers/     ApplicationExceptionHandler, RequestValidationExceptionHandler, HttpExceptionHandler: errors answered as an ErrorResponse, logged
       middleware/             UnexpectedErrorMiddleware: an unexpected exception in a request, logged and answered generically
       logging_bridges/        LoggingBridge
       export_openapi.py       writes the service's contract to openapi.json
@@ -204,7 +204,7 @@ pyproject.toml                  dependencies, the entry points ([project.scripts
   - every domain model the facade returns is mapped to the service's own response model (`wire_models/`) before it is serialized, so the domain can change without changing the API
   - it maps `ApplicationBaseException` families to protocol errors (e.g. `HttpErrorMapper`); a client error (4xx) is answered with the exception's own message, everything else is logged and answered generically so tables, SQL and upstream details never leak
   - a route lets the facade's exception propagate to `ApplicationExceptionHandler`, which maps, logs and answers it; a route never catches an exception itself
-  - FastAPI's own answer to a request that doesn't fit (a body or a path parameter that doesn't fit its model: 422) is given in the same `ErrorResponse` shape, by `RequestValidationExceptionHandler`, so callers handle one shape of error
+  - FastAPI's own answer to a request that doesn't fit (a body or a path parameter that doesn't fit its model: 422) is given in the same `ErrorResponse` shape, by `RequestValidationExceptionHandler`, so callers handle one shape of error; so are its HTTP errors (a path that is no route's: 404; a method its route doesn't accept: 405, with `Allow`), by `HttpExceptionHandler`, never FastAPI's `{"detail": ...}`
   - it creates the domain facade once when it starts and closes it when it stops (`HttpService.serve`); requests share that instance through `ExampleAppFacadeDependency`, and nothing builds one per request
   - a request model says what shape a request has (its fields and their types) and no more: whether a value is acceptable is decided inside the domain container, so the caller is answered with the domain's own message
   - each route names the responses it can answer with in its `responses` (e.g. `HTTPStatus.NOT_FOUND: {"description": ..., "model": ErrorResponse}`), so they are part of the service's contract

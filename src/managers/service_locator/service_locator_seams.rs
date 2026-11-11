@@ -1,6 +1,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use rustls_platform_verifier::BuilderVerifierExt;
+
 use crate::managers::configuration_providers::configuration_source_providers::configuration_source_provider_environment::ConfigurationSourceProviderEnvironment;
 use crate::managers::configuration_providers::configuration_source_providers::configuration_source_provider_protocol::ConfigurationSourceProviderProtocol;
 use crate::managers::exceptions::application_base_exception::{ApplicationBaseException, ApplicationResult};
@@ -43,9 +45,29 @@ impl ServiceLocatorSeamsProtocol for ServiceLocatorSeams {
         &self,
         openai_responses_settings: &OpenAiResponsesSettings,
     ) -> ApplicationResult<ResponsesWebSocketConnector> {
+        // aws-lc-rs, the provider reqwest names for the HTTP transport, and the platform's verifier, which reqwest
+        // uses too, so both transports trust the same certificates.
+        let tls_configuration: rustls::ClientConfig =
+            rustls::ClientConfig::builder_with_provider(Arc::new(rustls::crypto::aws_lc_rs::default_provider()))
+                .with_safe_default_protocol_versions()
+                .and_then(
+                    |builder: rustls::ConfigBuilder<rustls::ClientConfig, rustls::WantsVerifier>| {
+                        builder.with_platform_verifier()
+                    },
+                )
+                .map_err(|exception: rustls::Error| {
+                    ApplicationBaseException::new(
+                        OpenAiResponsesGatewayException::OpenAiConnection,
+                        "OpenAI WebSocket TLS configuration could not be built",
+                        ContextualData::new(),
+                    )
+                    .with_source(exception)
+                })?
+                .with_no_client_auth();
         Ok(ResponsesWebSocketConnector::new(
             &openai_responses_settings.base_url,
             openai_responses_settings.api_key.clone(),
+            Arc::new(tls_configuration),
             ServiceLocatorSeams::to_timeout(openai_responses_settings.timeout_seconds, "timeout_seconds")?,
             ServiceLocatorSeams::to_timeout(openai_responses_settings.idle_timeout_seconds, "idle_timeout_seconds")?,
         ))
