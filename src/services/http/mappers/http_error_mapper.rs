@@ -29,6 +29,7 @@ impl HttpErrorMapper {
             | ExceptionKind::AgentRunEngine(_)
             | ExceptionKind::CommandRunnerGateway(_)
             | ExceptionKind::OpenAiResponsesGateway(_)
+            | ExceptionKind::LockStoreGateway(_)
             | ExceptionKind::SessionStoreGateway(_)
             | ExceptionKind::StackPackStoreGateway(_)
             | ExceptionKind::InvalidStackPack => StatusCode::INTERNAL_SERVER_ERROR,

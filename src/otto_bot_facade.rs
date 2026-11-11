@@ -124,8 +124,8 @@ impl OttoBotFacade {
     }
 
     /// Starts running the request in the background. Fails if the session is still running its last one.
-    pub fn submit(&self, session_id: &str, user_request: &UserRequest) -> ApplicationResult<()> {
-        self.otto_bot_manager.submit(session_id, user_request)
+    pub async fn submit(&self, session_id: &str, user_request: &UserRequest) -> ApplicationResult<()> {
+        self.otto_bot_manager.submit(session_id, user_request).await
     }
 
     /// Stops the session's run, if one is under way.

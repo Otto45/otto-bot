@@ -96,6 +96,7 @@ impl ConfigurationProvider {
                 .workspaces_directory
                 .map_or_else(|| home_directory.join("apps"), PathBuf::from),
             sessions_directory: home_directory.join("sessions"),
+            locks_directory: home_directory.join("locks"),
         })
     }
 }

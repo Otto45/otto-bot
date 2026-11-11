@@ -87,7 +87,7 @@ impl CliService {
                 _ => {}
             }
 
-            match otto_bot_facade.submit(&session_id, &UserRequest { text }) {
+            match otto_bot_facade.submit(&session_id, &UserRequest { text }).await {
                 Ok(()) => CliService::follow_run(otto_bot_facade, &session_id, &mut events, &mut stdout).await?,
                 Err(exception) => {
                     let message: String = ApplicationExceptionReport::report(&exception);

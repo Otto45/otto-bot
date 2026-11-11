@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use crate::managers::configuration_providers::configuration_provider::ConfigurationProvider;
+use crate::managers::data_layer::managers::gateways::lock_store::lock_store_gateway::LockStoreGateway;
 use crate::managers::data_layer::managers::gateways::session_store::session_store_gateway::SessionStoreGateway;
 use crate::managers::data_layer::managers::gateways::stack_pack_store::stack_pack_store_gateway::StackPackStoreGateway;
 use crate::managers::engines::agent_run::agent_run_engine::AgentRunEngine;
@@ -42,6 +43,7 @@ pub struct ServiceLocator {
     workspace_gateway: Mutex<Option<Arc<WorkspaceGateway>>>,
     command_runner_gateway: Mutex<Option<Arc<CommandRunnerGateway>>>,
     session_store_gateway: Mutex<Option<Arc<SessionStoreGateway>>>,
+    lock_store_gateway: Mutex<Option<Arc<LockStoreGateway>>>,
     stack_pack_store_gateway: Mutex<Option<Arc<StackPackStoreGateway>>>,
     session_processor: Mutex<Option<Arc<SessionProcessor>>>,
     prompt_processor: Mutex<Option<Arc<PromptProcessor>>>,
@@ -78,6 +80,7 @@ impl ServiceLocator {
             workspace_gateway: Mutex::new(None),
             command_runner_gateway: Mutex::new(None),
             session_store_gateway: Mutex::new(None),
+            lock_store_gateway: Mutex::new(None),
             stack_pack_store_gateway: Mutex::new(None),
             session_processor: Mutex::new(None),
             prompt_processor: Mutex::new(None),
@@ -159,6 +162,18 @@ impl ServiceLocator {
             let gateway_to_close: Arc<SessionStoreGateway> = session_store_gateway.clone();
             self.register_close(Box::new(move || Box::pin(async move { gateway_to_close.close() })));
             Ok(session_store_gateway)
+        })
+    }
+
+    pub fn get_lock_store_gateway(&self) -> ApplicationResult<Arc<LockStoreGateway>> {
+        ServiceLocator::get_or_create(&self.lock_store_gateway, || {
+            let configuration_provider: Arc<ConfigurationProvider> = self.get_configuration_provider()?;
+            let lock_store_gateway: Arc<LockStoreGateway> = Arc::new(LockStoreGateway::new(
+                configuration_provider.get_storage_settings().locks_directory.clone(),
+            ));
+            let gateway_to_close: Arc<LockStoreGateway> = lock_store_gateway.clone();
+            self.register_close(Box::new(move || Box::pin(async move { gateway_to_close.close() })));
+            Ok(lock_store_gateway)
         })
     }
 

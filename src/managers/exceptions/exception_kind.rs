@@ -1,6 +1,7 @@
 use crate::managers::exceptions::agent_run_engine_exception::AgentRunEngineException;
 use crate::managers::exceptions::command_runner_gateway_exception::CommandRunnerGatewayException;
 use crate::managers::exceptions::configuration_provider_exception::ConfigurationProviderException;
+use crate::managers::exceptions::lock_store_gateway_exception::LockStoreGatewayException;
 use crate::managers::exceptions::openai_responses_gateway_exception::OpenAiResponsesGatewayException;
 use crate::managers::exceptions::otto_bot_manager_exception::OttoBotManagerException;
 use crate::managers::exceptions::project_bootstrap_engine_exception::ProjectBootstrapEngineException;
@@ -16,6 +17,7 @@ pub enum ExceptionKind {
     AgentRunEngine(AgentRunEngineException),
     CommandRunnerGateway(CommandRunnerGatewayException),
     ConfigurationProvider(ConfigurationProviderException),
+    LockStoreGateway(LockStoreGatewayException),
     OpenAiResponsesGateway(OpenAiResponsesGatewayException),
     OttoBotManager(OttoBotManagerException),
     ProjectBootstrapEngine(ProjectBootstrapEngineException),
@@ -37,6 +39,7 @@ impl ExceptionKind {
             ExceptionKind::AgentRunEngine(exception) => exception.name(),
             ExceptionKind::CommandRunnerGateway(exception) => exception.name(),
             ExceptionKind::ConfigurationProvider(exception) => exception.name(),
+            ExceptionKind::LockStoreGateway(exception) => exception.name(),
             ExceptionKind::OpenAiResponsesGateway(exception) => exception.name(),
             ExceptionKind::OttoBotManager(exception) => exception.name(),
             ExceptionKind::ProjectBootstrapEngine(exception) => exception.name(),
@@ -64,6 +67,12 @@ impl From<CommandRunnerGatewayException> for ExceptionKind {
 impl From<ConfigurationProviderException> for ExceptionKind {
     fn from(exception: ConfigurationProviderException) -> Self {
         ExceptionKind::ConfigurationProvider(exception)
+    }
+}
+
+impl From<LockStoreGatewayException> for ExceptionKind {
+    fn from(exception: LockStoreGatewayException) -> Self {
+        ExceptionKind::LockStoreGateway(exception)
     }
 }
 

@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use crate::managers::data_layer::managers::data_manager::DataManager;
 use crate::managers::exceptions::application_base_exception::ApplicationResult;
 use crate::managers::models::conversation_item::ConversationItem;
@@ -9,6 +11,7 @@ use crate::managers::models::stack_pack::StackPack;
 use crate::managers::models::template_file::TemplateFile;
 use crate::managers::models::transcript_entry::TranscriptEntry;
 use crate::managers::models::usage_record::UsageRecord;
+use crate::managers::runtime::held_lock::HeldLock;
 use crate::managers::service_locator::service_locator::ServiceLocator;
 
 /// The data layer's only entry point: managers (and the engines they pass it to) never learn where data is kept.
@@ -112,6 +115,17 @@ impl DataFacade {
 
     pub async fn get_stack_pack_rules(&self, stack_pack: &StackPack) -> ApplicationResult<String> {
         self.data_manager.get_stack_pack_rules(stack_pack).await
+    }
+
+    /// The app's lock, while a run changes its files: None when a run of another session, in this process or another,
+    /// holds it.
+    pub async fn try_lock_app(&self, workspace_directory: &Path) -> ApplicationResult<Option<HeldLock>> {
+        self.data_manager.try_lock_app(workspace_directory).await
+    }
+
+    /// The session's lock, while a run works on its conversation: waits while a run of it elsewhere holds it.
+    pub async fn lock_session(&self, session_id: &str) -> ApplicationResult<HeldLock> {
+        self.data_manager.lock_session(session_id).await
     }
 
     pub fn close(&self) {

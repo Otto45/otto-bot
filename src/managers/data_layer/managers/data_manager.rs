@@ -1,5 +1,7 @@
+use std::path::Path;
 use std::sync::Arc;
 
+use crate::managers::data_layer::managers::gateways::lock_store::lock_store_gateway::LockStoreGateway;
 use crate::managers::data_layer::managers::gateways::session_store::session_store_gateway::SessionStoreGateway;
 use crate::managers::data_layer::managers::gateways::stack_pack_store::stack_pack_store_gateway::StackPackStoreGateway;
 use crate::managers::exceptions::application_base_exception::ApplicationResult;
@@ -12,11 +14,13 @@ use crate::managers::models::stack_pack::StackPack;
 use crate::managers::models::template_file::TemplateFile;
 use crate::managers::models::transcript_entry::TranscriptEntry;
 use crate::managers::models::usage_record::UsageRecord;
+use crate::managers::runtime::held_lock::HeldLock;
 use crate::managers::service_locator::service_locator::ServiceLocator;
 
 pub struct DataManager {
     session_store_gateway: Arc<SessionStoreGateway>,
     stack_pack_store_gateway: Arc<StackPackStoreGateway>,
+    lock_store_gateway: Arc<LockStoreGateway>,
 }
 
 impl DataManager {
@@ -24,6 +28,7 @@ impl DataManager {
         Ok(DataManager {
             session_store_gateway: service_locator.get_session_store_gateway()?,
             stack_pack_store_gateway: service_locator.get_stack_pack_store_gateway()?,
+            lock_store_gateway: service_locator.get_lock_store_gateway()?,
         })
     }
 
@@ -121,5 +126,13 @@ impl DataManager {
 
     /// Releases what this manager owns itself. It owns nothing yet: the gateways it uses are singletons that the
     /// ServiceLocator closes when the Domain Facade closes it.
+    pub async fn try_lock_app(&self, workspace_directory: &Path) -> ApplicationResult<Option<HeldLock>> {
+        self.lock_store_gateway.try_lock_app(workspace_directory).await
+    }
+
+    pub async fn lock_session(&self, session_id: &str) -> ApplicationResult<HeldLock> {
+        self.lock_store_gateway.lock_session(session_id).await
+    }
+
     pub fn close(&self) {}
 }

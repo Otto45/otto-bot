@@ -36,6 +36,7 @@ use crate::managers::models::transcript_entry::TranscriptEntry;
 use crate::managers::models::transcript_speaker::TranscriptSpeaker;
 use crate::managers::models::user_request::UserRequest;
 use crate::managers::processors::session::session_processor::SessionProcessor;
+use crate::managers::runtime::held_lock::HeldLock;
 use crate::managers::runtime::live_run::LiveRun;
 use crate::managers::runtime::live_session::LiveSession;
 use crate::managers::runtime::session_event_log::SessionEventLog;
@@ -258,38 +259,33 @@ impl OttoBotManager {
 
     /// Starts running the request in the background and returns; what happens is reported on the session's events,
     /// so a client subscribes before it submits.
-    pub fn submit(&self, session_id: &str, user_request: &UserRequest) -> ApplicationResult<()> {
+    pub async fn submit(&self, session_id: &str, user_request: &UserRequest) -> ApplicationResult<()> {
         self.session_processor.check_user_request(user_request)?;
 
-        let mut live_sessions: MutexGuard<'_, HashMap<String, LiveSession>> = self.lock_live_sessions();
-        let workspace_directory: PathBuf = live_sessions
-            .get(session_id)
-            .ok_or_else(|| OttoBotManager::to_session_not_found_exception(session_id))?
-            .session
-            .workspace_directory
-            .clone();
-        let app_busy: bool = live_sessions.iter().any(|(other_id, other): (&String, &LiveSession)| {
-            other_id != session_id && other.session.workspace_directory == workspace_directory && other.is_running()
-        });
-        let live_session: &mut LiveSession = live_sessions
-            .get_mut(session_id)
-            .ok_or_else(|| OttoBotManager::to_session_not_found_exception(session_id))?;
-        live_session.last_used = Instant::now();
-
-        if live_session.is_running() {
-            return Err(ApplicationBaseException::new(
-                OttoBotManagerException::SessionBusy,
-                "The session is still working on its last request",
-                ContextualData::new().with("session_id", session_id),
-            ));
-        }
-        if app_busy {
+        let workspace_directory: PathBuf = {
+            let mut live_sessions: MutexGuard<'_, HashMap<String, LiveSession>> = self.lock_live_sessions();
+            let live_session: &mut LiveSession = live_sessions
+                .get_mut(session_id)
+                .ok_or_else(|| OttoBotManager::to_session_not_found_exception(session_id))?;
+            live_session.last_used = Instant::now();
+            OttoBotManager::check_not_running(live_session, session_id)?;
+            live_session.session.workspace_directory.clone()
+        };
+        // One run per app, whichever process runs it: the lock is held until the run has ended.
+        let Some(app_lock) = self.data_facade.try_lock_app(&workspace_directory).await? else {
             return Err(ApplicationBaseException::new(
                 OttoBotManagerException::AppBusy,
                 "The app is busy with another request; send this once it is done",
                 ContextualData::new().with("session_id", session_id),
             ));
-        }
+        };
+
+        let mut live_sessions: MutexGuard<'_, HashMap<String, LiveSession>> = self.lock_live_sessions();
+        let live_session: &mut LiveSession = live_sessions
+            .get_mut(session_id)
+            .ok_or_else(|| OttoBotManager::to_session_not_found_exception(session_id))?;
+        // A run of it may have started while the lock was taken (and ended, or it would hold the lock).
+        OttoBotManager::check_not_running(live_session, session_id)?;
 
         // The last run's task may still be compacting: it is kept, to be stopped on close, and the new run waits for it.
         if let Some(last_run) = live_session.run.take()
@@ -308,6 +304,7 @@ impl OttoBotManager {
             live_session.events.clone(),
             self.data_facade.clone(),
             live_session.work_lock.clone(),
+            app_lock,
             end_reported.clone(),
         ));
         live_session.run = Some(LiveRun {
@@ -392,24 +389,35 @@ impl OttoBotManager {
         events: broadcast::Sender<SessionEvent>,
         data_facade: Arc<DataFacade>,
         work_lock: Arc<tokio::sync::Mutex<()>>,
+        app_lock: HeldLock,
         end_reported: Arc<AtomicBool>,
     ) {
+        // The session's last run in this process, then in any other, may still be compacting: the run waits for it.
         let _working: tokio::sync::OwnedMutexGuard<()> = work_lock.lock_owned().await;
-        let ran: ApplicationResult<(RunSummary, i64)> = OttoBotManager::run_request(
-            &agent_run_engine,
-            &session,
-            &user_request,
-            submitted_on,
-            &events,
-            &data_facade,
-        )
+        let ran: ApplicationResult<(RunSummary, i64, HeldLock)> = async {
+            let session_lock: HeldLock = data_facade.lock_session(&session.id).await?;
+            let (run_summary, orchestrator_input_tokens): (RunSummary, i64) = OttoBotManager::run_request(
+                &agent_run_engine,
+                &session,
+                &user_request,
+                submitted_on,
+                &events,
+                &data_facade,
+            )
+            .await?;
+            Ok((run_summary, orchestrator_input_tokens, session_lock))
+        }
         .await;
+        // The app's files are done with, so another session's request may run while this one compacts; let go before
+        // the end is reported, so a request sent as soon as it is seen finds the app free.
+        drop(app_lock);
         // Marked before it is reported, so a request sent as soon as the end is seen finds the run ended.
         end_reported.store(true, Ordering::SeqCst);
-        let orchestrator_input_tokens: i64 = match ran {
-            Ok((run_summary, orchestrator_input_tokens)) => {
+        // The session's lock is kept through the compaction.
+        let (orchestrator_input_tokens, _session_lock): (i64, HeldLock) = match ran {
+            Ok((run_summary, orchestrator_input_tokens, session_lock)) => {
                 events.send(SessionEvent::RunCompleted { run_summary }).ok();
-                orchestrator_input_tokens
+                (orchestrator_input_tokens, session_lock)
             }
             Err(exception) => {
                 // Logged here, where it is caught, so the client is only told what failed.
@@ -598,6 +606,18 @@ impl OttoBotManager {
                 );
             }
         }
+    }
+
+    // A session runs one request at a time.
+    fn check_not_running(live_session: &LiveSession, session_id: &str) -> ApplicationResult<()> {
+        if live_session.is_running() {
+            return Err(ApplicationBaseException::new(
+                OttoBotManagerException::SessionBusy,
+                "The session is still working on its last request",
+                ContextualData::new().with("session_id", session_id),
+            ));
+        }
+        Ok(())
     }
 
     fn to_session_not_found_exception(session_id: &str) -> ApplicationBaseException {

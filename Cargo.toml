@@ -50,6 +50,8 @@ utoipa = { version = "6.0.0", features = ["chrono"] }
 utoipa-axum = "0.3.0"
 tokio-stream = { version = "0.1.19", features = ["sync"] }
 subtle = "2.6.1"
+# Names an app's lock file after its folder's path, whatever its length.
+sha2 = "0.10"
 similar = "2"
 
 [lints.rust]

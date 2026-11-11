@@ -104,12 +104,15 @@ async fn send_message(
         .otto_bot_facade
         .resume_app_session(&app_name, &session_id)
         .await?;
-    http_service_state.otto_bot_facade.submit(
-        &session_id,
-        &UserRequest {
-            text: send_message_request.text,
-        },
-    )?;
+    http_service_state
+        .otto_bot_facade
+        .submit(
+            &session_id,
+            &UserRequest {
+                text: send_message_request.text,
+            },
+        )
+        .await?;
     Ok(StatusCode::ACCEPTED)
 }
 

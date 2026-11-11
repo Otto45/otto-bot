@@ -267,6 +267,7 @@ src/
             managers/gateways/
                 session_store/      JSONL files: sessions, transcripts, briefs, lane item logs, project maps, usage
                 stack_pack_store/   the stack packs
+                lock_store/         file locks: one per app, one per session
         common/                     calculators (retry delay), formatters, matchers (path globs), tree_sitter,
                                     validators
         models/, exceptions/, logger/, configuration_providers/, service_locator/
@@ -294,7 +295,10 @@ stack_packs/rust/, stack_packs/python/, stack_packs/typescript/
   survive a dropped connection (`Last-Event-ID`) and a stream opened just after a message misses nothing. The
   orchestrator's replies are the events meant for the person (`to_person`); the platform shows those, and an operator
   view can show the rest.
-- **One run per app**: two sessions of one workspace never run at once, since both would change the same files.
+- **One run per app**: two sessions of one workspace never run at once, since both would change the same files, even
+  in two processes (the CLI and the HTTP API): a run holds the app's lock, an operating-system file lock under
+  `OTTO_BOT_HOME/locks/`, until it ends, and its session's lock through its compaction too, so a run of a session
+  compacting elsewhere waits for it. The operating system releases a process's locks when it exits, crashed or not.
 - **Session options** (such as the service tier) are passed to `start_session` and override configured defaults,
   which only the configuration provider reads from the environment.
 
