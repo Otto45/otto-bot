@@ -96,6 +96,9 @@ fn run(cli_arguments: &CliArguments, log_path: Option<PathBuf>) -> ExitCode {
 
     let ran: Result<(), Box<dyn Error + Send + Sync>> =
         runtime.block_on(CliService::run(cli_arguments, log_path.as_deref()));
+    // A read of the terminal can't be cancelled: left to end with the runtime, it would keep the CLI from exiting
+    // (after Ctrl-C at the prompt, say) until Enter is pressed. Everything else has ended: the facade is closed.
+    runtime.shutdown_background();
     match ran {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {

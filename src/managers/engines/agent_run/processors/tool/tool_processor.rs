@@ -42,6 +42,8 @@ const SUBMIT_REVIEW: &str = "submit_review";
 const APPLY_PATCH: &str = "apply_patch";
 // What a failed check prints is cut to its end, where compilers and linters say what is wrong.
 const MAX_CHECK_OUTPUT_CHARS: usize = 8_000;
+// How many files a listing shows the model; it is told how many more there are.
+const MAX_LISTED_FILES: usize = 2_000;
 const UNFINISHED_TOOL_CALL_OUTPUT: &str =
     "The run was cancelled while this call was being carried out; it may or may not have taken effect.";
 
@@ -557,6 +559,13 @@ impl ToolProcessor {
     pub fn format_file_list(&self, paths: &[String]) -> String {
         if paths.is_empty() {
             return "No files.".to_string();
+        }
+        if paths.len() > MAX_LISTED_FILES {
+            return format!(
+                "{}\n[... {} more files: list a directory of the workspace to see its own]",
+                paths[..MAX_LISTED_FILES].join("\n"),
+                paths.len() - MAX_LISTED_FILES
+            );
         }
         paths.join("\n")
     }

@@ -6,6 +6,7 @@ use serde::de::DeserializeOwned;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
 use crate::managers::common::formatters::validation_error_formatter::ValidationErrorFormatter;
+use crate::managers::common::validators::validator_session_id::ValidatorSessionId;
 use crate::managers::data_layer::managers::gateways::session_store::mappers::conversation_item_document_mapper::ConversationItemDocumentMapper;
 use crate::managers::data_layer::managers::gateways::session_store::mappers::implementation_brief_document_mapper::ImplementationBriefDocumentMapper;
 use crate::managers::data_layer::managers::gateways::session_store::mappers::review_baseline_document_mapper::ReviewBaselineDocumentMapper;
@@ -87,7 +88,7 @@ impl SessionStoreGateway {
     /// The session with the id; None if there is none, or the id couldn't be one (so it never leads out of the
     /// sessions folder).
     pub async fn get_session(&self, session_id: &str) -> ApplicationResult<Option<Session>> {
-        if !SessionStoreGateway::is_session_id(session_id) {
+        if !ValidatorSessionId::is_session_id(session_id) {
             return Ok(None);
         }
         let context: ContextualData = ContextualData::new().with("session_id", session_id);
@@ -495,14 +496,6 @@ impl SessionStoreGateway {
 
     /// Holds no open file between calls, so there is nothing to close.
     pub fn close(&self) {}
-
-    // A session's id names its folder, so it is a word of lowercase letters and digits, as the ids made are.
-    fn is_session_id(session_id: &str) -> bool {
-        !session_id.is_empty()
-            && session_id
-                .chars()
-                .all(|character: char| character.is_ascii_lowercase() || character.is_ascii_digit())
-    }
 
     fn get_file_path(&self, session_id: &str, file_name: &str) -> PathBuf {
         self.sessions_directory.join(session_id).join(file_name)

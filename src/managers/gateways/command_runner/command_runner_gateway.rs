@@ -211,6 +211,7 @@ impl CommandRunnerGateway {
 
     fn to_text(end: &[u8]) -> String {
         let kept: &[u8] = &end[end.len().saturating_sub(MAX_OUTPUT_BYTES)..];
-        String::from_utf8_lossy(kept).into_owned()
+        // A NUL character is no text: what the command wrote is sent to the model and kept in the session store.
+        String::from_utf8_lossy(kept).replace('\0', "\u{fffd}")
     }
 }

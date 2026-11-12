@@ -6,10 +6,13 @@ impl SessionEventReplayMapper {
     /// What a client that opens the event stream gets first: the kept events after the one it saw last (`?after`, or
     /// the Last-Event-ID header its EventSource sends when it reconnects), or else the current run's from its start,
     /// so a stream opened just after a message was sent misses nothing of its run. A Last-Event-ID that is no event's
-    /// number is as if there were none.
+    /// number is as if there were none. With both, the later event counts: a client that opened its stream with
+    /// `?after` reconnects to the same address, with the Last-Event-ID of what it has seen since.
     pub fn to_session_event_replay(after: Option<u64>, last_event_id: Option<&str>) -> SessionEventReplay {
+        let last_event_id: Option<u64> =
+            last_event_id.and_then(|last_event_id: &str| last_event_id.trim().parse::<u64>().ok());
         after
-            .or_else(|| last_event_id.and_then(|last_event_id: &str| last_event_id.trim().parse::<u64>().ok()))
+            .max(last_event_id)
             .map_or(SessionEventReplay::FromRunStart, SessionEventReplay::After)
     }
 }

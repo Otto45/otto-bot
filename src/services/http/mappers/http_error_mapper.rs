@@ -21,6 +21,8 @@ impl HttpErrorMapper {
                 | OttoBotManagerException::AppBusy
                 | OttoBotManagerException::AppAlreadyExists,
             ) => StatusCode::CONFLICT,
+            // Only ever a run's failure, which is reported as an event; no route answers with it.
+            ExceptionKind::OttoBotManager(OttoBotManagerException::AppLockLost) => StatusCode::INTERNAL_SERVER_ERROR,
             // An empty message, an app's name that can't be one, a stack there is no pack (or template) for.
             ExceptionKind::InvalidUserRequest | ExceptionKind::ProjectBootstrapEngine(_) => StatusCode::BAD_REQUEST,
             // Apps are addressed by name, so a workspace's own errors (which name its path) are the server's.

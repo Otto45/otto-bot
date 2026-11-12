@@ -13,7 +13,6 @@ use crate::managers::models::workspace_file::WorkspaceFile;
 
 // A file larger than this is not read whole: it is almost never source code, and would fill the model's context.
 const MAX_FILE_BYTES: u64 = 512 * 1024;
-const MAX_LISTED_FILES: usize = 2_000;
 const MAX_SEARCH_MATCHES: usize = 200;
 const MAX_MATCH_LINE_CHARS: usize = 300;
 
@@ -139,6 +138,15 @@ impl WorkspaceGateway {
                 context.clone(),
             )
         })?;
+        // A file with a NUL character in it is data, whatever its encoding says (UTF-16 text reads as such): it isn't
+        // sent to the model, and a database's text can't hold it.
+        if content.contains('\0') {
+            return Err(ApplicationBaseException::new(
+                WorkspaceGatewayException::NotTextFile,
+                format!("{relative_path} is not a text file: it holds NUL characters"),
+                context,
+            ));
+        }
         Ok(WorkspaceFile {
             path: relative_path,
             content,
@@ -187,7 +195,8 @@ impl WorkspaceGateway {
     }
 
     /// Every file under `directory` ("" or "." for the whole workspace), as paths relative to the workspace, sorted;
-    /// what .gitignore ignores, `.git/` and `.env` files are left out. At most MAX_LISTED_FILES.
+    /// what .gitignore ignores, `.git/` and `.env` files are left out. Every one of them: the project map, the lint and
+    /// a review's diff are made from it, so none may be missing; what the model is shown of it is cut where it is shown.
     pub async fn list_files(&self, workspace_directory: &Path, directory: &str) -> ApplicationResult<Vec<String>> {
         let (_, absolute_directory): (String, PathBuf) =
             WorkspaceGateway::resolve_path(workspace_directory, directory).await?;
@@ -196,7 +205,6 @@ impl WorkspaceGateway {
         tokio::task::spawn_blocking(move || -> Vec<String> {
             let mut paths: Vec<String> = WorkspaceGateway::walk(&absolute_directory, None)
                 .filter_map(|entry: DirEntry| WorkspaceGateway::to_relative_path(&root, entry.path()))
-                .take(MAX_LISTED_FILES)
                 .collect();
             paths.sort();
             paths
@@ -244,6 +252,9 @@ impl WorkspaceGateway {
                 let Ok(content) = std::fs::read_to_string(entry.path()) else {
                     continue;
                 };
+                if content.contains('\0') {
+                    continue;
+                }
                 for (line_index, line) in content.lines().enumerate() {
                     if regex.is_match(line) {
                         search_matches.push(SearchMatch {

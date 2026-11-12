@@ -107,6 +107,13 @@ impl SessionProcessor {
                 ContextualData::new(),
             ));
         }
+        if user_request.text.contains('\0') {
+            return Err(ApplicationBaseException::new(
+                ExceptionKind::InvalidUserRequest,
+                "The request holds a character that can't be part of a message",
+                ContextualData::new(),
+            ));
+        }
         Ok(())
     }
 }

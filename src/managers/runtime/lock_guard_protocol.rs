@@ -7,4 +7,8 @@ use std::pin::Pin;
 pub trait LockGuardProtocol: Send + Sync {
     /// Lets go of the lock, returning once another holder can take it.
     fn release(self: Box<Self>) -> Pin<Box<dyn Future<Output = ()> + Send>>;
+
+    /// Completes if the lock is lost while it is held (what held it is gone, so another holder can take it); never,
+    /// for a lock that can't be.
+    fn lost(&self) -> Pin<Box<dyn Future<Output = ()> + Send>>;
 }

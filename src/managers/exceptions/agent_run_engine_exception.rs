@@ -9,6 +9,8 @@ pub enum AgentRunEngineException {
     /// A work plan that fails the harness's checks: told to the model, which fixes the plan and submits it again.
     InvalidBrief,
     MaxTurnsReached,
+    /// The orchestrator's response held no text and no tool call: there is nothing to tell the person.
+    NoReply,
 }
 
 impl AgentRunEngineException {
@@ -19,6 +21,7 @@ impl AgentRunEngineException {
             AgentRunEngineException::ToolNotAllowed => "ToolNotAllowedException",
             AgentRunEngineException::InvalidBrief => "InvalidBriefException",
             AgentRunEngineException::MaxTurnsReached => "MaxTurnsReachedException",
+            AgentRunEngineException::NoReply => "NoReplyException",
         }
     }
 }

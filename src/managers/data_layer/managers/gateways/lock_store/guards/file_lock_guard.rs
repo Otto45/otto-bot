@@ -21,6 +21,11 @@ impl LockGuardProtocol for FileLockGuard {
         drop(self);
         Box::pin(async {})
     }
+
+    // The operating system holds the lock for as long as this process has the file open.
+    fn lost(&self) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+        Box::pin(std::future::pending())
+    }
 }
 
 impl Drop for FileLockGuard {

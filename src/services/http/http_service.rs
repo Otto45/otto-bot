@@ -1,14 +1,17 @@
 use std::error::Error;
 use std::future::Future;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::Router;
 use tokio::net::TcpListener;
-use tokio::sync::watch;
+use tokio::sync::{oneshot, watch};
 use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityRequirement, SecurityScheme};
 use utoipa::openapi::{ComponentsBuilder, Info, OpenApi, OpenApiBuilder};
 use utoipa_axum::router::OpenApiRouter;
 
+use crate::managers::exceptions::contextual_data::ContextualData;
+use crate::managers::logger::application_logger::ApplicationLogger;
 use crate::otto_bot_facade::OttoBotFacade;
 use crate::services::http::exception_handlers::unmatched_request_handler::UnmatchedRequestHandler;
 use crate::services::http::http_service_state::HttpServiceState;
@@ -20,6 +23,8 @@ use crate::services::http::routers::session_router::SessionRouter;
 
 // The bearer token's scheme in the contract.
 const BEARER_SCHEME: &str = "bearer";
+// How long the requests under way get to finish once the service is told to stop.
+const SHUTDOWN_GRACE_PERIOD: Duration = Duration::from_secs(10);
 
 // The HTTP API, otto-bot's second client: the software factory platform starts apps and holds sessions with it. A
 // service runs and listens; it sits outside the domain container and holds no application logic: it works the way
@@ -45,13 +50,37 @@ impl HttpService {
             shutting_down,
         };
 
-        let served: std::io::Result<()> = axum::serve(listener, HttpService::get_application(http_service_state))
-            .with_graceful_shutdown(async move {
-                shutdown.await;
-                // No stream may be open.
-                stop.send(true).ok();
-            })
-            .await;
+        let (signal_drain, draining): (oneshot::Sender<()>, oneshot::Receiver<()>) = oneshot::channel();
+        let application: Router = HttpService::get_application(http_service_state);
+        let serving = async move {
+            axum::serve(listener, application)
+                .with_graceful_shutdown(async move {
+                    shutdown.await;
+                    // No stream may be open.
+                    stop.send(true).ok();
+                    signal_drain.send(()).ok();
+                })
+                .await
+        };
+        // The requests under way get a while to finish; a connection that never does (a client that stopped reading,
+        // or never finished its request) must not keep the facade from being closed.
+        let served: std::io::Result<()> = tokio::select! {
+            served = serving => served,
+            () = async {
+                if draining.await.is_ok() {
+                    tokio::time::sleep(SHUTDOWN_GRACE_PERIOD).await;
+                } else {
+                    std::future::pending::<()>().await;
+                }
+            } => {
+                ApplicationLogger::warning(
+                    "Requests were still under way when the time to finish them ran out; the service stops anyway",
+                    ContextualData::new().with("grace_period_seconds", SHUTDOWN_GRACE_PERIOD.as_secs_f64()),
+                    None,
+                );
+                Ok(())
+            }
+        };
 
         otto_bot_facade.close().await;
         Ok(served?)

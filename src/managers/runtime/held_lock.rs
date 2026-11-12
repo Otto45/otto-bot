@@ -1,3 +1,6 @@
+use std::future::Future;
+use std::pin::Pin;
+
 use crate::managers::runtime::lock_guard_protocol::LockGuardProtocol;
 
 /// A lock the lock's store holds for a run: on an app, while the run changes its files, or on a session, while its
@@ -13,6 +16,15 @@ pub struct HeldLock {
 impl HeldLock {
     pub fn new(guard: Box<dyn LockGuardProtocol>) -> Self {
         HeldLock { guard: Some(guard) }
+    }
+
+    /// Completes if the lock is lost while it is held (a database connection holding it ended), so its holder can
+    /// stop what the lock was protecting; never, for a lock that is kept until it is let go of.
+    pub fn lost(&self) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+        match self.guard.as_ref() {
+            Some(guard) => guard.lost(),
+            None => Box::pin(std::future::pending()),
+        }
     }
 
     /// Lets go of the lock, returning once another holder can take it.

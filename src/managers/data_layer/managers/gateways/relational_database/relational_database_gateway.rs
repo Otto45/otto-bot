@@ -3,10 +3,11 @@ use std::time::Duration;
 
 use chrono::Utc;
 use sqlx::pool::PoolConnection;
-use sqlx::postgres::{PgArguments, PgPool, PgRow};
-use sqlx::{FromRow, Postgres, Transaction};
+use sqlx::postgres::{PgArguments, PgConnection, PgPool, PgRow};
+use sqlx::{Connection, FromRow, Postgres, Transaction};
 
 use crate::managers::common::formatters::validation_error_formatter::ValidationErrorFormatter;
+use crate::managers::common::validators::validator_session_id::ValidatorSessionId;
 use crate::managers::data_layer::managers::gateways::relational_database::guards::advisory_lock_guard::AdvisoryLockGuard;
 use crate::managers::data_layer::managers::gateways::relational_database::mappers::advisory_lock_mapper::AdvisoryLockMapper;
 use crate::managers::data_layer::managers::gateways::relational_database::mappers::conversation_item_mapper::ConversationItemMapper;
@@ -88,8 +89,12 @@ impl RelationalDatabaseGateway {
         .await
     }
 
-    /// The session with the id; None if there is none.
+    /// The session with the id; None if there is none, or the id couldn't be one (so nothing a client made up is
+    /// sent to the database).
     pub async fn get_session(&self, session_id: &str) -> ApplicationResult<Option<Session>> {
+        if !ValidatorSessionId::is_session_id(session_id) {
+            return Ok(None);
+        }
         let context: ContextualData = ContextualData::new().with("session_id", session_id);
         let sql_query: SqlQuery = SessionQueryBuilder::build_get_session_query(session_id);
         let Some(row) = RelationalDatabaseGateway::bind(&sql_query)
@@ -454,13 +459,16 @@ impl RelationalDatabaseGateway {
     pub async fn lock_session(&self, session_id: &str) -> ApplicationResult<HeldLock> {
         let context: ContextualData = ContextualData::new().with("session_id", session_id);
         let lock_key: i64 = AdvisoryLockQueryBuilder::get_session_lock_key(session_id);
+        // One connection of its own asks until it has the lock: dropped while it waits (the run waiting was
+        // cancelled), it is closed, and takes with it a lock Postgres had just granted.
+        let mut connection: PgConnection = self.detach_connection(&context).await?;
         let mut waited: bool = false;
         loop {
-            if let Some(held_lock) = self.try_lock(lock_key, &context).await? {
+            if RelationalDatabaseGateway::try_lock_on(&mut connection, lock_key, &context).await? {
                 if waited {
                     ApplicationLogger::info("The session's lock is free again; its run goes on", context);
                 }
-                return Ok(held_lock);
+                return Ok(HeldLock::new(Box::new(AdvisoryLockGuard::new(connection, lock_key))));
             }
             if !waited {
                 ApplicationLogger::info(
@@ -528,14 +536,35 @@ impl RelationalDatabaseGateway {
         .with_source(driver_error)
     }
 
-    // Takes the lock on a connection of the pool's: one that takes it leaves the pool with it (the lock is the
-    // connection's), and one that doesn't goes back to the pool, holding nothing.
+    // Takes the lock on a connection of its own, taken out of the pool before it asks, so that the lock can never go
+    // back to the pool with it: whatever happens next (the lock is refused, or whoever asked is cancelled before the
+    // answer), a connection that isn't kept is closed, and Postgres frees what it held.
     async fn try_lock(&self, lock_key: i64, context: &ContextualData) -> ApplicationResult<Option<HeldLock>> {
+        let mut connection: PgConnection = self.detach_connection(context).await?;
+        if RelationalDatabaseGateway::try_lock_on(&mut connection, lock_key, context).await? {
+            return Ok(Some(HeldLock::new(Box::new(AdvisoryLockGuard::new(
+                connection, lock_key,
+            )))));
+        }
+        connection.close().await.ok();
+        Ok(None)
+    }
+
+    async fn detach_connection(&self, context: &ContextualData) -> ApplicationResult<PgConnection> {
+        let sql_query: SqlQuery = AdvisoryLockQueryBuilder::build_try_lock_query(0);
+        let connection: PoolConnection<Postgres> = self.pool.acquire().await.map_err(|exception: sqlx::Error| {
+            RelationalDatabaseGateway::to_query_exception(exception, &sql_query, "taking a lock", context)
+        })?;
+        Ok(connection.detach())
+    }
+
+    // Whether the connection now holds the lock.
+    async fn try_lock_on(
+        connection: &mut PgConnection,
+        lock_key: i64,
+        context: &ContextualData,
+    ) -> ApplicationResult<bool> {
         let sql_query: SqlQuery = AdvisoryLockQueryBuilder::build_try_lock_query(lock_key);
-        let mut connection: PoolConnection<Postgres> =
-            self.pool.acquire().await.map_err(|exception: sqlx::Error| {
-                RelationalDatabaseGateway::to_query_exception(exception, &sql_query, "taking a lock", context)
-            })?;
         let row: PgRow = RelationalDatabaseGateway::bind(&sql_query)
             .fetch_one(&mut *connection)
             .await
@@ -549,13 +578,7 @@ impl RelationalDatabaseGateway {
             context,
         )?;
         ValidatorAdvisoryLockRow::validate_advisory_lock_row(&advisory_lock_row)?;
-        if !AdvisoryLockMapper::to_locked(advisory_lock_row) {
-            return Ok(None);
-        }
-        Ok(Some(HeldLock::new(Box::new(AdvisoryLockGuard::new(
-            connection.detach(),
-            lock_key,
-        )))))
+        Ok(AdvisoryLockMapper::to_locked(advisory_lock_row))
     }
 
     async fn execute(

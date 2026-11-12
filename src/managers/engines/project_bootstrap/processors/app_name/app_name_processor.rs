@@ -4,6 +4,8 @@ use crate::managers::exceptions::project_bootstrap_engine_exception::ProjectBoot
 use crate::managers::models::app_name::AppName;
 use crate::managers::models::name_replacement::NameReplacement;
 
+const MAX_APP_NAME_CHARS: usize = 60;
+
 // Belongs to the ProjectBootstrapEngine: the forms of a new app's name, and the template's names replaced with them.
 pub struct AppNameProcessor;
 
@@ -19,11 +21,13 @@ impl AppNameProcessor {
             .and_then(|word: &String| word.chars().next())
             .is_some_and(|character: char| character.is_ascii_alphabetic());
         let is_ascii: bool = name.is_ascii();
-        if !starts_with_letter || !is_ascii {
+        // Its kebab-case form names a folder, a package and a database, each with a limit of its own.
+        let is_short_enough: bool = name.len() <= MAX_APP_NAME_CHARS;
+        if !starts_with_letter || !is_ascii || !is_short_enough {
             return Err(ApplicationBaseException::new(
                 ProjectBootstrapEngineException::InvalidAppName,
-                "The app's name must start with a letter, and hold only letters, digits, spaces, hyphens and \
-                 underscores (e.g. orders-app)",
+                "The app's name must start with a letter, hold only letters, digits, spaces, hyphens and \
+                 underscores (e.g. orders-app), and be at most 60 characters long",
                 ContextualData::new().with("app_name", name),
             ));
         }

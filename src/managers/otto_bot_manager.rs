@@ -452,7 +452,7 @@ impl OttoBotManager {
     ) {
         // The session's last run in this process, then in any other, may still be compacting: the run waits for it.
         let _working: tokio::sync::OwnedMutexGuard<()> = work_lock.lock_owned().await;
-        let ran: ApplicationResult<(RunSummary, i64, HeldLock)> = async {
+        let work = async {
             let session_lock: HeldLock = data_facade.lock_session(&session.id).await?;
             let (run_summary, orchestrator_input_tokens): (RunSummary, i64) = OttoBotManager::run_request(
                 &agent_run_engine,
@@ -465,8 +465,16 @@ impl OttoBotManager {
             )
             .await?;
             Ok((run_summary, orchestrator_input_tokens, session_lock))
-        }
-        .await;
+        };
+        // The run changes the app's files only while it holds the app's lock: one that loses it stops there.
+        let ran: ApplicationResult<(RunSummary, i64, HeldLock)> = tokio::select! {
+            ran = work => ran,
+            () = app_lock.lost() => Err(ApplicationBaseException::new(
+                OttoBotManagerException::AppLockLost,
+                "The request was stopped: the app's lock was lost while it ran",
+                ContextualData::new().with("session_id", session.id.as_str()),
+            )),
+        };
         // How the run ended is kept before the app's lock is let go of, so no one finds the app free and the run
         // without an end.
         OttoBotManager::record_run_end(

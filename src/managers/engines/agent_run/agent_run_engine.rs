@@ -822,6 +822,17 @@ impl AgentRunEngine {
                 service_tier: model_response.service_tier,
             };
             if model_response.tool_calls.is_empty() {
+                // The orchestrator's answer is the person's: a response that says nothing and asks for nothing
+                // (a refusal, say) would end the run with the person told nothing, so it fails the run instead.
+                if agent_assignment.role == AgentRole::Orchestrator && model_response.text.is_none() {
+                    return Err(ApplicationBaseException::new(
+                        AgentRunEngineException::NoReply,
+                        "The model gave no answer",
+                        ContextualData::new()
+                            .with("session_id", session.id.as_str())
+                            .with("lane_name", lane_name),
+                    ));
+                }
                 return Ok(AgentRunOutcome {
                     run_summary,
                     lane_ending: None,
@@ -1398,10 +1409,13 @@ impl AgentRunEngine {
                 | AgentRunEngineException::InvalidPatch
                 | AgentRunEngineException::ToolNotAllowed
                 | AgentRunEngineException::InvalidBrief => true,
-                AgentRunEngineException::MaxTurnsReached => false,
+                AgentRunEngineException::MaxTurnsReached | AgentRunEngineException::NoReply => false,
             },
-            ExceptionKind::WorkspaceGateway(_) | ExceptionKind::CommandRunnerGateway(_) => true,
-            ExceptionKind::ConfigurationProvider(_)
+            ExceptionKind::WorkspaceGateway(_) => true,
+            // A command that can't be started (its toolchain isn't on this machine) is nothing the model can put
+            // right: it ends the run, as an error an engineer sees.
+            ExceptionKind::CommandRunnerGateway(_)
+            | ExceptionKind::ConfigurationProvider(_)
             | ExceptionKind::OpenAiResponsesGateway(_)
             | ExceptionKind::OttoBotManager(_)
             | ExceptionKind::ProjectBootstrapEngine(_)
