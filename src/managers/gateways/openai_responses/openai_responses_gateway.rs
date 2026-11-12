@@ -156,11 +156,13 @@ impl OpenAiResponsesGateway {
     }
 
     // A failure on the API's side, or a connection that couldn't be made or was lost twice in a row. A response that
-    // took longer than the whole response timeout isn't: sending it again would likely take as long.
+    // took longer than the whole response timeout isn't, whichever transport it went by: sending it again would
+    // likely take as long.
     fn is_worth_retrying(exception: &ApplicationBaseException) -> bool {
         match exception.kind() {
-            ExceptionKind::OpenAiResponsesGateway(OpenAiResponsesGatewayException::OpenAiUnavailable) => true,
-            ExceptionKind::OpenAiResponsesGateway(OpenAiResponsesGatewayException::OpenAiConnection) => {
+            ExceptionKind::OpenAiResponsesGateway(
+                OpenAiResponsesGatewayException::OpenAiUnavailable | OpenAiResponsesGatewayException::OpenAiConnection,
+            ) => {
                 exception
                     .context()
                     .get("error_type")
@@ -181,6 +183,36 @@ impl OpenAiResponsesGateway {
         RetryDelayCalculator::get_retry_delay(retry, retry_after_seconds)
     }
 
+    /// Lets go of a lane whose work is over (a brief's implementor's or reviewer's): its connection is closed, and
+    /// the response it could continue forgotten. A lane used again starts as a new one does.
+    pub async fn close_lane(&self, lane_id: &str) {
+        let lane: Option<Arc<tokio::sync::Mutex<ResponsesWebSocketLane>>> = self.lock_lanes().remove(lane_id);
+        if let Some(lane) = lane {
+            OpenAiResponsesGateway::close_connection(&lane).await;
+        }
+    }
+
+    /// Lets go of every lane of a session that is no longer served (`<session_id>/<lane_name>`).
+    pub async fn close_session_lanes(&self, session_id: &str) {
+        let lane_id_prefix: String = format!("{session_id}/");
+        let lanes: Vec<Arc<tokio::sync::Mutex<ResponsesWebSocketLane>>> = {
+            let mut lanes: MutexGuard<'_, HashMap<String, Arc<tokio::sync::Mutex<ResponsesWebSocketLane>>>> =
+                self.lock_lanes();
+            let lane_ids: Vec<String> = lanes
+                .keys()
+                .filter(|lane_id: &&String| lane_id.starts_with(&lane_id_prefix))
+                .cloned()
+                .collect();
+            lane_ids
+                .iter()
+                .filter_map(|lane_id: &String| lanes.remove(lane_id))
+                .collect()
+        };
+        for lane in lanes {
+            OpenAiResponsesGateway::close_connection(&lane).await;
+        }
+    }
+
     /// Closes every lane's connection. Called when the app stops, after every run has ended.
     pub async fn close(&self) {
         let lanes: Vec<Arc<tokio::sync::Mutex<ResponsesWebSocketLane>>> = self
@@ -189,10 +221,14 @@ impl OpenAiResponsesGateway {
             .map(|(_, lane): (String, Arc<tokio::sync::Mutex<ResponsesWebSocketLane>>)| lane)
             .collect();
         for lane in lanes {
-            let connection: Option<ResponsesWebSocketConnection> = lane.lock().await.connection.take();
-            if let Some(connection) = connection {
-                connection.close().await;
-            }
+            OpenAiResponsesGateway::close_connection(&lane).await;
+        }
+    }
+
+    async fn close_connection(lane: &tokio::sync::Mutex<ResponsesWebSocketLane>) {
+        let connection: Option<ResponsesWebSocketConnection> = lane.lock().await.connection.take();
+        if let Some(connection) = connection {
+            connection.close().await;
         }
     }
 
@@ -522,7 +558,8 @@ impl OpenAiResponsesGateway {
             exception_context.insert("status_code", status_code.as_u16());
         }
 
-        // A request that couldn't reach the API, or timed out, may well get through if sent again.
+        // A request that couldn't reach the API may well get through if sent again; one whose response ran past the
+        // whole response timeout is told apart by its error type (`is_worth_retrying`), and is not.
         let exception_kind: OpenAiResponsesGatewayException = if http_error.is_connect() || http_error.is_timeout() {
             OpenAiResponsesGatewayException::OpenAiUnavailable
         } else {
@@ -538,12 +575,13 @@ impl OpenAiResponsesGateway {
 
     // reqwest has one error type; what kind of failure it was is asked of it.
     fn describe_error_type(http_error: &reqwest::Error) -> &'static str {
+        // A connection that timed out is both: it is a connection that couldn't be made.
         if http_error.is_status() {
             "StatusError"
-        } else if http_error.is_timeout() {
-            "TimeoutError"
         } else if http_error.is_connect() {
             "ConnectError"
+        } else if http_error.is_timeout() {
+            "TimeoutError"
         } else if http_error.is_body() || http_error.is_decode() {
             "BodyError"
         } else if http_error.is_request() {

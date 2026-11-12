@@ -1,10 +1,14 @@
 use std::path::Path;
-use std::process::{Output, Stdio};
+use std::process::{ExitStatus, Stdio};
 use std::time::Duration;
+
+use tokio::io::{AsyncRead, AsyncReadExt};
+use tokio::process::{ChildStderr, ChildStdout};
 
 use crate::managers::exceptions::application_base_exception::{ApplicationBaseException, ApplicationResult};
 use crate::managers::exceptions::command_runner_gateway_exception::CommandRunnerGatewayException;
 use crate::managers::exceptions::contextual_data::ContextualData;
+use crate::managers::gateways::command_runner::guards::process_group_guard::ProcessGroupGuard;
 use crate::managers::models::command_result::CommandResult;
 
 // The environment variables a command the harness runs inherits: what a toolchain needs to find itself, its caches,
@@ -51,6 +55,10 @@ const INHERITED_ENVIRONMENT_VARIABLE_PREFIXES: [&str; 10] = [
 // But none whose name says it holds a secret (a registry's token among a toolchain's settings, say).
 const SECRET_NAME_PARTS: [&str; 5] = ["TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "_KEY"];
 
+// How much of what a command writes to each of stdout and stderr is kept: its end.
+const MAX_OUTPUT_BYTES: usize = 1024 * 1024;
+const READ_CHUNK_BYTES: usize = 16 * 1024;
+
 /// Runs commands (a stack pack's checks) in the workspace, with no input, collecting what they write, in an
 /// environment that holds only what a toolchain needs.
 pub struct CommandRunnerGateway;
@@ -90,7 +98,9 @@ impl CommandRunnerGateway {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            // A run that is cancelled, or a command that takes too long, takes its process with it.
+            // The command leads a process group of its own, so that it and everything it starts can be stopped
+            // together (ProcessGroupGuard) when it takes too long or its run is cancelled.
+            .process_group(0)
             .kill_on_drop(true);
         process.env_clear();
         for (name, value) in std::env::vars_os() {
@@ -99,7 +109,7 @@ impl CommandRunnerGateway {
             }
         }
 
-        let child: tokio::process::Child = process.spawn().map_err(|exception: std::io::Error| {
+        let mut child: tokio::process::Child = process.spawn().map_err(|exception: std::io::Error| {
             ApplicationBaseException::new(
                 CommandRunnerGatewayException::CommandStart,
                 format!("{program} could not be started"),
@@ -107,13 +117,32 @@ impl CommandRunnerGateway {
             )
             .with_source(exception)
         })?;
+        // Stops the command and everything it started if this is dropped before the command has ended.
+        let process_group_guard: ProcessGroupGuard = ProcessGroupGuard::new(child.id());
+        let stdout: Option<ChildStdout> = child.stdout.take();
+        let stderr: Option<ChildStderr> = child.stderr.take();
 
-        match tokio::time::timeout(timeout, child.wait_with_output()).await {
-            // Dropping the wait dropped the process, which kill_on_drop stopped.
+        // Kept outside what is timed, so what the command wrote before it was stopped is still there.
+        let mut stdout_end: Vec<u8> = Vec::new();
+        let mut stderr_end: Vec<u8> = Vec::new();
+        let waited: Result<std::io::Result<ExitStatus>, tokio::time::error::Elapsed> =
+            tokio::time::timeout(timeout, async {
+                let (exit_status, (), ()): (std::io::Result<ExitStatus>, (), ()) = tokio::join!(
+                    child.wait(),
+                    CommandRunnerGateway::read_end(stdout, &mut stdout_end),
+                    CommandRunnerGateway::read_end(stderr, &mut stderr_end),
+                );
+                exit_status
+            })
+            .await;
+        let output: String = CommandRunnerGateway::to_output(&stdout_end, &stderr_end);
+
+        match waited {
+            // Dropping the guard stops the command's processes.
             Err(_) => Ok(CommandResult {
                 exit_code: None,
                 timed_out: true,
-                output: String::new(),
+                output,
             }),
             Ok(Err(exception)) => Err(ApplicationBaseException::new(
                 CommandRunnerGatewayException::CommandStart,
@@ -121,7 +150,14 @@ impl CommandRunnerGateway {
                 context.with("error_type", format!("{:?}", exception.kind())),
             )
             .with_source(exception)),
-            Ok(Ok(output)) => Ok(CommandRunnerGateway::to_command_result(&output)),
+            Ok(Ok(exit_status)) => {
+                process_group_guard.release();
+                Ok(CommandResult {
+                    exit_code: exit_status.code(),
+                    timed_out: false,
+                    output,
+                })
+            }
         }
     }
 
@@ -140,17 +176,41 @@ impl CommandRunnerGateway {
                 .any(|secret_name_part: &&str| upper_name.contains(secret_name_part))
     }
 
-    fn to_command_result(output: &Output) -> CommandResult {
-        let mut combined_output: String = String::from_utf8_lossy(&output.stdout).into_owned();
-        let stderr: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&output.stderr);
-        if !combined_output.is_empty() && !stderr.is_empty() && !combined_output.ends_with('\n') {
-            combined_output.push('\n');
+    // Reads what the command writes until it closes the stream, keeping its last MAX_OUTPUT_BYTES: the end is where a
+    // compiler or a linter says what is wrong, and a command that writes without end must not fill the memory. A
+    // stream that can't be read any more is taken as closed.
+    async fn read_end<Stream: AsyncRead + Unpin>(stream: Option<Stream>, end: &mut Vec<u8>) {
+        let Some(mut stream) = stream else {
+            return;
+        };
+        let mut chunk: Vec<u8> = vec![0; READ_CHUNK_BYTES];
+        loop {
+            match stream.read(&mut chunk).await {
+                Ok(0) | Err(_) => return,
+                Ok(read_count) => {
+                    end.extend_from_slice(&chunk[..read_count]);
+                    // Trimmed once it holds twice what is kept, so each byte is moved at most once.
+                    if end.len() > 2 * MAX_OUTPUT_BYTES {
+                        end.drain(..end.len() - MAX_OUTPUT_BYTES);
+                    }
+                }
+            }
         }
-        combined_output.push_str(&stderr);
-        CommandResult {
-            exit_code: output.status.code(),
-            timed_out: false,
-            output: combined_output,
+    }
+
+    // What the command wrote to stdout, then stderr, each cut to its end.
+    fn to_output(stdout_end: &[u8], stderr_end: &[u8]) -> String {
+        let mut output: String = CommandRunnerGateway::to_text(stdout_end);
+        let stderr: String = CommandRunnerGateway::to_text(stderr_end);
+        if !output.is_empty() && !stderr.is_empty() && !output.ends_with('\n') {
+            output.push('\n');
         }
+        output.push_str(&stderr);
+        output
+    }
+
+    fn to_text(end: &[u8]) -> String {
+        let kept: &[u8] = &end[end.len().saturating_sub(MAX_OUTPUT_BYTES)..];
+        String::from_utf8_lossy(kept).into_owned()
     }
 }

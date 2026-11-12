@@ -194,6 +194,42 @@ impl AgentRunEngine {
         events: &broadcast::Sender<SessionEvent>,
         data_facade: &DataFacade,
     ) -> ApplicationResult<ImplementationResult> {
+        let built: ApplicationResult<ImplementationResult> = self
+            .build_brief(
+                session,
+                user_request,
+                implementation_brief,
+                brief_number,
+                events,
+                data_facade,
+            )
+            .await;
+        // However the build went, the brief's lanes are done with: neither is ever used again.
+        for lane_name in [
+            format!("{IMPLEMENTOR_LANE_NAME}_{brief_number}"),
+            format!("{REVIEWER_LANE_NAME}_{brief_number}"),
+        ] {
+            self.openai_responses_gateway
+                .close_lane(&AgentRunEngine::to_lane_id(session, &lane_name))
+                .await;
+        }
+        built
+    }
+
+    /// Lets go of what the model's gateway keeps for a session that is no longer served: its lanes' connections.
+    pub async fn release_session(&self, session_id: &str) {
+        self.openai_responses_gateway.close_session_lanes(session_id).await;
+    }
+
+    async fn build_brief(
+        &self,
+        session: &Session,
+        user_request: &UserRequest,
+        implementation_brief: &ImplementationBrief,
+        brief_number: usize,
+        events: &broadcast::Sender<SessionEvent>,
+        data_facade: &DataFacade,
+    ) -> ApplicationResult<ImplementationResult> {
         let agent_assignment: AgentAssignment = AgentAssignment {
             lane_name: format!("{IMPLEMENTOR_LANE_NAME}_{brief_number}"),
             role: AgentRole::Implementor,
@@ -399,7 +435,7 @@ impl AgentRunEngine {
         let compacted_conversation: CompactedConversation = self
             .openai_responses_gateway
             .compact_conversation(&ModelRequest {
-                lane_id: format!("{}/{}", session.id, agent_assignment.lane_name),
+                lane_id: AgentRunEngine::to_lane_id(session, &agent_assignment.lane_name),
                 prompt_layers: run_context.prompt_layers.clone(),
                 items: conversation_items.to_vec(),
                 tools: run_context.tools.clone(),
@@ -731,7 +767,7 @@ impl AgentRunEngine {
             .await?;
         conversation_items.extend(new_items);
 
-        let lane_id: String = format!("{}/{}", session.id, lane_name);
+        let lane_id: String = AgentRunEngine::to_lane_id(session, lane_name);
         let agent: Option<String> = AgentRunEngine::to_agent(agent_assignment);
         let mut usage: ModelUsage = ModelUsage::default();
         for turn in 1..=self.max_turns {
@@ -1376,6 +1412,11 @@ impl AgentRunEngine {
             | ExceptionKind::InvalidUserRequest
             | ExceptionKind::InvalidStackPack => false,
         }
+    }
+
+    // A lane as the model's gateway knows it: one agent of one session.
+    fn to_lane_id(session: &Session, lane_name: &str) -> String {
+        format!("{}/{}", session.id, lane_name)
     }
 
     // The agent as events name it: the orchestrator is the session's own, so it is unnamed.

@@ -56,6 +56,7 @@ similar = "2"
 # The session store and its locks, when a Postgres database is configured. TLS through rustls with aws-lc-rs, as the
 # other transports, because a hosted Postgres usually requires it; no macros, so building needs no database.
 sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "postgres", "derive", "chrono", "tls-rustls-aws-lc-rs"] }
+nix = { version = "0.31.3", default-features = false, features = ["signal"] }
 
 [lints.rust]
 unsafe_code = "forbid"

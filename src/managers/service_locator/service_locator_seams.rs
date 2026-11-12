@@ -21,6 +21,10 @@ use crate::managers::service_locator::service_locator_seams_protocol::ServiceLoc
 /// one that can't be reached fails the request rather than hanging it.
 const RELATIONAL_DATABASE_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// How long a request to the OpenAI API waits to connect: a connection that can't be made fails long before the
+/// whole response's timeout, and is then told apart from a response that took too long (only the first is retried).
+const OPENAI_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// The production seams: the environment, the network and the database.
 pub struct ServiceLocatorSeams;
 
@@ -37,6 +41,7 @@ impl ServiceLocatorSeamsProtocol for ServiceLocatorSeams {
             ServiceLocatorSeams::to_timeout(openai_responses_settings.timeout_seconds, "timeout_seconds")?;
 
         reqwest::Client::builder()
+            .connect_timeout(OPENAI_CONNECT_TIMEOUT)
             .timeout(timeout)
             .build()
             .map_err(|exception: reqwest::Error| {

@@ -87,6 +87,7 @@ impl OttoBotManager {
             data_facade,
             idle_sweeper: tokio::spawn(OttoBotManager::sweep_idle_sessions(
                 live_sessions.clone(),
+                service_locator.get_agent_run_engine()?,
                 Duration::from_secs(idle_session_minutes.saturating_mul(60)),
             )),
             live_sessions,
@@ -701,7 +702,11 @@ impl OttoBotManager {
 
     // Every minute, lets go of the sessions left idle for `idle_session_timeout`: nothing running, no client following.
     // A session let go is resumed from the session store when it is next used.
-    async fn sweep_idle_sessions(live_sessions: LiveSessions, idle_session_timeout: Duration) {
+    async fn sweep_idle_sessions(
+        live_sessions: LiveSessions,
+        agent_run_engine: Arc<AgentRunEngine>,
+        idle_session_timeout: Duration,
+    ) {
         let mut interval: tokio::time::Interval = tokio::time::interval(IDLE_SWEEP_INTERVAL);
         loop {
             interval.tick().await;
@@ -721,6 +726,8 @@ impl OttoBotManager {
                     .collect()
             };
             for live_session in let_go {
+                // What the model's gateway keeps for the session (its lanes' connections) is let go of with it.
+                agent_run_engine.release_session(&live_session.session.id).await;
                 ApplicationLogger::info(
                     "An idle session was let go",
                     ContextualData::new().with("session_id", live_session.session.id.as_str()),
