@@ -1,6 +1,9 @@
 pub mod conversation_item_document;
 pub mod implementation_brief_document;
 pub mod project_map_document;
+pub mod review_baseline_document;
+pub mod run_record_document;
 pub mod session_document;
 pub mod transcript_entry_document;
 pub mod usage_record_document;
+pub mod workspace_file_document;

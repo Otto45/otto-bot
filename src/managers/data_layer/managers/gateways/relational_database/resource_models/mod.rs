@@ -1,6 +1,9 @@
 pub mod advisory_lock_row;
 pub mod conversation_item_row;
 pub mod implementation_brief_count_row;
+pub mod review_baseline_file_resource;
+pub mod review_baseline_row;
+pub mod run_record_row;
 pub mod session_project_maps_row;
 pub mod session_row;
 pub mod sql_query;

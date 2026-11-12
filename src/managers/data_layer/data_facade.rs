@@ -5,12 +5,14 @@ use crate::managers::exceptions::application_base_exception::ApplicationResult;
 use crate::managers::models::conversation_item::ConversationItem;
 use crate::managers::models::implementation_brief::ImplementationBrief;
 use crate::managers::models::project_map_role::ProjectMapRole;
+use crate::managers::models::run_record::RunRecord;
 use crate::managers::models::session::Session;
 use crate::managers::models::session_project_maps::SessionProjectMaps;
 use crate::managers::models::stack_pack::StackPack;
 use crate::managers::models::template_file::TemplateFile;
 use crate::managers::models::transcript_entry::TranscriptEntry;
 use crate::managers::models::usage_record::UsageRecord;
+use crate::managers::models::workspace_file::WorkspaceFile;
 use crate::managers::runtime::held_lock::HeldLock;
 use crate::managers::service_locator::service_locator::ServiceLocator;
 
@@ -102,6 +104,32 @@ impl DataFacade {
         self.data_manager
             .append_project_map(session_id, project_map, project_map_role)
             .await
+    }
+
+    /// Keeps a step one of the session's runs got to (started, building a brief, ended), as it happens.
+    pub async fn append_run_record(&self, session_id: &str, run_record: &RunRecord) -> ApplicationResult<()> {
+        self.data_manager.append_run_record(session_id, run_record).await
+    }
+
+    /// The steps the session's runs got to, oldest first.
+    pub async fn get_run_records(&self, session_id: &str) -> ApplicationResult<Vec<RunRecord>> {
+        self.data_manager.get_run_records(session_id).await
+    }
+
+    /// Keeps what the session's next review is made against: `files`, the workspace's text files as they were when
+    /// everything in it had been reviewed; or None, once everything the session built has been reviewed.
+    pub async fn append_review_baseline(
+        &self,
+        session_id: &str,
+        files: Option<&[WorkspaceFile]>,
+    ) -> ApplicationResult<()> {
+        self.data_manager.append_review_baseline(session_id, files).await
+    }
+
+    /// What the session's next review is made against; None when everything it built has been reviewed, or it has
+    /// built nothing yet.
+    pub async fn get_review_baseline(&self, session_id: &str) -> ApplicationResult<Option<Vec<WorkspaceFile>>> {
+        self.data_manager.get_review_baseline(session_id).await
     }
 
     pub async fn get_stack_packs(&self) -> ApplicationResult<Vec<StackPack>> {

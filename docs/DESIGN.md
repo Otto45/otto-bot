@@ -173,7 +173,7 @@ agent (a lane) in a role.
    needs); once it reports done, the harness runs every check itself and sends it what fails, for up to three rounds.
 3. **Reviewer.** Once the implementor reports the change done with every check passing, the reviewer, on a fresh
    read-only lane (`reviewer_<n>`) at high reasoning effort, is given the person's last message, the brief and the
-   change's diff (from snapshots of the workspace before and after), and reads what else it needs. It judges what the
+   change's diff (from the session's review baseline to a snapshot of the workspace after), and reads what else it needs. It judges what the
    code does, not what its comments or the brief say about it, looking for security problems first, then correctness
    against what was asked (money kept exact, writes that belong together in one database never left half done), then
    the architecture's rules, and ends with `submit_review`. It judges the change against the app as it is: a way of
@@ -181,11 +181,18 @@ agent (a lane) in a role.
    more. High-severity findings go back to the same implementor for one round of fixes (held to the checks again);
    every finding is listed in the run's result.
 
+A build doesn't always get as far as its review: its run can fail or be stopped midway, it can end blocked or
+failing its checks, and the fixes made after a review aren't reviewed again. So the review's diff is made against
+the session's **review baseline**, the workspace as it was when everything in it had last been reviewed, which the
+session keeps until a review has covered what was built since: what one build leaves unreviewed is reviewed with
+the next. And a session keeps the steps each run gets to (**run records**), so a build that ended without the
+orchestrator being told how it went is told to it at the start of the session's next run.
+
 Until step 5 the orchestrator made a small change itself and planned a bigger one as steps for the implementor. The
 step 5's test runs showed why that was set aside: on small tasks the orchestrator often made the change and then
 submitted a plan anyway, so an implementor started only to find nothing to do; and an implementor that kept one
 conversation across plans carried every earlier plan's context. Now the conversation is the orchestrator's, each build
-starts fresh, and every change is reviewed.
+starts fresh, and every change is reviewed, with its own build or with the session's next.
 
 Scaffolding (the harness creating a planned component and its wiring from the pack's templates, without a model) was
 built in step 3 and removed after measuring it: the implementor never called it, it wrote about a tenth of a plan's
@@ -289,7 +296,9 @@ stack_packs/rust/, stack_packs/python/, stack_packs/typescript/
 - **The HTTP API** (`otto-http`) is the platform's client. Apps are addressed by name, never by path: the facade
   keeps them under `OTTO_BOT_WORKSPACES_DIRECTORY`, one folder per kebab-case name, and a session of another app is
   not found. Every request but `/health` bears a shared bearer token. Each session route resumes its session first,
-  so restarts and idle eviction (`OTTO_BOT_IDLE_SESSION_MINUTES`) are invisible to the platform.
+  so idle eviction (`OTTO_BOT_IDLE_SESSION_MINUTES`) is invisible to the platform. A run a restart stopped has no
+  end on record: the process that next serves its session ends it and puts a `run_failed` in the session's event log,
+  which a client reconnecting with `Last-Event-ID` is sent.
 - **Events are numbered and replayable.** A live session's runs report on a channel that a relay task numbers and
   records in its event log, which keeps the current run's events and fans them out to clients. A subscriber says
   what to replay (nothing, the run from its start, or what came after an id), so the HTTP API's server-sent events

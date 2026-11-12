@@ -408,7 +408,22 @@ impl ToolProcessor {
 
     /// What the reviewer is asked: what the person last asked, the brief the change was built from, and what the
     /// change did to the workspace.
-    pub fn format_review_brief(&self, request: &str, implementation_brief: &ImplementationBrief, diff: &str) -> String {
+    /// `holds_earlier_changes` says the diff is made against an earlier state of the workspace than this brief's
+    /// start, so it also holds what earlier builds left unreviewed.
+    pub fn format_review_brief(
+        &self,
+        request: &str,
+        implementation_brief: &ImplementationBrief,
+        diff: &str,
+        holds_earlier_changes: bool,
+    ) -> String {
+        let earlier_changes: &str = if holds_earlier_changes {
+            "The diff is made against the app as it was when it was last reviewed, so it may also hold changes of \
+             earlier builds that were never reviewed (a build that stopped midway, or fixes made after a review): \
+             review those too.\n\n"
+        } else {
+            ""
+        };
         let decisions: String = if implementation_brief.decisions.is_empty() {
             String::new()
         } else {
@@ -419,7 +434,7 @@ impl ToolProcessor {
         };
         format!(
             "Review this change.\n\nThe person's last message:\n{}\n\nThe brief it was built from:\n{}\n{decisions}\nDone \
-             when: {}\n\nWhat it did to the workspace:\n\n```diff\n{}```\n\n\
+             when: {}\n\nWhat it did to the workspace:\n\n```diff\n{}```\n\n{earlier_changes}\
              Read whatever else you need to judge it, in one call. Judge what the code does, not what its comments or \
              the brief say about it: a limitation the code documents, or one the brief assumed, is still a finding when \
              it makes the change wrong or unsafe. Judge it against what was asked and against the app as it is: a way \
@@ -457,6 +472,17 @@ impl ToolProcessor {
              again.",
             ToolProcessor::to_bullets(&high_findings)
         )
+    }
+
+    /// What the orchestrator is told, at the start of its next run, when a build it briefed ended without it being told
+    /// how it went: the run was stopped (cancelled, or with its process), or it failed.
+    pub fn format_unfinished_build(&self) -> String {
+        "A build you briefed earlier ended before you were told how it went: it was stopped, or it failed. The files \
+         it had changed by then are still in the workspace as it left them, so they may be incomplete, and may not \
+         pass the checks; the reviewer reviews them with the next build. If what the person asked for still stands, \
+         read the code to see how far the build got, and brief the implementor again with what is left to do. Tell \
+         the person, in plain words and without technical detail, that the earlier work was interrupted."
+            .to_string()
     }
 
     /// What the orchestrator is told when its brief is accepted.

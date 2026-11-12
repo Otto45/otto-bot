@@ -23,6 +23,8 @@ use crate::managers::logger::log_level::LogLevel;
 use crate::managers::models::agent_run_outcome::AgentRunOutcome;
 use crate::managers::models::implementation_result::ImplementationResult;
 use crate::managers::models::lane_ending::LaneEnding;
+use crate::managers::models::run_record::RunRecord;
+use crate::managers::models::run_status::RunStatus;
 use crate::managers::models::run_summary::RunSummary;
 use crate::managers::models::service_tier::ServiceTier;
 use crate::managers::models::session::Session;
@@ -46,6 +48,8 @@ use crate::managers::service_locator::service_locator::ServiceLocator;
 const SESSION_EVENT_CAPACITY: usize = 1024;
 // How often sessions left idle are looked for.
 const IDLE_SWEEP_INTERVAL: Duration = Duration::from_secs(60);
+// What a client following a session is told of a run that stopped with its process, when the session is next served.
+const INTERRUPTED_RUN_MESSAGE: &str = "The session's last request was stopped before it finished";
 
 type LiveSessions = Arc<Mutex<HashMap<String, LiveSession>>>;
 
@@ -63,6 +67,9 @@ pub struct OttoBotManager {
     workspaces_directory: PathBuf,
     // Lets go of sessions idle for the configured time; stopped on close.
     idle_sweeper: JoinHandle<()>,
+    // Set when the manager closes: the runs it then stops are left with no end on record, so whichever process next
+    // serves their sessions reports them stopped.
+    closing: Arc<AtomicBool>,
 }
 
 impl OttoBotManager {
@@ -83,6 +90,7 @@ impl OttoBotManager {
                 Duration::from_secs(idle_session_minutes.saturating_mul(60)),
             )),
             live_sessions,
+            closing: Arc::new(AtomicBool::new(false)),
             workspaces_directory: configuration_provider
                 .get_storage_settings()
                 .workspaces_directory
@@ -196,12 +204,55 @@ impl OttoBotManager {
             .resolve_workspace_directory(&session.workspace_directory)
             .await?;
         let transcript_entries: Vec<TranscriptEntry> = self.data_facade.get_transcript(&session.id).await?;
+        // A session not served here yet may have been left mid-run by a process that stopped.
+        let is_served: bool = self.lock_live_sessions().contains_key(&session.id);
+        let run_was_interrupted: bool = !is_served && self.end_interrupted_run(&session).await?;
 
-        self.lock_live_sessions()
-            .entry(session.id.clone())
-            .or_insert_with(|| OttoBotManager::to_live_session(session.clone()))
-            .last_used = Instant::now();
+        {
+            let mut live_sessions: MutexGuard<'_, HashMap<String, LiveSession>> = self.lock_live_sessions();
+            let live_session: &mut LiveSession = live_sessions
+                .entry(session.id.clone())
+                .or_insert_with(|| OttoBotManager::to_live_session(session.clone()));
+            live_session.last_used = Instant::now();
+            // Recorded in the log itself, not sent as a run's event: it is for a client that asks what it missed (it
+            // was following the run when the process stopped), not for one following the session's next run.
+            if run_was_interrupted {
+                live_session
+                    .event_log
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .record(SessionEvent::RunFailed {
+                        message: INTERRUPTED_RUN_MESSAGE.to_string(),
+                    });
+            }
+        }
         Ok(self.session_processor.summarize_session(session, &transcript_entries))
+    }
+
+    // Ends, on record, a run of the session that stopped with its process: its last run has no end, and nothing is
+    // running in its app any more (a run under way holds its app's lock, in whichever process). Whether it did. A
+    // run of another session of the app under way leaves it for the next time the session is served.
+    async fn end_interrupted_run(&self, session: &Session) -> ApplicationResult<bool> {
+        let run_records: Vec<RunRecord> = self.data_facade.get_run_records(&session.id).await?;
+        if !self.session_processor.has_unended_run(&run_records) {
+            return Ok(false);
+        }
+        let Some(app_lock) = self.data_facade.try_lock_app(&session.workspace_directory).await? else {
+            return Ok(false);
+        };
+        let recorded: ApplicationResult<()> = self
+            .data_facade
+            .append_run_record(
+                &session.id,
+                &RunRecord {
+                    status: RunStatus::Failed,
+                    recorded_on: Utc::now(),
+                },
+            )
+            .await;
+        app_lock.release().await;
+        recorded?;
+        Ok(true)
     }
 
     // The app's folder, by the app's kebab-case name: a name in any other form, or with no folder, is no app's.
@@ -298,6 +349,7 @@ impl OttoBotManager {
         let end_reported: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
         let run: JoinHandle<()> = tokio::spawn(OttoBotManager::run(
             self.agent_run_engine.clone(),
+            self.session_processor.clone(),
             live_session.session.clone(),
             user_request.clone(),
             Utc::now(),
@@ -311,8 +363,11 @@ impl OttoBotManager {
             abort_handle: run.abort_handle(),
             watcher: tokio::spawn(OttoBotManager::watch(
                 run,
+                live_session.session.id.clone(),
                 live_session.events.clone(),
+                self.data_facade.clone(),
                 end_reported.clone(),
+                self.closing.clone(),
             )),
             end_reported,
         });
@@ -355,6 +410,7 @@ impl OttoBotManager {
 
     /// Stops every run under way, and every compaction, and waits until each one's end is reported.
     pub async fn close(&self) {
+        self.closing.store(true, Ordering::SeqCst);
         self.idle_sweeper.abort();
         let watchers: Vec<JoinHandle<()>> = self
             .lock_live_sessions()
@@ -383,6 +439,7 @@ impl OttoBotManager {
     #[allow(clippy::too_many_arguments)]
     async fn run(
         agent_run_engine: Arc<AgentRunEngine>,
+        session_processor: Arc<SessionProcessor>,
         session: Session,
         user_request: UserRequest,
         submitted_on: DateTime<Utc>,
@@ -398,6 +455,7 @@ impl OttoBotManager {
             let session_lock: HeldLock = data_facade.lock_session(&session.id).await?;
             let (run_summary, orchestrator_input_tokens): (RunSummary, i64) = OttoBotManager::run_request(
                 &agent_run_engine,
+                &session_processor,
                 &session,
                 &user_request,
                 submitted_on,
@@ -407,6 +465,18 @@ impl OttoBotManager {
             .await?;
             Ok((run_summary, orchestrator_input_tokens, session_lock))
         }
+        .await;
+        // How the run ended is kept before the app's lock is let go of, so no one finds the app free and the run
+        // without an end.
+        OttoBotManager::record_run_end(
+            &data_facade,
+            &session.id,
+            if ran.is_ok() {
+                RunStatus::Completed
+            } else {
+                RunStatus::Failed
+            },
+        )
         .await;
         // The app's files are done with, so another session's request may run while this one compacts; let go before
         // the end is reported, so a request sent as soon as it is seen finds the app free (a lock kept in a database
@@ -453,6 +523,7 @@ impl OttoBotManager {
     // last request had.
     async fn run_request(
         agent_run_engine: &AgentRunEngine,
+        session_processor: &SessionProcessor,
         session: &Session,
         user_request: &UserRequest,
         submitted_on: DateTime<Utc>,
@@ -469,8 +540,13 @@ impl OttoBotManager {
                 },
             )
             .await?;
-        let agent_run_outcome: AgentRunOutcome =
-            agent_run_engine.run(session, user_request, events, data_facade).await?;
+        // A build briefed in an earlier run may have ended without the orchestrator being told: it is told now.
+        let run_records: Vec<RunRecord> = data_facade.get_run_records(&session.id).await?;
+        let unfinished_build: bool = session_processor.has_unfinished_build(&run_records);
+        OttoBotManager::record_run(data_facade, &session.id, RunStatus::Started).await?;
+        let agent_run_outcome: AgentRunOutcome = agent_run_engine
+            .run(session, user_request, unfinished_build, events, data_facade)
+            .await?;
         let Some(LaneEnding::BriefAccepted(implementation_brief)) = agent_run_outcome.lane_ending else {
             return Ok((agent_run_outcome.run_summary, agent_run_outcome.last_input_tokens));
         };
@@ -479,6 +555,7 @@ impl OttoBotManager {
             .await?;
         // The brief's number names its implementor's and reviewer's lanes, so each brief starts fresh.
         let brief_number: usize = data_facade.count_implementation_briefs(&session.id).await?;
+        OttoBotManager::record_run(data_facade, &session.id, RunStatus::Building).await?;
         events
             .send(SessionEvent::BriefAccepted {
                 implementation_brief: implementation_brief.clone(),
@@ -495,6 +572,7 @@ impl OttoBotManager {
                 data_facade,
             )
             .await?;
+        OttoBotManager::record_run(data_facade, &session.id, RunStatus::Built).await?;
         let build_summary: RunSummary = implementation_result.run_summary;
         events
             .send(SessionEvent::BriefImplemented {
@@ -513,9 +591,45 @@ impl OttoBotManager {
         ))
     }
 
+    // Keeps a step the session's run got to.
+    async fn record_run(data_facade: &DataFacade, session_id: &str, run_status: RunStatus) -> ApplicationResult<()> {
+        data_facade
+            .append_run_record(
+                session_id,
+                &RunRecord {
+                    status: run_status,
+                    recorded_on: Utc::now(),
+                },
+            )
+            .await
+    }
+
+    // Keeps how the session's run ended. The run has ended whether or not this is kept, so a failure is only logged:
+    // the run is then taken for one stopped with its process when its session is next served.
+    async fn record_run_end(data_facade: &DataFacade, session_id: &str, run_status: RunStatus) {
+        if let Err(exception) = OttoBotManager::record_run(data_facade, session_id, run_status).await {
+            ApplicationLogger::error(
+                "How a run ended could not be kept",
+                ContextualData::new()
+                    .with("session_id", session_id)
+                    .with("run_status", run_status.name()),
+                Some(&exception),
+            );
+        }
+    }
+
     // Reports the end of a run that could not report it itself: cancelled, or stopped by a panic (which the panic
-    // hook has logged). A task stopped after its run reported its end (while compacting) has nothing to report.
-    async fn watch(run: JoinHandle<()>, events: broadcast::Sender<SessionEvent>, end_reported: Arc<AtomicBool>) {
+    // hook has logged), and keeps it on record. A task stopped after its run reported its end (while compacting) has
+    // nothing to report. A run stopped because the manager is closing is left with no end on record: no client is
+    // told now, so whichever process next serves its session reports it stopped.
+    async fn watch(
+        run: JoinHandle<()>,
+        session_id: String,
+        events: broadcast::Sender<SessionEvent>,
+        data_facade: Arc<DataFacade>,
+        end_reported: Arc<AtomicBool>,
+        closing: Arc<AtomicBool>,
+    ) {
         let joined: Result<(), tokio::task::JoinError> = run.await;
         if end_reported.load(Ordering::SeqCst) {
             return;
@@ -523,9 +637,13 @@ impl OttoBotManager {
         match joined {
             Ok(()) => {}
             Err(join_error) if join_error.is_cancelled() => {
+                if !closing.load(Ordering::SeqCst) {
+                    OttoBotManager::record_run_end(&data_facade, &session_id, RunStatus::Cancelled).await;
+                }
                 events.send(SessionEvent::RunCancelled).ok();
             }
             Err(_) => {
+                OttoBotManager::record_run_end(&data_facade, &session_id, RunStatus::Failed).await;
                 events
                     .send(SessionEvent::RunFailed {
                         message: "The run stopped on an unexpected error".to_string(),

@@ -44,7 +44,7 @@ otto reads and writes nothing outside the workspace, and never reads `.env` file
 
 Everything otto keeps is under `~/.otto-bot/` (`OTTO_BOT_HOME`): `logs/otto.log` (one JSON object per line) and
 `sessions/<id>/`, with the session (`session.json`), what the person and otto said (`transcript.jsonl`), each agent's conversation (`conversation_items/<lane>.jsonl`, the session's own agent being
-`orchestrator`), token usage (`usage_records.jsonl`) and accepted briefs (`briefs.jsonl`); each brief's implementor and reviewer are
+`orchestrator`), token usage (`usage_records.jsonl`), accepted briefs (`briefs.jsonl`), the steps its runs got to (`run_records.jsonl`) and what its next review is made against (`review_baselines.jsonl`); each brief's implementor and reviewer are
 `implementor_<n>` and `reviewer_<n>`. `locks/` holds the locks that keep two runs, in this process or another, out of one
 app at once.
 

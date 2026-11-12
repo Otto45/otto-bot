@@ -1,20 +1,27 @@
-use std::io::ErrorKind;
+use std::io::{ErrorKind, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use chrono::{SecondsFormat, Utc};
-use tokio::io::AsyncWriteExt;
+use serde::de::DeserializeOwned;
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
 use crate::managers::common::formatters::validation_error_formatter::ValidationErrorFormatter;
 use crate::managers::data_layer::managers::gateways::session_store::mappers::conversation_item_document_mapper::ConversationItemDocumentMapper;
 use crate::managers::data_layer::managers::gateways::session_store::mappers::implementation_brief_document_mapper::ImplementationBriefDocumentMapper;
+use crate::managers::data_layer::managers::gateways::session_store::mappers::review_baseline_document_mapper::ReviewBaselineDocumentMapper;
+use crate::managers::data_layer::managers::gateways::session_store::mappers::run_record_document_mapper::RunRecordDocumentMapper;
 use crate::managers::data_layer::managers::gateways::session_store::mappers::session_document_mapper::SessionDocumentMapper;
 use crate::managers::data_layer::managers::gateways::session_store::mappers::transcript_entry_document_mapper::TranscriptEntryDocumentMapper;
 use crate::managers::data_layer::managers::gateways::session_store::mappers::usage_record_document_mapper::UsageRecordDocumentMapper;
 use crate::managers::data_layer::managers::gateways::session_store::resource_models::conversation_item_document::ConversationItemDocument;
 use crate::managers::data_layer::managers::gateways::session_store::resource_models::project_map_document::ProjectMapDocument;
+use crate::managers::data_layer::managers::gateways::session_store::resource_models::review_baseline_document::ReviewBaselineDocument;
+use crate::managers::data_layer::managers::gateways::session_store::resource_models::run_record_document::RunRecordDocument;
 use crate::managers::data_layer::managers::gateways::session_store::resource_models::session_document::SessionDocument;
 use crate::managers::data_layer::managers::gateways::session_store::resource_models::transcript_entry_document::TranscriptEntryDocument;
 use crate::managers::data_layer::managers::gateways::session_store::validators::validator_conversation_item_document::ValidatorConversationItemDocument;
+use crate::managers::data_layer::managers::gateways::session_store::validators::validator_review_baseline_document::ValidatorReviewBaselineDocument;
+use crate::managers::data_layer::managers::gateways::session_store::validators::validator_run_record_document::ValidatorRunRecordDocument;
 use crate::managers::data_layer::managers::gateways::session_store::validators::validator_session_document::ValidatorSessionDocument;
 use crate::managers::data_layer::managers::gateways::session_store::validators::validator_transcript_entry_document::ValidatorTranscriptEntryDocument;
 use crate::managers::exceptions::application_base_exception::{ApplicationBaseException, ApplicationResult};
@@ -25,10 +32,12 @@ use crate::managers::logger::log_level::LogLevel;
 use crate::managers::models::conversation_item::ConversationItem;
 use crate::managers::models::implementation_brief::ImplementationBrief;
 use crate::managers::models::project_map_role::ProjectMapRole;
+use crate::managers::models::run_record::RunRecord;
 use crate::managers::models::session::Session;
 use crate::managers::models::session_project_maps::SessionProjectMaps;
 use crate::managers::models::transcript_entry::TranscriptEntry;
 use crate::managers::models::usage_record::UsageRecord;
+use crate::managers::models::workspace_file::WorkspaceFile;
 
 const SESSION_FILE_NAME: &str = "session.json";
 // A folder of one conversation per lane, each `<lane_name>.jsonl`.
@@ -37,12 +46,15 @@ const USAGE_RECORDS_FILE_NAME: &str = "usage_records.jsonl";
 const PROJECT_MAPS_FILE_NAME: &str = "project_maps.jsonl";
 const BRIEFS_FILE_NAME: &str = "briefs.jsonl";
 const TRANSCRIPT_FILE_NAME: &str = "transcript.jsonl";
+const RUN_RECORDS_FILE_NAME: &str = "run_records.jsonl";
+const REVIEW_BASELINES_FILE_NAME: &str = "review_baselines.jsonl";
 
 /// Keeps each session in a folder named after its id: `session.json`, and append-only JSON Lines files: its
 /// transcript (what the person and the orchestrator said), each lane's conversation (every item in the order the model saw it,
-/// `conversation_items/<lane_name>.jsonl`), the usage ledger (one line per model response), the project maps and the
-/// accepted briefs. Nothing is ever rewritten, so a session's history is never lost to a crash halfway through a
-/// write.
+/// `conversation_items/<lane_name>.jsonl`), the usage ledger (one line per model response), the project maps, the
+/// accepted briefs, the steps its runs got to and its review baselines. Nothing is ever rewritten, and a write stopped
+/// halfway (by a crash, a full disk or a cancelled run) costs the session only the line being written: a line cut short
+/// is passed over when the file is read, and the next append starts on a line of its own.
 pub struct SessionStoreGateway {
     sessions_directory: PathBuf,
 }
@@ -160,18 +172,15 @@ impl SessionStoreGateway {
     /// What the person and the orchestrator said in the session, oldest first; nothing before its first request.
     pub async fn get_transcript(&self, session_id: &str) -> ApplicationResult<Vec<TranscriptEntry>> {
         let context: ContextualData = ContextualData::new().with("session_id", session_id);
-        let content: String =
-            match tokio::fs::read_to_string(self.get_file_path(session_id, TRANSCRIPT_FILE_NAME)).await {
-                Ok(content) => content,
-                Err(exception) if exception.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
-                Err(exception) => {
-                    return Err(SessionStoreGateway::to_io_exception(
-                        exception,
-                        "reading a session's transcript",
-                        &context,
-                    ));
-                }
-            };
+        let Some(content) = SessionStoreGateway::read_session_file(
+            &self.get_file_path(session_id, TRANSCRIPT_FILE_NAME),
+            "reading a session's transcript",
+            &context,
+        )
+        .await?
+        else {
+            return Ok(Vec::new());
+        };
 
         let mut transcript_entries: Vec<TranscriptEntry> = Vec::new();
         for (line_index, line) in content.lines().enumerate() {
@@ -179,20 +188,16 @@ impl SessionStoreGateway {
                 continue;
             }
             let line_number: i64 = i64::try_from(line_index + 1).unwrap_or(i64::MAX);
-            let mut deserializer: serde_json::Deserializer<serde_json::de::StrRead<'_>> =
-                serde_json::Deserializer::from_str(line);
-            let document: TranscriptEntryDocument = serde_path_to_error::deserialize(&mut deserializer).map_err(
-                |exception: serde_path_to_error::Error<serde_json::Error>| {
-                    ApplicationBaseException::new(
-                        SessionStoreGatewayException::InvalidTranscriptEntryDocument,
-                        "A transcript entry in the session store could not be deserialized",
-                        context
-                            .clone()
-                            .with("line_number", line_number)
-                            .with("errors", ValidationErrorFormatter::format(&exception, "document")),
-                    )
-                },
-            )?;
+            let Some(document) = SessionStoreGateway::deserialize_line::<TranscriptEntryDocument>(
+                line,
+                line_number,
+                SessionStoreGatewayException::InvalidTranscriptEntryDocument,
+                "A transcript entry in the session store could not be deserialized",
+                &context,
+            )?
+            else {
+                continue;
+            };
             ValidatorTranscriptEntryDocument::validate_transcript_entry_document(&document, session_id, line_number)?;
             transcript_entries.push(TranscriptEntryDocumentMapper::to_transcript_entry(document));
         }
@@ -209,18 +214,15 @@ impl SessionStoreGateway {
         let context: ContextualData = ContextualData::new()
             .with("session_id", session_id)
             .with("lane_name", lane_name);
-        let content: String =
-            match tokio::fs::read_to_string(self.get_conversation_items_path(session_id, lane_name)?).await {
-                Ok(content) => content,
-                Err(exception) if exception.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
-                Err(exception) => {
-                    return Err(SessionStoreGateway::to_io_exception(
-                        exception,
-                        "reading a lane's conversation",
-                        &context,
-                    ));
-                }
-            };
+        let Some(content) = SessionStoreGateway::read_session_file(
+            &self.get_conversation_items_path(session_id, lane_name)?,
+            "reading a lane's conversation",
+            &context,
+        )
+        .await?
+        else {
+            return Ok(Vec::new());
+        };
 
         let mut conversation_items: Vec<ConversationItem> = Vec::new();
         for (line_index, line) in content.lines().enumerate() {
@@ -228,8 +230,16 @@ impl SessionStoreGateway {
                 continue;
             }
             let line_number: i64 = i64::try_from(line_index + 1).unwrap_or(i64::MAX);
-            let document: ConversationItemDocument =
-                SessionStoreGateway::deserialize_conversation_item_document(line, line_number, &context)?;
+            let Some(document) = SessionStoreGateway::deserialize_line::<ConversationItemDocument>(
+                line,
+                line_number,
+                SessionStoreGatewayException::InvalidConversationItemDocument,
+                "A conversation item in the session store could not be deserialized",
+                &context,
+            )?
+            else {
+                continue;
+            };
             ValidatorConversationItemDocument::validate_conversation_item_document(&document, line_number)?;
             let conversation_item: ConversationItem = ConversationItemDocumentMapper::to_conversation_item(document);
             if matches!(conversation_item, ConversationItem::Compaction { .. }) {
@@ -287,30 +297,31 @@ impl SessionStoreGateway {
     /// The project maps the session keeps; none before its first run.
     pub async fn get_session_project_maps(&self, session_id: &str) -> ApplicationResult<SessionProjectMaps> {
         let context: ContextualData = ContextualData::new().with("session_id", session_id);
-        let content: String =
-            match tokio::fs::read_to_string(self.get_file_path(session_id, PROJECT_MAPS_FILE_NAME)).await {
-                Ok(content) => content,
-                Err(exception) if exception.kind() == ErrorKind::NotFound => return Ok(SessionProjectMaps::default()),
-                Err(exception) => {
-                    return Err(SessionStoreGateway::to_io_exception(
-                        exception,
-                        "reading a session's project maps",
-                        &context,
-                    ));
-                }
-            };
+        let Some(content) = SessionStoreGateway::read_session_file(
+            &self.get_file_path(session_id, PROJECT_MAPS_FILE_NAME),
+            "reading a session's project maps",
+            &context,
+        )
+        .await?
+        else {
+            return Ok(SessionProjectMaps::default());
+        };
 
         let mut session_project_maps: SessionProjectMaps = SessionProjectMaps::default();
-        for line in content.lines().filter(|line: &&str| !line.trim().is_empty()) {
-            let document: ProjectMapDocument = serde_json::from_str(line).map_err(|exception: serde_json::Error| {
-                ApplicationBaseException::new(
-                    SessionStoreGatewayException::InvalidProjectMapDocument,
-                    "A project map in the session store could not be deserialized",
-                    context
-                        .clone()
-                        .with("errors", ValidationErrorFormatter::format_whole(&exception, "document")),
-                )
-            })?;
+        for (line_index, line) in content.lines().enumerate() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let Some(document) = SessionStoreGateway::deserialize_line::<ProjectMapDocument>(
+                line,
+                i64::try_from(line_index + 1).unwrap_or(i64::MAX),
+                SessionStoreGatewayException::InvalidProjectMapDocument,
+                "A project map in the session store could not be deserialized",
+                &context,
+            )?
+            else {
+                continue;
+            };
             let (Some(project_map), Some(role)) = (document.project_map, document.role) else {
                 return Err(ApplicationBaseException::new(
                     SessionStoreGatewayException::InvalidProjectMapDocument,
@@ -378,6 +389,110 @@ impl SessionStoreGateway {
         }
     }
 
+    /// Keeps a step one of the session's runs got to, after those before it.
+    pub async fn append_run_record(&self, session_id: &str, run_record: &RunRecord) -> ApplicationResult<()> {
+        let line: String = serde_json::to_string(&RunRecordDocumentMapper::to_run_record_document(run_record))
+            .expect("a run record document serializes to JSON");
+        self.append_lines(
+            &self.get_file_path(session_id, RUN_RECORDS_FILE_NAME),
+            &[line],
+            &ContextualData::new().with("session_id", session_id),
+        )
+        .await
+    }
+
+    /// The steps the session's runs got to, oldest first; none before its first run.
+    pub async fn get_run_records(&self, session_id: &str) -> ApplicationResult<Vec<RunRecord>> {
+        let context: ContextualData = ContextualData::new().with("session_id", session_id);
+        let Some(content) = SessionStoreGateway::read_session_file(
+            &self.get_file_path(session_id, RUN_RECORDS_FILE_NAME),
+            "reading a session's run records",
+            &context,
+        )
+        .await?
+        else {
+            return Ok(Vec::new());
+        };
+
+        let mut run_records: Vec<RunRecord> = Vec::new();
+        for (line_index, line) in content.lines().enumerate() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let line_number: i64 = i64::try_from(line_index + 1).unwrap_or(i64::MAX);
+            let Some(document) = SessionStoreGateway::deserialize_line::<RunRecordDocument>(
+                line,
+                line_number,
+                SessionStoreGatewayException::InvalidRunRecordDocument,
+                "A run record in the session store could not be deserialized",
+                &context,
+            )?
+            else {
+                continue;
+            };
+            ValidatorRunRecordDocument::validate_run_record_document(&document, session_id, line_number)?;
+            run_records.push(RunRecordDocumentMapper::to_run_record(document));
+        }
+        Ok(run_records)
+    }
+
+    /// Keeps what the session's next review is made against: `files`, the workspace's text files as they were when
+    /// everything in it had been reviewed; or None, once everything the session built has been reviewed.
+    pub async fn append_review_baseline(
+        &self,
+        session_id: &str,
+        files: Option<&[WorkspaceFile]>,
+    ) -> ApplicationResult<()> {
+        let line: String = serde_json::to_string(&ReviewBaselineDocumentMapper::to_review_baseline_document(
+            files,
+            Utc::now(),
+        ))
+        .expect("a review baseline document serializes to JSON");
+        self.append_lines(
+            &self.get_file_path(session_id, REVIEW_BASELINES_FILE_NAME),
+            &[line],
+            &ContextualData::new().with("session_id", session_id),
+        )
+        .await
+    }
+
+    /// What the session's next review is made against, as last kept; None when everything it built has been
+    /// reviewed, or it has built nothing yet. Only the last line is read as a document: the lines before it are
+    /// baselines no longer used.
+    pub async fn get_review_baseline(&self, session_id: &str) -> ApplicationResult<Option<Vec<WorkspaceFile>>> {
+        let context: ContextualData = ContextualData::new().with("session_id", session_id);
+        let Some(content) = SessionStoreGateway::read_session_file(
+            &self.get_file_path(session_id, REVIEW_BASELINES_FILE_NAME),
+            "reading a session's review baselines",
+            &context,
+        )
+        .await?
+        else {
+            return Ok(None);
+        };
+
+        let lines: Vec<&str> = content.lines().collect();
+        for (line_index, line) in lines.iter().enumerate().rev() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let line_number: i64 = i64::try_from(line_index + 1).unwrap_or(i64::MAX);
+            let Some(document) = SessionStoreGateway::deserialize_line::<ReviewBaselineDocument>(
+                line,
+                line_number,
+                SessionStoreGatewayException::InvalidReviewBaselineDocument,
+                "A review baseline in the session store could not be deserialized",
+                &context,
+            )?
+            else {
+                continue;
+            };
+            ValidatorReviewBaselineDocument::validate_review_baseline_document(&document, session_id, line_number)?;
+            return Ok(ReviewBaselineDocumentMapper::to_review_baseline(document));
+        }
+        Ok(None)
+    }
+
     /// Holds no open file between calls, so there is nothing to close.
     pub fn close(&self) {}
 
@@ -415,22 +530,41 @@ impl SessionStoreGateway {
             .join(format!("{lane_name}.jsonl")))
     }
 
-    // Appends every line in one write, so a run's items land together.
+    // Appends every line in one write, so a run's items land together. A file whose last write was cut short ends
+    // without a newline: the lines then start on a new one, so the line cut short stays the only one lost.
     async fn append_lines(&self, path: &Path, lines: &[String], context: &ContextualData) -> ApplicationResult<()> {
         if lines.is_empty() {
             return Ok(());
         }
-        let mut content: String = lines.join("\n");
-        content.push('\n');
+        let to_append_exception = |exception: std::io::Error| -> ApplicationBaseException {
+            SessionStoreGateway::to_io_exception(exception, "appending to a session file", context)
+        };
 
         let mut file: tokio::fs::File = tokio::fs::OpenOptions::new()
             .create(true)
+            .read(true)
             .append(true)
             .open(path)
             .await
             .map_err(|exception: std::io::Error| {
                 SessionStoreGateway::to_io_exception(exception, "opening a session file", context)
             })?;
+        let length: u64 = file.metadata().await.map_err(to_append_exception)?.len();
+        let mut content: String = String::new();
+        if length > 0 {
+            let mut last_byte: [u8; 1] = [0];
+            file.seek(SeekFrom::End(-1)).await.map_err(to_append_exception)?;
+            file.read_exact(&mut last_byte).await.map_err(to_append_exception)?;
+            if last_byte[0] != b'\n' {
+                content.push('\n');
+            }
+        }
+        content.push_str(&lines.join("\n"));
+        content.push('\n');
+
+        // The file writes at most its buffer's size at a time, with an await between: a run cancelled there would
+        // leave half of this. With a buffer as large as the content it is one write, which finishes once started.
+        file.set_max_buf_size(content.len());
         file.write_all(content.as_bytes())
             .await
             .map_err(|exception: std::io::Error| {
@@ -441,25 +575,55 @@ impl SessionStoreGateway {
         })
     }
 
-    fn deserialize_conversation_item_document(
+    // A session file's text, to read line by line; None for a file that isn't there. Read as bytes: a write cut short
+    // can end inside a character, which then belongs to the line that is passed over.
+    async fn read_session_file(
+        path: &Path,
+        operation_description: &str,
+        context: &ContextualData,
+    ) -> ApplicationResult<Option<String>> {
+        match tokio::fs::read(path).await {
+            Ok(bytes) => Ok(Some(String::from_utf8_lossy(&bytes).into_owned())),
+            Err(exception) if exception.kind() == ErrorKind::NotFound => Ok(None),
+            Err(exception) => Err(SessionStoreGateway::to_io_exception(
+                exception,
+                operation_description,
+                context,
+            )),
+        }
+    }
+
+    // A line of a session file as its document; None for a line cut short (it ends before its JSON does: a write
+    // that a crash, a full disk or a cancelled run stopped halfway), which is passed over with a warning, so it
+    // costs the session that line only. Any other line that can't be read is an exception.
+    fn deserialize_line<T: DeserializeOwned>(
         line: &str,
         line_number: i64,
+        exception_kind: SessionStoreGatewayException,
+        message: &str,
         context: &ContextualData,
-    ) -> ApplicationResult<ConversationItemDocument> {
+    ) -> ApplicationResult<Option<T>> {
         let mut deserializer: serde_json::Deserializer<serde_json::de::StrRead<'_>> =
             serde_json::Deserializer::from_str(line);
-        serde_path_to_error::deserialize(&mut deserializer).map_err(
-            |exception: serde_path_to_error::Error<serde_json::Error>| {
-                ApplicationBaseException::new(
-                    SessionStoreGatewayException::InvalidConversationItemDocument,
-                    "A conversation item in the session store could not be deserialized",
-                    context
-                        .clone()
-                        .with("line_number", line_number)
-                        .with("errors", ValidationErrorFormatter::format(&exception, "document")),
-                )
-            },
-        )
+        match serde_path_to_error::deserialize(&mut deserializer) {
+            Ok(document) => Ok(Some(document)),
+            Err(exception) if exception.inner().is_eof() => {
+                ApplicationLogger::warning(
+                    "A line of a session file was cut short; it is passed over",
+                    context.clone().with("line_number", line_number),
+                    None,
+                );
+                Ok(None)
+            }
+            Err(exception) => Err(ApplicationBaseException::new(
+                exception_kind,
+                message,
+                context
+                    .clone()
+                    .with("line_number", line_number)
+                    .with("errors", ValidationErrorFormatter::format(&exception, "document")),
+            )),
+        }
     }
 
     fn to_io_exception(

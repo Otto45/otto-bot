@@ -29,6 +29,8 @@ pub mod report_status;
 pub mod review;
 pub mod review_finding;
 pub mod run_context;
+pub mod run_record;
+pub mod run_status;
 pub mod run_summary;
 pub mod search_match;
 pub mod service_tier;

@@ -1,5 +1,7 @@
 pub mod conversation_item_document_mapper;
 pub mod implementation_brief_document_mapper;
+pub mod review_baseline_document_mapper;
+pub mod run_record_document_mapper;
 pub mod session_document_mapper;
 pub mod transcript_entry_document_mapper;
 pub mod usage_record_document_mapper;

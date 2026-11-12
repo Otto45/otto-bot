@@ -6,6 +6,8 @@ use uuid::Uuid;
 use crate::managers::exceptions::application_base_exception::{ApplicationBaseException, ApplicationResult};
 use crate::managers::exceptions::contextual_data::ContextualData;
 use crate::managers::exceptions::exception_kind::ExceptionKind;
+use crate::managers::models::run_record::RunRecord;
+use crate::managers::models::run_status::RunStatus;
 use crate::managers::models::service_tier::ServiceTier;
 use crate::managers::models::session::Session;
 use crate::managers::models::session_options::SessionOptions;
@@ -69,6 +71,32 @@ impl SessionProcessor {
                 .cmp(&left.last_active_on)
                 .then_with(|| left.session.id.cmp(&right.session.id))
         });
+    }
+
+    /// Whether a build the orchestrator briefed ended without the orchestrator being told how it went: the session's
+    /// run records (oldest first) show a build begun, or built, and no run completed since. A run that failed or was
+    /// cancelled before it got to a build changes nothing.
+    pub fn has_unfinished_build(&self, run_records: &[RunRecord]) -> bool {
+        run_records
+            .iter()
+            .rev()
+            .find_map(|run_record: &RunRecord| match run_record.status {
+                RunStatus::Building | RunStatus::Built => Some(true),
+                RunStatus::Completed => Some(false),
+                RunStatus::Started | RunStatus::Failed | RunStatus::Cancelled => None,
+            })
+            .unwrap_or(false)
+    }
+
+    /// Whether the session's last run has no end on record: it started, and may have got as far as a build, but
+    /// neither completed, failed nor was cancelled. It is under way, or its process stopped with it.
+    pub fn has_unended_run(&self, run_records: &[RunRecord]) -> bool {
+        run_records.last().is_some_and(|run_record: &RunRecord| {
+            matches!(
+                run_record.status,
+                RunStatus::Started | RunStatus::Building | RunStatus::Built
+            )
+        })
     }
 
     pub fn check_user_request(&self, user_request: &UserRequest) -> ApplicationResult<()> {

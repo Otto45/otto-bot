@@ -139,11 +139,13 @@ impl AgentRunEngine {
 
     /// Runs the session's own agent, the orchestrator, on the person's request. Reports what happens on `events`; the
     /// run's start and end are the manager's to report. The engine is a shared singleton, which the ServiceLocator
-    /// builds without the DataFacade, so the manager passes it in.
+    /// builds without the DataFacade, so the manager passes it in. `unfinished_build` says a build the orchestrator
+    /// briefed ended without it being told how it went (it was stopped, or it failed): it is told so now.
     pub async fn run(
         &self,
         session: &Session,
         user_request: &UserRequest,
+        unfinished_build: bool,
         events: &broadcast::Sender<SessionEvent>,
         data_facade: &DataFacade,
     ) -> ApplicationResult<AgentRunOutcome> {
@@ -152,8 +154,13 @@ impl AgentRunEngine {
             .prepare_orchestrator(session, &agent_assignment, data_facade)
             .await?;
 
-        let mut opening_items: Vec<ConversationItem> = Vec::with_capacity(2);
+        let mut opening_items: Vec<ConversationItem> = Vec::with_capacity(3);
         opening_items.extend(project_map_note);
+        if unfinished_build {
+            opening_items.push(ConversationItem::HarnessNote {
+                text: self.tool_processor.format_unfinished_build(),
+            });
+        }
         opening_items.push(ConversationItem::UserMessage {
             text: user_request.text.clone(),
         });
@@ -173,6 +180,11 @@ impl AgentRunEngine {
     /// Once the implementor reports it done, the harness runs every check itself and sends it what fails, for a few
     /// rounds; a blocked report ends the build as it is. A change that is done, with every check passing, is reviewed,
     /// and what the review says must be fixed goes back to the implementor, once.
+    ///
+    /// The review's diff is made against the session's review baseline: the workspace as it was when everything in
+    /// it had last been reviewed. The session keeps it until a review has covered what was built since, so what a
+    /// build left unreviewed (it was stopped midway, it ended blocked or failing its checks, its reviewer gave no
+    /// review, or it fixed what a review found) is in the diff of the session's next review.
     pub async fn implement_brief(
         &self,
         session: &Session,
@@ -188,8 +200,19 @@ impl AgentRunEngine {
             workspace_directory: session.workspace_directory.clone(),
         };
         let workspace_directory: &Path = &agent_assignment.workspace_directory;
-        // The workspace before the change, which the review's diff is made against.
-        let before_change: Vec<WorkspaceFile> = self.snapshot_workspace(workspace_directory).await?;
+        let kept_baseline: Option<Vec<WorkspaceFile>> = data_facade.get_review_baseline(&session.id).await?;
+        let holds_earlier_changes: bool = kept_baseline.is_some();
+        let before_change: Vec<WorkspaceFile> = match kept_baseline {
+            Some(review_baseline) => review_baseline,
+            // Everything so far was reviewed: the workspace as it is now is kept, in case this build isn't.
+            None => {
+                let review_baseline: Vec<WorkspaceFile> = self.snapshot_workspace(workspace_directory).await?;
+                data_facade
+                    .append_review_baseline(&session.id, Some(&review_baseline))
+                    .await?;
+                review_baseline
+            }
+        };
         let (run_context, project_map_note): (RunContext, Option<ConversationItem>) =
             self.prepare_assignment(session, &agent_assignment, data_facade).await?;
         let (brief_files, missing_files): (Vec<WorkspaceFile>, Vec<(String, String)>) =
@@ -216,13 +239,21 @@ impl AgentRunEngine {
             && report
                 .as_ref()
                 .is_some_and(|agent_report: &AgentReport| agent_report.status == ReportStatus::Done);
+        let after_change: Vec<WorkspaceFile> = if done {
+            self.snapshot_workspace(workspace_directory).await?
+        } else {
+            Vec::new()
+        };
         let diff: String = if done {
-            let after_change: Vec<WorkspaceFile> = self.snapshot_workspace(workspace_directory).await?;
             self.diff_processor.diff(&before_change, &after_change)
         } else {
             String::new()
         };
         if diff.is_empty() {
+            // Done, and nothing differs from what was last reviewed: there is nothing left to review.
+            if done {
+                data_facade.append_review_baseline(&session.id, None).await?;
+            }
             return Ok(ImplementationResult {
                 report,
                 checks_passed,
@@ -239,6 +270,7 @@ impl AgentRunEngine {
                 implementation_brief,
                 brief_number,
                 &diff,
+                holds_earlier_changes,
                 events,
                 data_facade,
             )
@@ -250,6 +282,23 @@ impl AgentRunEngine {
                 .iter()
                 .any(|finding: &ReviewFinding| finding.severity == FindingSeverity::High)
         });
+        match review.as_ref() {
+            // What the fixes change is reviewed with the session's next build, against the workspace as reviewed.
+            Some(_) if must_fix => {
+                data_facade
+                    .append_review_baseline(&session.id, Some(&after_change))
+                    .await?;
+            }
+            Some(_) => data_facade.append_review_baseline(&session.id, None).await?,
+            // The baseline is kept, so the change is in the diff of the session's next review.
+            None => ApplicationLogger::warning(
+                "The reviewer ended without a review; the change is reviewed with the session's next build",
+                ContextualData::new()
+                    .with("session_id", session.id.as_str())
+                    .with("brief_number", i64::try_from(brief_number).unwrap_or(i64::MAX)),
+                None,
+            ),
+        }
         if must_fix && let Some(review) = review.as_ref() {
             let fixes: Vec<ConversationItem> = vec![ConversationItem::HarnessNote {
                 text: self.tool_processor.format_review_fixes(review),
@@ -492,6 +541,7 @@ impl AgentRunEngine {
 
     // The reviewer, on a fresh lane of its own for the brief, reads the change (the person's last message, the brief,
     // the diff, and whatever else it needs) and ends with its review; none if it ended without one.
+    // `holds_earlier_changes` says the diff also covers what earlier builds left unreviewed, which it is told.
     #[allow(clippy::too_many_arguments)]
     async fn review_change(
         &self,
@@ -500,6 +550,7 @@ impl AgentRunEngine {
         implementation_brief: &ImplementationBrief,
         brief_number: usize,
         diff: &str,
+        holds_earlier_changes: bool,
         events: &broadcast::Sender<SessionEvent>,
         data_facade: &DataFacade,
     ) -> ApplicationResult<(Option<Review>, RunSummary)> {
@@ -513,9 +564,12 @@ impl AgentRunEngine {
         let mut opening_items: Vec<ConversationItem> = Vec::with_capacity(2);
         opening_items.extend(project_map_note);
         opening_items.push(ConversationItem::UserMessage {
-            text: self
-                .tool_processor
-                .format_review_brief(&user_request.text, implementation_brief, diff),
+            text: self.tool_processor.format_review_brief(
+                &user_request.text,
+                implementation_brief,
+                diff,
+                holds_earlier_changes,
+            ),
         });
         let agent_run_outcome: AgentRunOutcome = self
             .run_lane(

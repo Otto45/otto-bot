@@ -11,6 +11,8 @@ use crate::managers::data_layer::managers::gateways::relational_database::guards
 use crate::managers::data_layer::managers::gateways::relational_database::mappers::advisory_lock_mapper::AdvisoryLockMapper;
 use crate::managers::data_layer::managers::gateways::relational_database::mappers::conversation_item_mapper::ConversationItemMapper;
 use crate::managers::data_layer::managers::gateways::relational_database::mappers::implementation_brief_count_mapper::ImplementationBriefCountMapper;
+use crate::managers::data_layer::managers::gateways::relational_database::mappers::review_baseline_mapper::ReviewBaselineMapper;
+use crate::managers::data_layer::managers::gateways::relational_database::mappers::run_record_mapper::RunRecordMapper;
 use crate::managers::data_layer::managers::gateways::relational_database::mappers::session_mapper::SessionMapper;
 use crate::managers::data_layer::managers::gateways::relational_database::mappers::session_project_maps_mapper::SessionProjectMapsMapper;
 use crate::managers::data_layer::managers::gateways::relational_database::mappers::transcript_entry_mapper::TranscriptEntryMapper;
@@ -18,12 +20,16 @@ use crate::managers::data_layer::managers::gateways::relational_database::query_
 use crate::managers::data_layer::managers::gateways::relational_database::query_builders::conversation_item_query_builder::ConversationItemQueryBuilder;
 use crate::managers::data_layer::managers::gateways::relational_database::query_builders::implementation_brief_query_builder::ImplementationBriefQueryBuilder;
 use crate::managers::data_layer::managers::gateways::relational_database::query_builders::project_map_query_builder::ProjectMapQueryBuilder;
+use crate::managers::data_layer::managers::gateways::relational_database::query_builders::review_baseline_query_builder::ReviewBaselineQueryBuilder;
+use crate::managers::data_layer::managers::gateways::relational_database::query_builders::run_record_query_builder::RunRecordQueryBuilder;
 use crate::managers::data_layer::managers::gateways::relational_database::query_builders::session_query_builder::SessionQueryBuilder;
 use crate::managers::data_layer::managers::gateways::relational_database::query_builders::transcript_entry_query_builder::TranscriptEntryQueryBuilder;
 use crate::managers::data_layer::managers::gateways::relational_database::query_builders::usage_record_query_builder::UsageRecordQueryBuilder;
 use crate::managers::data_layer::managers::gateways::relational_database::resource_models::advisory_lock_row::AdvisoryLockRow;
 use crate::managers::data_layer::managers::gateways::relational_database::resource_models::conversation_item_row::ConversationItemRow;
 use crate::managers::data_layer::managers::gateways::relational_database::resource_models::implementation_brief_count_row::ImplementationBriefCountRow;
+use crate::managers::data_layer::managers::gateways::relational_database::resource_models::review_baseline_row::ReviewBaselineRow;
+use crate::managers::data_layer::managers::gateways::relational_database::resource_models::run_record_row::RunRecordRow;
 use crate::managers::data_layer::managers::gateways::relational_database::resource_models::session_project_maps_row::SessionProjectMapsRow;
 use crate::managers::data_layer::managers::gateways::relational_database::resource_models::session_row::SessionRow;
 use crate::managers::data_layer::managers::gateways::relational_database::resource_models::sql_query::{SqlParameter, SqlQuery};
@@ -31,6 +37,8 @@ use crate::managers::data_layer::managers::gateways::relational_database::resour
 use crate::managers::data_layer::managers::gateways::relational_database::validators::validator_advisory_lock_row::ValidatorAdvisoryLockRow;
 use crate::managers::data_layer::managers::gateways::relational_database::validators::validator_conversation_item_row::ValidatorConversationItemRow;
 use crate::managers::data_layer::managers::gateways::relational_database::validators::validator_implementation_brief_count_row::ValidatorImplementationBriefCountRow;
+use crate::managers::data_layer::managers::gateways::relational_database::validators::validator_review_baseline_row::ValidatorReviewBaselineRow;
+use crate::managers::data_layer::managers::gateways::relational_database::validators::validator_run_record_row::ValidatorRunRecordRow;
 use crate::managers::data_layer::managers::gateways::relational_database::validators::validator_session_project_maps_row::ValidatorSessionProjectMapsRow;
 use crate::managers::data_layer::managers::gateways::relational_database::validators::validator_session_row::ValidatorSessionRow;
 use crate::managers::data_layer::managers::gateways::relational_database::validators::validator_transcript_entry_row::ValidatorTranscriptEntryRow;
@@ -42,10 +50,12 @@ use crate::managers::logger::log_level::LogLevel;
 use crate::managers::models::conversation_item::ConversationItem;
 use crate::managers::models::implementation_brief::ImplementationBrief;
 use crate::managers::models::project_map_role::ProjectMapRole;
+use crate::managers::models::run_record::RunRecord;
 use crate::managers::models::session::Session;
 use crate::managers::models::session_project_maps::SessionProjectMaps;
 use crate::managers::models::transcript_entry::TranscriptEntry;
 use crate::managers::models::usage_record::UsageRecord;
+use crate::managers::models::workspace_file::WorkspaceFile;
 use crate::managers::runtime::held_lock::HeldLock;
 
 type BoundQuery<'q> = sqlx::query::Query<'q, Postgres, PgArguments>;
@@ -346,6 +356,88 @@ impl RelationalDatabaseGateway {
         Ok(ImplementationBriefCountMapper::to_implementation_brief_count(
             implementation_brief_count_row,
         ))
+    }
+
+    /// Keeps a step one of the session's runs got to, after those before it.
+    pub async fn append_run_record(&self, session_id: &str, run_record: &RunRecord) -> ApplicationResult<()> {
+        self.execute(
+            &RunRecordQueryBuilder::build_append_run_record_query(session_id, run_record),
+            "keeping a session's run record",
+            &ContextualData::new().with("session_id", session_id),
+        )
+        .await
+    }
+
+    /// The steps the session's runs got to, oldest first; none before its first run.
+    pub async fn get_run_records(&self, session_id: &str) -> ApplicationResult<Vec<RunRecord>> {
+        let context: ContextualData = ContextualData::new().with("session_id", session_id);
+        let rows: Vec<PgRow> = self
+            .fetch_all(
+                &RunRecordQueryBuilder::build_get_run_records_query(session_id),
+                "reading a session's run records",
+                &context,
+            )
+            .await?;
+        let mut run_records: Vec<RunRecord> = Vec::new();
+        for row in &rows {
+            let run_record_row: RunRecordRow = RelationalDatabaseGateway::from_row(
+                row,
+                RelationalDatabaseGatewayException::InvalidPostgresRunRecordRow,
+                "Run record row from the Postgres run_records table could not be deserialized",
+                &context,
+            )?;
+            ValidatorRunRecordRow::validate_run_record_row(&run_record_row, session_id)?;
+            run_records.push(RunRecordMapper::to_run_record(run_record_row));
+        }
+        Ok(run_records)
+    }
+
+    /// Keeps what the session's next review is made against: `files`, the workspace's text files as they were when
+    /// everything in it had been reviewed; or None, once everything the session built has been reviewed.
+    pub async fn append_review_baseline(
+        &self,
+        session_id: &str,
+        files: Option<&[WorkspaceFile]>,
+    ) -> ApplicationResult<()> {
+        self.execute(
+            &ReviewBaselineQueryBuilder::build_append_review_baseline_query(
+                session_id,
+                files.map(ReviewBaselineMapper::to_files_text),
+                Utc::now(),
+            ),
+            "keeping a session's review baseline",
+            &ContextualData::new().with("session_id", session_id),
+        )
+        .await
+    }
+
+    /// What the session's next review is made against, as last kept; None when everything it built has been
+    /// reviewed, or it has built nothing yet.
+    pub async fn get_review_baseline(&self, session_id: &str) -> ApplicationResult<Option<Vec<WorkspaceFile>>> {
+        let context: ContextualData = ContextualData::new().with("session_id", session_id);
+        let sql_query: SqlQuery = ReviewBaselineQueryBuilder::build_get_review_baseline_query(session_id);
+        let Some(row) = RelationalDatabaseGateway::bind(&sql_query)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|exception: sqlx::Error| {
+                RelationalDatabaseGateway::to_query_exception(
+                    exception,
+                    &sql_query,
+                    "reading a session's review baseline",
+                    &context,
+                )
+            })?
+        else {
+            return Ok(None);
+        };
+        let review_baseline_row: ReviewBaselineRow = RelationalDatabaseGateway::from_row(
+            &row,
+            RelationalDatabaseGatewayException::InvalidPostgresReviewBaselineRow,
+            "Review baseline row from the Postgres review_baselines table could not be deserialized",
+            &context,
+        )?;
+        ValidatorReviewBaselineRow::validate_review_baseline_row(&review_baseline_row, session_id)?;
+        Ok(ReviewBaselineMapper::to_review_baseline(review_baseline_row))
     }
 
     /// The app's lock, if no run (in this process or another, on this machine or another) holds it: None when one

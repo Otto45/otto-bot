@@ -7,12 +7,14 @@ use crate::managers::exceptions::application_base_exception::ApplicationResult;
 use crate::managers::models::conversation_item::ConversationItem;
 use crate::managers::models::implementation_brief::ImplementationBrief;
 use crate::managers::models::project_map_role::ProjectMapRole;
+use crate::managers::models::run_record::RunRecord;
 use crate::managers::models::session::Session;
 use crate::managers::models::session_project_maps::SessionProjectMaps;
 use crate::managers::models::stack_pack::StackPack;
 use crate::managers::models::template_file::TemplateFile;
 use crate::managers::models::transcript_entry::TranscriptEntry;
 use crate::managers::models::usage_record::UsageRecord;
+use crate::managers::models::workspace_file::WorkspaceFile;
 use crate::managers::runtime::held_lock::HeldLock;
 use crate::managers::service_locator::service_locator::ServiceLocator;
 
@@ -241,6 +243,62 @@ impl DataManager {
                     .append_project_map(session_id, project_map, project_map_role)
                     .await
             }
+        }
+    }
+
+    pub async fn append_run_record(&self, session_id: &str, run_record: &RunRecord) -> ApplicationResult<()> {
+        match &self.session_storage {
+            SessionStorage::Files {
+                session_store_gateway, ..
+            } => session_store_gateway.append_run_record(session_id, run_record).await,
+            SessionStorage::RelationalDatabase {
+                relational_database_gateway,
+            } => {
+                relational_database_gateway
+                    .append_run_record(session_id, run_record)
+                    .await
+            }
+        }
+    }
+
+    pub async fn get_run_records(&self, session_id: &str) -> ApplicationResult<Vec<RunRecord>> {
+        match &self.session_storage {
+            SessionStorage::Files {
+                session_store_gateway, ..
+            } => session_store_gateway.get_run_records(session_id).await,
+            SessionStorage::RelationalDatabase {
+                relational_database_gateway,
+            } => relational_database_gateway.get_run_records(session_id).await,
+        }
+    }
+
+    pub async fn append_review_baseline(
+        &self,
+        session_id: &str,
+        files: Option<&[WorkspaceFile]>,
+    ) -> ApplicationResult<()> {
+        match &self.session_storage {
+            SessionStorage::Files {
+                session_store_gateway, ..
+            } => session_store_gateway.append_review_baseline(session_id, files).await,
+            SessionStorage::RelationalDatabase {
+                relational_database_gateway,
+            } => {
+                relational_database_gateway
+                    .append_review_baseline(session_id, files)
+                    .await
+            }
+        }
+    }
+
+    pub async fn get_review_baseline(&self, session_id: &str) -> ApplicationResult<Option<Vec<WorkspaceFile>>> {
+        match &self.session_storage {
+            SessionStorage::Files {
+                session_store_gateway, ..
+            } => session_store_gateway.get_review_baseline(session_id).await,
+            SessionStorage::RelationalDatabase {
+                relational_database_gateway,
+            } => relational_database_gateway.get_review_baseline(session_id).await,
         }
     }
 

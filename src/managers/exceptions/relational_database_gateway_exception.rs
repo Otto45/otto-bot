@@ -9,6 +9,8 @@ pub enum RelationalDatabaseGatewayException {
     InvalidPostgresSessionProjectMapsRow,
     InvalidPostgresImplementationBriefCountRow,
     InvalidPostgresAdvisoryLockRow,
+    InvalidPostgresRunRecordRow,
+    InvalidPostgresReviewBaselineRow,
 }
 
 impl RelationalDatabaseGatewayException {
@@ -30,6 +32,10 @@ impl RelationalDatabaseGatewayException {
             }
             RelationalDatabaseGatewayException::InvalidPostgresAdvisoryLockRow => {
                 "InvalidPostgresAdvisoryLockRowException"
+            }
+            RelationalDatabaseGatewayException::InvalidPostgresRunRecordRow => "InvalidPostgresRunRecordRowException",
+            RelationalDatabaseGatewayException::InvalidPostgresReviewBaselineRow => {
+                "InvalidPostgresReviewBaselineRowException"
             }
         }
     }

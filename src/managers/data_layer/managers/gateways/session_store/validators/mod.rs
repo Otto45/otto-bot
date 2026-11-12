@@ -1,3 +1,5 @@
 pub mod validator_conversation_item_document;
+pub mod validator_review_baseline_document;
+pub mod validator_run_record_document;
 pub mod validator_session_document;
 pub mod validator_transcript_entry_document;
