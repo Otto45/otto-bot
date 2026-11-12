@@ -455,7 +455,8 @@ impl ToolProcessor {
             request.trim(),
             implementation_brief.task.trim(),
             implementation_brief.done_when.trim(),
-            diff
+            // The diff quotes the workspace's files, as reading them does.
+            SecretRedactor::redact(diff)
         )
     }
 
@@ -638,7 +639,8 @@ impl ToolProcessor {
                 None => String::new(),
             }
         };
-        let output: String = SecretRedactor::redact(&ToolProcessor::keep_end(&check_result.output));
+        // Redacted before it is cut: a secret cut in two no longer has the shape it is known by.
+        let output: String = ToolProcessor::keep_end(&SecretRedactor::redact(&check_result.output));
         format!("{}: failed{how}\n{}", check_result.name, output.trim_end())
     }
 

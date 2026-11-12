@@ -19,7 +19,8 @@ const MAX_MATCH_LINE_CHARS: usize = 300;
 
 /// The workspace: the directory a session's agent works in. It is the only way the agent reads or changes files, so
 /// it is where the workspace's boundary is kept: a path is relative to the workspace, never leaves it (not with `..`,
-/// not through a symbolic link), and never names a protected file (`.env` files, which hold secrets, and `.git/`).
+/// not through a symbolic link), and never names a protected file (`.env` files, which hold secrets, and `.git/`),
+/// however the name is cased and whether it is named itself or reached through a symbolic link.
 pub struct WorkspaceGateway;
 
 impl Default for WorkspaceGateway {
@@ -283,12 +284,8 @@ impl WorkspaceGateway {
             match component {
                 Component::Normal(name) => {
                     let name: String = name.to_string_lossy().into_owned();
-                    if name.starts_with(".env") || name == ".git" {
-                        return Err(ApplicationBaseException::new(
-                            WorkspaceGatewayException::ProtectedFile,
-                            format!("{path} is protected: .env files and .git/ are never read or changed"),
-                            context,
-                        ));
+                    if WorkspaceGateway::is_protected_name(&name) {
+                        return Err(WorkspaceGateway::to_protected_file_exception(path, context));
                     }
                     relative_path.push(name);
                 }
@@ -325,6 +322,18 @@ impl WorkspaceGateway {
                 context,
             ));
         }
+        // A symbolic link inside the workspace can point at a protected file: what the path really is must not be one.
+        let leads_to_protected_file: bool =
+            canonical_path
+                .strip_prefix(workspace_directory)
+                .is_ok_and(|real_path: &Path| {
+                    real_path.components().any(|component: Component<'_>| {
+                        WorkspaceGateway::is_protected_name(&component.as_os_str().to_string_lossy())
+                    })
+                });
+        if leads_to_protected_file {
+            return Err(WorkspaceGateway::to_protected_file_exception(path, context));
+        }
 
         Ok((relative_path.to_string_lossy().replace('\\', "/"), absolute_path))
     }
@@ -336,8 +345,7 @@ impl WorkspaceGateway {
             .hidden(false)
             .require_git(false)
             .filter_entry(|entry: &DirEntry| {
-                let name: std::borrow::Cow<'_, str> = entry.file_name().to_string_lossy();
-                name != ".git" && !name.starts_with(".env")
+                !WorkspaceGateway::is_protected_name(&entry.file_name().to_string_lossy())
             });
         if let Some(path_override) = path_override {
             walk_builder.overrides(path_override);
@@ -351,6 +359,20 @@ impl WorkspaceGateway {
                     .file_type()
                     .is_some_and(|file_type: std::fs::FileType| file_type.is_file())
             })
+    }
+
+    // `.env` files and `.git`, however cased: a file system that ignores case opens `.ENV` as `.env`.
+    fn is_protected_name(name: &str) -> bool {
+        let name: String = name.to_lowercase();
+        name.starts_with(".env") || name == ".git"
+    }
+
+    fn to_protected_file_exception(path: &str, context: ContextualData) -> ApplicationBaseException {
+        ApplicationBaseException::new(
+            WorkspaceGatewayException::ProtectedFile,
+            format!("{path} is protected: .env files and .git/ are never read or changed"),
+            context,
+        )
     }
 
     fn to_override(workspace_directory: &Path, path_glob: &str) -> ApplicationResult<Override> {

@@ -234,8 +234,11 @@ an agent does. Inside it, the harness keeps what protects the work and what keep
 
 - **Workspace confinement and roles**: paths resolve to their real location, symlinks can't escape, and each role
   may call only its own tools (the reviewer changes nothing).
-- **Declared commands only**: agents run the pack's check commands, not a general shell.
-- **Secret redaction** before anything is sent to the model; `.env` files are never read.
+- **Declared commands only**: agents run the pack's check commands, not a general shell. Those commands run code the
+  agent wrote (a build script, the app's own binary), so they are given only the environment a toolchain needs:
+  neither the OpenAI key nor otto's own settings, its service token or its database's connection string.
+- **Secret redaction** before anything is sent to the model (files read, a review's diff, what checks print); `.env`
+  files and `.git/` are never read or changed, however cased and whether named or reached through a symbolic link.
 - **File contents are data, never instructions.**
 - **The architecture's own rules**: bound SQL parameters, generic answers to 5xx errors, redaction in logs, all
   enforced by the lint and the review.
