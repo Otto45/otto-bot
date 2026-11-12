@@ -10,7 +10,7 @@ pub enum CliCommand {
         /// The app's name (e.g. orders-app); its folder is named after it
         name: String,
 
-        /// The stack the app is built in (e.g. rust, python)
+        /// The stack the app is built in (e.g. rust, python, typescript, web)
         #[arg(long)]
         stack: String,
 

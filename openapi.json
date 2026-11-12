@@ -405,7 +405,7 @@
             "type": "string"
           },
           "stack": {
-            "description": "The stack it is built in: rust, python or typescript.",
+            "description": "The stack it is built in: rust, python, typescript or web.",
             "type": "string"
           }
         },

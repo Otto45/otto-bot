@@ -105,7 +105,7 @@ impl ToolProcessor {
             },
             ToolDefinition {
                 name: RUN_CHECKS.to_string(),
-                description: "Run the stack's checks (formatting, lint, contract) on the workspace and report which \
+                description: "Run the stack's checks (formatting, lint, types, and the contract or the build) on the workspace and report which \
                               pass. Run them after changing code, and fix what fails."
                     .to_string(),
                 parameters: json!({
@@ -452,7 +452,7 @@ impl ToolProcessor {
              high is for what must be fixed before the change ships: a security hole, a wrong result (a money error is \
              one), data the change loses or leaves inconsistent within one database, a broken architecture rule. medium \
              and low are for what is worth fixing later, robustness beyond what was asked among them. The checks \
-             (formatting, lint, the architecture lint, the contract) already pass, so don't report what they catch. \
+             (formatting, lint, the architecture lint, types, and the contract or the build) already pass, so don't report what they catch. \
              End with submit_review.",
             request.trim(),
             implementation_brief.task.trim(),

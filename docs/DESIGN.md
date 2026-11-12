@@ -1,13 +1,13 @@
 # otto-bot design
 
 otto-bot is a coding agent harness, written in Rust, that builds and changes apps following the Domain Container
-architecture, in Rust, Python and TypeScript. It is itself a Domain Container app.
+architecture, in Rust, Python and TypeScript, and web apps on TanStack Start. It is itself a Domain Container app.
 
-Status: build steps 1-6 are done: the layered cache, WebSocket lanes, the project map, the architecture lint
+Status: build steps 1-8 are done: the layered cache, WebSocket lanes, the project map, the architecture lint
 (steps 1-3); the three roles (step 4, reworked in step 5): the orchestrator, which holds the conversation with the
 person and briefs the implementor; the implementor, which plans and builds each brief from a fresh start; and the
 reviewer, whose high-severity findings the implementor fixes; the Python and TypeScript packs and `otto new` (step 5);
-resume, compaction and the HTTP API (step 6).
+resume, compaction and the HTTP API (step 6); the Postgres session store (step 7); the web pack (step 8).
 
 ## Goals
 
@@ -30,7 +30,7 @@ The architecture is what makes these reachable. Every file's role follows from i
 
 | Topic | Decision |
 | --- | --- |
-| Target stacks | Rust, Python, TypeScript |
+| Target stacks | Rust, Python, TypeScript; web apps (TanStack Start) |
 | Model | `gpt-6.1-sol` for every role (one model, one shared prompt cache) |
 | Service tier | `--service-tier standard\|fast\|ultrafast`, default `standard` (sent as `"default"`) |
 | Clients | several, all over one domain facade: the interactive CLI (`otto`), and the HTTP API (`otto-http`) for the software factory platform |
@@ -48,17 +48,16 @@ Everything language-specific is in a stack pack:
 stack_packs/<stack>/
     pack.toml       detection (e.g. Cargo.toml), check commands, formatters, the project map and lint queries,
                     rename map
-    rules.md        the stack's architecture rules (the template's AGENTS.md)
-    template/       the starting app: one example of every component kind
+    template/       the starting app: one example of every component kind; its AGENTS.md is the stack's rules
     queries/        tree-sitter queries that extract public signatures, imports and component declarations
 ```
 
-| | Rust | Python | TypeScript |
-| --- | --- | --- | --- |
-| Template | the existing Rust template | written from the Rust template | written from the Rust template |
-| Libraries | axum, utoipa, sqlx, reqwest, serde | FastAPI, pydantic, asyncpg, httpx, uv | Node 24, Hono with `@hono/zod-openapi`, zod, `pg`, pnpm |
-| Module wiring | `mod.rs` | `__init__.py` | `index.ts` barrels, or none |
-| Checks | `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `export-openapi --check` | `ruff format --check`, `ruff check`, `pyright` (strict), contract check | prettier, eslint (typescript-eslint strict type-checked), `tsc --noEmit` (strict), contract check |
+| | Rust | Python | TypeScript | Web |
+| --- | --- | --- | --- | --- |
+| Template | the existing Rust template | written from the Rust template | written from the Rust template | the TypeScript template's domain container, with TanStack Start pages as its service |
+| Libraries | axum, utoipa, sqlx, reqwest, serde | FastAPI, pydantic, asyncpg, httpx, uv | Node 24, Hono with `@hono/zod-openapi`, zod, `pg`, pnpm | Node 24, TanStack Start (React 19, TanStack Router) on Vite and Nitro, Tailwind CSS 4, zod, `pg`, pnpm |
+| Module wiring | `mod.rs` | `__init__.py` | `index.ts` barrels, or none | none; the route tree is generated |
+| Checks | `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `export-openapi --check` | `ruff format --check`, `ruff check`, `pyright` (strict), contract check | prettier, eslint (typescript-eslint strict type-checked), `tsc --noEmit` (strict), contract check | prettier, eslint (strict type-checked, React hooks, jsx-a11y, TanStack Router), `tsc --noEmit` (strict), `vite build` |
 
 - Without tests, a strict type checker is part of the Python and TypeScript packs' rules.
 - The Python and TypeScript templates are written from the Rust template (not ported by the harness), each mapping
@@ -68,6 +67,15 @@ stack_packs/<stack>/
 - The TypeScript template runs on Node 24 with its types stripped (no build step, so only erasable syntax), imports
   through a `#src/` alias so the lint's import rules see every path, and pins TypeScript 6.0: typescript-eslint doesn't
   support TypeScript 7 yet.
+- The web template is a full-stack app in one workspace: the TypeScript template's domain container, unchanged, in
+  `src/domain_container/` (run only on the server), and TanStack Start's defaults around it in `src/` as its service:
+  pages (file routes and components), server functions (each one facade operation, the counterpart of an HTTP
+  route), wire models, mappers. Import protection fails the build when the browser's code imports the server's, and
+  the pack's lint says so sooner. It is built for a Node server (Nitro), which creates one facade as it starts and
+  closes it when it stops. Pages are styled with Tailwind and the theme's tokens only (`src/styles/app.css`, Tailwind's
+  palette cleared, raw colours flagged by the lint), which is where a design system lands.
+- A workspace's stack is the pack, of those whose `detect` files it has, that names the most of them: a web app has a
+  TypeScript app's `package.json` and `tsconfig.json`, and its `vite.config.ts`.
 - A pack's rules are its template's `AGENTS.md`; the Python one takes its Python conventions from the
   `software-engineer-python` skill (`@final`, explicit `Protocol` inheritance, `slots` and `frozen` dataclasses).
 
@@ -282,7 +290,7 @@ src/
         common/                     calculators (retry delay), formatters, matchers (path globs), tree_sitter,
                                     validators
         models/, exceptions/, logger/, configuration_providers/, service_locator/
-stack_packs/rust/, stack_packs/python/, stack_packs/typescript/
+stack_packs/rust/, stack_packs/python/, stack_packs/typescript/, stack_packs/web/
 ```
 
 - **One engine talks to the model.** An engine never uses another engine, so `agent_run` is the only one, and the
@@ -340,6 +348,7 @@ stack_packs/rust/, stack_packs/python/, stack_packs/typescript/
 6. Resume (`otto --session`, `otto sessions`); compaction (`/responses/compact` at boundaries); the HTTP API
    (`otto-http`, server-sent events, apps by name).
 7. Toward deploying `otto-http`: the Postgres session store and advisory locks, chosen by configuration.
+8. The web pack: full-stack web apps on TanStack Start, the TypeScript template's domain container behind its pages.
 
 ## Verified
 

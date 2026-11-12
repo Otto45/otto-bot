@@ -896,19 +896,27 @@ impl AgentRunEngine {
         ))
     }
 
-    // The workspace's stack (the first pack whose files it has), and its rules.
+    // The workspace's stack, and its rules: of the packs whose files it has, the one that names the most (a web app has
+    // the files of a TypeScript app, and more), the first of them in the packs' order where two name as many.
     async fn detect_stack_pack(
         &self,
         workspace_directory: &Path,
         data_facade: &DataFacade,
     ) -> ApplicationResult<(Option<StackPack>, Option<String>)> {
+        let mut detected: Option<StackPack> = None;
         for stack_pack in data_facade.get_stack_packs().await? {
-            if self.has_files(workspace_directory, &stack_pack.detect_files).await? {
-                let rules: String = data_facade.get_stack_pack_rules(&stack_pack).await?;
-                return Ok((Some(stack_pack), Some(rules)));
+            let is_more_specific: bool = detected.as_ref().is_none_or(|detected_stack_pack: &StackPack| {
+                stack_pack.detect_files.len() > detected_stack_pack.detect_files.len()
+            });
+            if is_more_specific && self.has_files(workspace_directory, &stack_pack.detect_files).await? {
+                detected = Some(stack_pack);
             }
         }
-        Ok((None, None))
+        let Some(stack_pack) = detected else {
+            return Ok((None, None));
+        };
+        let rules: String = data_facade.get_stack_pack_rules(&stack_pack).await?;
+        Ok((Some(stack_pack), Some(rules)))
     }
 
     // The prompt layers and tools every turn of the agent's run sends, and the tools its role may call.

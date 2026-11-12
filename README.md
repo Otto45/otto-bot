@@ -1,6 +1,6 @@
 # otto-bot
 
-A coding agent harness that builds apps on the Domain Container architecture, in Rust, Python and TypeScript. It is
+A coding agent harness that builds apps on the Domain Container architecture, in Rust, Python and TypeScript, and web apps on TanStack Start. It is
 itself a Domain Container app, in Rust. The design is [docs/DESIGN.md](docs/DESIGN.md); the rules every change to it
 follows are [AGENTS.md](AGENTS.md).
 
@@ -8,11 +8,11 @@ Status: build steps 1-5 of [docs/DESIGN.md](docs/DESIGN.md) are done. An agent
 works in a workspace: it reads, lists and searches files, edits them with `apply_patch`, and runs the stack pack's
 checks, remembering the whole session. Every request opens with cached layers (the stack's rules, then the workspace's
 project map), and goes over a WebSocket connection that sends only what is new. The checks include an architecture lint
-of the stack pack's rules, and the stack's formatters (the code's formatting, the OpenAPI contract) run before the checks,
+of the stack pack's rules, and the stack's formatters (the code's formatting, and a generated OpenAPI contract or route tree) run before the checks,
 so no agent spends a turn on them. Agents run in roles on lanes of their own: the orchestrator (the session's own
 agent) holds the conversation, asks what only the person can decide, and briefs the implementor; the implementor plans
 and builds each brief from a fresh start, until every check passes; then the reviewer reviews the change's diff, the
-implementor fixes what it says must be fixed, and the orchestrator tells the person how it went. Stack packs: Rust, Python and TypeScript; `otto new` starts an app from a pack's template.
+implementor fixes what it says must be fixed, and the orchestrator tells the person how it went. Stack packs: Rust, Python, TypeScript and web; `otto new` starts an app from a pack's template.
 
 ## What you need
 
@@ -128,4 +128,5 @@ cargo run --bin export-openapi -- --check
   workspace and its commands, and the data layer (sessions and stack packs, as files).
 - `src/services/cli/`: the interactive CLI, a thin layer over the facade.
 - `src/services/http/`: the HTTP API (`otto-http`), another thin layer over the same facade.
-- `stack_packs/rust/`: what otto-bot knows about building Rust apps: the template app and its rules.
+- `stack_packs/<stack>/`: what otto-bot knows about building apps of one stack (`rust`, `python`, `typescript`, `web`):
+  the template app, its rules, and the queries of its project map and architecture lint.

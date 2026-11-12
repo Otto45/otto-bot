@@ -1,0 +1,38 @@
+@import "tailwindcss";
+
+/*
+ * The theme: every colour, font and radius the app's components use, named for what it is for (a button's background
+ * is `bg-primary`, never `bg-blue-600`). Tailwind's own palette is cleared, so these are the only colours there are,
+ * and restyling the app is changing them here: a design system lands in this file.
+ */
+@theme {
+  --color-*: initial;
+
+  --color-background: oklch(0.99 0.003 264);
+  --color-foreground: oklch(0.22 0.02 264);
+  --color-muted: oklch(0.96 0.006 264);
+  --color-muted-foreground: oklch(0.5 0.02 264);
+  --color-border: oklch(0.9 0.01 264);
+  --color-surface: oklch(1 0 0);
+
+  --color-primary: oklch(0.5 0.2 268);
+  --color-primary-hover: oklch(0.44 0.2 268);
+  --color-primary-foreground: oklch(0.99 0.003 264);
+
+  --color-danger: oklch(0.55 0.21 27);
+  --color-danger-muted: oklch(0.96 0.03 27);
+  --color-danger-foreground: oklch(0.99 0.003 264);
+
+  --color-focus: oklch(0.6 0.2 268);
+
+  --font-sans: ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+
+  --radius-control: 0.5rem;
+  --radius-panel: 0.75rem;
+}
+
+@layer base {
+  body {
+    @apply bg-background font-sans text-foreground antialiased;
+  }
+}

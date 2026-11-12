@@ -1,0 +1,9 @@
+node_modules/
+# What a build, the dev server and the route tree's generation write.
+.output/
+.nitro/
+.tanstack/
+dist/
+src/routeTree.gen.ts
+# pnpm-lock.yaml is kept by an app made from this template, not by the template, so the app locks its own dependencies.
+pnpm-lock.yaml

@@ -1,0 +1,240 @@
+# The web stack pack: everything the harness knows about building Domain Container web apps, on TanStack Start.
+
+name = "web"
+# The tree-sitter grammar, built into otto-bot, that parses the stack's source files (for the project map and the lint).
+# TSX parses both the .tsx and the .ts files (only `<T>value` type assertions are TypeScript's alone, and eslint
+# forbids those already).
+language = "tsx"
+
+# The template app (one example of every component kind) and the rules every change to an app follows.
+template = "template"
+rules = "template/AGENTS.md"
+
+# The project map: every file of the workspace, and the exported items of its source files (bodies left out), opening
+# every request so the agent knows the codebase's shape before it reads anything. The query's @item captures are
+# shown, and a @body or @omit inside one is left out.
+[project_map]
+sources = ["src/**/*.{ts,tsx}"]
+query = "queries/project_map.scm"
+
+# The architecture lint: the rules of AGENTS.md a machine can check, run as the "architecture" check before the
+# commands below, so the agent learns of a rule it broke as it learns of a type error. Rule kinds:
+# - imports: a file whose path matches `files` imports nothing matching `forbid` (regular expressions, on the imported
+#   module as written: every import of the app's own goes through the #src/ alias). When both have a group named
+#   `name`, only an import of another one of the same kind breaks the rule.
+# - query: what the query captures as @violation, except what it also captures as @allowed, in every source file but
+#   those `exclude` names.
+# - named_after_file: one of the names the query captures as @name is the file's name in PascalCase (case ignored).
+[lint]
+sources = ["src/**/*.{ts,tsx}"]
+imports_query = "queries/imports.scm"
+
+# What runs where: the browser never gets the server's code.
+
+[[lint.rules]]
+name = "browser-imports-server-code"
+kind = "imports"
+message = "a page, component, formatter or wire model imports nothing from the domain container, the mappers or the middleware, not even a type: what a page knows of the domain is a response model, and it reaches the server through a server function"
+files = '^src/(routes|components|formatters|wire_models)/|^src/router\.tsx$'
+forbid = ['^#src/(domain_container|mappers|middleware|nitro_plugins)/', '^#src/(server|start|request_context)\.ts$', '\.server(\.[a-z]+)?$']
+
+[[lint.rules]]
+name = "component-calls-server"
+kind = "imports"
+message = "a component calls no server function and uses no page: the page does, and hands the component what it shows and what to do"
+files = '^src/components/'
+forbid = ['^#src/(server_functions|routes)/']
+
+[[lint.rules]]
+name = "wire-model-uses-components"
+kind = "imports"
+message = "a wire model is data: it uses other wire models only"
+files = '^src/wire_models/'
+forbid = ['^#src/(routes|components|formatters|server_functions|mappers|middleware|domain_container|nitro_plugins)/']
+
+[[lint.rules]]
+name = "container-uses-service"
+kind = "imports"
+message = "the domain container knows nothing of the web app around it: it uses none of its pages, components, server functions, wire models, mappers or middleware"
+files = '^src/domain_container/'
+forbid = ['^#src/(routes|components|formatters|server_functions|wire_models|mappers|middleware|nitro_plugins|styles)/', '^#src/(server|start|router|request_context|routeTree\.gen)\.tsx?$']
+
+[[lint.rules]]
+name = "service-bypasses-facade"
+kind = "imports"
+message = "the web app calls only the domain facade: it never uses the domain container's components (only the facade, its models, its exceptions and the logger)"
+files = '^src/(routes|components|formatters|server_functions|wire_models|mappers|middleware|nitro_plugins)/|^src/[a-z_]+\.tsx?$'
+forbid = ['^#src/domain_container/managers/(gateways|data_layer|engines|processors|service_locator|configuration_providers|common)/', '^#src/domain_container/managers/[a-z0-9_]+_manager\.ts$']
+
+# The domain container: the TypeScript pack's rules, in src/domain_container/.
+
+[[lint.rules]]
+name = "manager-uses-manager"
+kind = "imports"
+message = "managers never call other managers; anything they share goes through the DataFacade, a processor or an engine"
+files = '^src/domain_container/managers/(?P<name>[a-z0-9_]+)_manager\.ts$'
+forbid = ['^#src/domain_container/managers/(?P<name>[a-z0-9_]+)_manager\.ts$']
+
+[[lint.rules]]
+name = "engine-uses-engine"
+kind = "imports"
+message = "an engine never uses another engine"
+files = '^src/domain_container/managers/engines/(?P<name>[a-z0-9_]+)/'
+forbid = ['^#src/domain_container/managers/engines/(?P<name>[a-z0-9_]+)/']
+
+[[lint.rules]]
+name = "engine-uses-manager-parts"
+kind = "imports"
+message = "an engine never uses a manager or a manager's processors; it is handed the DataFacade with each call"
+files = '^src/domain_container/managers/engines/'
+forbid = ['^#src/domain_container/managers/processors/', '^#src/domain_container/managers/[a-z0-9_]+_manager\.ts$']
+
+[[lint.rules]]
+name = "processor-does-io"
+kind = "imports"
+message = "a processor holds domain logic only: no gateways, data layer, engines, managers or service locator"
+files = '^src/domain_container/managers/processors/'
+forbid = ['^#src/domain_container/managers/(gateways|data_layer|engines|service_locator)/', '^#src/domain_container/managers/[a-z0-9_]+_manager\.ts$']
+
+[[lint.rules]]
+name = "engine-processor-does-io"
+kind = "imports"
+message = "an engine's processor holds domain logic only: no gateways, data layer or service locator"
+files = '^src/domain_container/managers/engines/[a-z0-9_]+/processors/'
+forbid = ['^#src/domain_container/managers/(gateways|data_layer|service_locator)/']
+
+[[lint.rules]]
+name = "gateway-uses-domain-parts"
+kind = "imports"
+message = "a gateway only talks to its system: no processors, engines, managers, data layer or service locator"
+files = '^src/domain_container/managers/gateways/'
+forbid = ['^#src/domain_container/managers/(processors|engines|data_layer|service_locator)/', '^#src/domain_container/managers/[a-z0-9_]+_manager\.ts$']
+
+# TypeScript has no private modules, so a gateway's own parts are kept to it here: a file in one gateway's folder may
+# import its own; every other file (the first alternative doesn't match it, so it has no `name`) may import none.
+[[lint.rules]]
+name = "gateway-internals"
+kind = "imports"
+message = "a gateway's resource models, validators, mappers, query builders and request builders are its own: nothing outside its folder imports them"
+files = '^src/(?:domain_container/managers/(?:data_layer/managers/)?gateways/(?P<name>[a-z0-9_]+)/|.*)'
+forbid = ['/gateways/(?P<name>[a-z0-9_]+)/(resource_models|validators|mappers|query_builders|request_builders)/']
+
+[[lint.rules]]
+name = "common-helper-uses-components"
+kind = "imports"
+message = "a common helper is stateless and does no I/O: it uses no component"
+files = '^src/domain_container/managers/common/'
+forbid = ['^#src/domain_container/managers/(gateways|data_layer|engines|processors|service_locator)/', '^#src/domain_container/managers/[a-z0-9_]+_manager\.ts$']
+
+[[lint.rules]]
+name = "model-uses-components"
+kind = "imports"
+message = "a domain model is data: it uses other models only"
+files = '^src/domain_container/managers/models/'
+forbid = ['^#src/domain_container/managers/(gateways|data_layer|engines|processors|service_locator|configuration_providers|logger)/', '^#src/domain_container/managers/[a-z0-9_]+_manager\.ts$']
+
+# Code, everywhere.
+
+[[lint.rules]]
+name = "untyped-variable"
+kind = "query"
+message = "every const, let and var has its type written out (what TanStack Start builds and a hook's result aside)"
+query = "queries/lint/untyped_variable.scm"
+
+[[lint.rules]]
+name = "untyped-field"
+kind = "query"
+message = "every class field has its type written out (an `as const` literal aside)"
+query = "queries/lint/untyped_field.scm"
+
+[[lint.rules]]
+name = "untyped-parameter"
+kind = "query"
+message = "every parameter has its type written out (a callback's, typed by the function it is passed to, aside)"
+query = "queries/lint/untyped_parameter.scm"
+
+[[lint.rules]]
+name = "protocol-with-body"
+kind = "query"
+message = "a Protocol declares method signatures only: no fields"
+query = "queries/lint/protocol_body.scm"
+
+[[lint.rules]]
+name = "function-outside-class"
+kind = "query"
+message = "every function is a method of a class, except a component, a page's own functions, and an entry point's"
+query = "queries/lint/function_outside_class.scm"
+exclude = ["src/routes/**", "src/components/**", "src/router.tsx", "src/server.ts", "src/nitro_plugins/**"]
+
+[[lint.rules]]
+name = "relative-import"
+kind = "query"
+message = "imports go through the #src/ alias (import ... from \"#src/components/button.tsx\"), never a relative path"
+query = "queries/lint/relative_import.scm"
+
+[[lint.rules]]
+name = "file-named-after-type"
+kind = "named_after_file"
+message = "a file holds the one class, interface, type, component or server function it is named after"
+query = "queries/lint/type_names.scm"
+exclude = ["src/routes/**", "src/server.ts", "src/start.ts", "src/router.tsx", "src/nitro_plugins/**"]
+
+[[lint.rules]]
+name = "raw-colour"
+kind = "query"
+message = "a colour is one of the theme's tokens, named for what it is for (bg-primary, text-muted-foreground); a colour the theme hasn't got is a new token in src/styles/app.css"
+query = "queries/lint/raw_colour.scm"
+
+# The formatters: commands that rewrite files into the form the checks expect: the installed dependencies (what
+# package.json names), the route tree TanStack Start generates from src/routes/, and the code's formatting (with
+# Tailwind's classes sorted). The harness runs them, in order, before every run of the checks, so no agent formats
+# code or writes the route tree by hand (or spends a turn on a check of either), and tells the agent which of the
+# `sources` they changed.
+[format]
+commands = [
+    ["pnpm", "install", "--silent"],
+    ["pnpm", "run", "--silent", "generate-route-tree"],
+    ["pnpm", "exec", "prettier", "--write", "--log-level", "warn", "."],
+]
+sources = ["src/**/*.{ts,tsx,css}"]
+
+[detect]
+# A project is a web app when its root has all of these (a TypeScript app has the first two: the pack that names the
+# most files a workspace has is its stack).
+files = ["package.json", "tsconfig.json", "vite.config.ts"]
+
+# The checks every change passes, run from the app's root, in order.
+[[checks]]
+name = "format"
+command = ["pnpm", "exec", "prettier", "--check", "."]
+
+[[checks]]
+name = "lint"
+command = ["pnpm", "exec", "eslint", "."]
+
+[[checks]]
+name = "types"
+command = ["pnpm", "exec", "tsc", "--noEmit"]
+
+# The production build: it fails when code the browser runs imports the server's (import protection), and on what
+# only bundling finds.
+[[checks]]
+name = "build"
+command = ["pnpm", "exec", "vite", "build", "--logLevel", "warn"]
+
+# Tests are deferred; the slot is kept so adding them changes no harness code.
+[[checks]]
+name = "test"
+command = []
+
+# Starting an app: names in the template replaced by the app's own, in file contents and paths, the longest name first
+# where several start at the same place (AGENTS.md, "Starting an app from the template"); paths include
+# src/domain_container/example_app_facade.ts.
+[rename]
+"example-app" = "{app_name_kebab}"
+"example_app" = "{app_name_snake}"
+"ExampleAppFacade" = "{app_name_pascal}Facade"
+"ExampleAppManager" = "{app_name_pascal}Manager"
+"exampleApp" = "{app_name_camel}"
+"EXAMPLE_APP_" = "{app_name_upper}_"
+"Example App" = "{app_name_title}"

@@ -116,7 +116,7 @@ impl PromptProcessor {
         if stack_pack.is_some_and(|stack_pack: &StackPack| stack_pack.format.is_some()) {
             stack_layer.push_str(
                 "- run_checks runs the stack's formatters before the checks (the code's formatting, and generated \
-                 files such as a contract), so don't format or regenerate them by hand; it says which files they \
+                 files such as a contract or a route tree), so don't format or regenerate them by hand; it says which files they \
                  rewrote, which you read again before you patch them.\n",
             );
         }
