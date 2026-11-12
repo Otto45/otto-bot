@@ -63,6 +63,9 @@ impl ConfigurationProvider {
             orchestrator_compact_tokens: config.orchestrator_compact_tokens.expect("validated by ValidatorAgent"),
             lane_compact_tokens: config.lane_compact_tokens.expect("validated by ValidatorAgent"),
             idle_session_minutes: config.idle_session_minutes.expect("validated by ValidatorAgent"),
+            max_concurrent_runs: config.max_concurrent_runs.expect("validated by ValidatorAgent"),
+            max_live_sessions: config.max_live_sessions.expect("validated by ValidatorAgent"),
+            max_event_streams: config.max_event_streams.expect("validated by ValidatorAgent"),
         })
     }
 

@@ -115,6 +115,9 @@ cargo run --bin export-openapi -- --check
 | `OTTO_BOT_CHECK_TIMEOUT_SECONDS` | `600` (per check) |
 | `OTTO_BOT_WORKSPACES_DIRECTORY` | `~/.otto-bot/apps` (where the HTTP API keeps the apps it starts) |
 | `OTTO_BOT_IDLE_SESSION_MINUTES` | `30` (a session with no run and no client following it is let go after this long, and resumed when next used) |
+| `OTTO_BOT_MAX_CONCURRENT_RUNS` | `8` (runs under way at once in one process; a request beyond them is refused until one ends. Each run holds two locks: with Postgres, two connections beside the pool's ten) |
+| `OTTO_BOT_MAX_LIVE_SESSIONS` | `200` (sessions kept in memory; beyond them the one idle longest is let go, and a session is refused when none is idle) |
+| `OTTO_BOT_MAX_EVENT_STREAMS` | `256` (clients following sessions' events at once) |
 | `OTTO_BOT_HTTP_API_TOKEN` | none: `otto-http` won't start without it |
 | `HOST`, `PORT` (`otto-http` only) | `127.0.0.1`, `8650` |
 

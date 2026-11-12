@@ -102,6 +102,43 @@ impl WorkspaceGateway {
         self.resolve_workspace_directory(directory).await
     }
 
+    /// Makes a new workspace that must not be there yet (an app started by name), and returns its canonical path.
+    /// Making the folder is one step that either makes it or finds it there, so of two requests for one name at
+    /// once, one makes it and the other is refused (`WorkspaceAlreadyExists`).
+    pub async fn create_new_workspace_directory(&self, directory: &Path) -> ApplicationResult<PathBuf> {
+        let context: ContextualData =
+            ContextualData::new().with("workspace_directory", directory.to_string_lossy().into_owned());
+        if let Some(parent_directory) = directory.parent() {
+            tokio::fs::create_dir_all(parent_directory)
+                .await
+                .map_err(|exception: std::io::Error| WorkspaceGateway::to_io_exception(exception, &context))?;
+        }
+        tokio::fs::create_dir(directory)
+            .await
+            .map_err(|exception: std::io::Error| {
+                if exception.kind() == ErrorKind::AlreadyExists {
+                    ApplicationBaseException::new(
+                        WorkspaceGatewayException::WorkspaceAlreadyExists,
+                        format!("{} already exists", directory.display()),
+                        context.clone(),
+                    )
+                } else {
+                    WorkspaceGateway::to_io_exception(exception, &context)
+                }
+            })?;
+        self.resolve_workspace_directory(directory).await
+    }
+
+    /// Removes a workspace its caller has just made with `create_new_workspace_directory` and could not finish
+    /// filling, so that nothing half-made is left under its name. Never called for a folder that was there before.
+    pub async fn remove_new_workspace_directory(&self, directory: &Path) -> ApplicationResult<()> {
+        let context: ContextualData =
+            ContextualData::new().with("workspace_directory", directory.to_string_lossy().into_owned());
+        tokio::fs::remove_dir_all(directory)
+            .await
+            .map_err(|exception: std::io::Error| WorkspaceGateway::to_io_exception(exception, &context))
+    }
+
     pub async fn read_file(&self, workspace_directory: &Path, path: &str) -> ApplicationResult<WorkspaceFile> {
         let (relative_path, absolute_path): (String, PathBuf) =
             WorkspaceGateway::resolve_path(workspace_directory, path).await?;

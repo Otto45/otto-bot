@@ -63,6 +63,7 @@ impl SessionRouter {
         (status = UNAUTHORIZED, description = "The request doesn't bear the service's token", body = ErrorResponse),
         (status = OK, description = "The session", body = SessionSummaryResponse),
         (status = NOT_FOUND, description = "There is no app of that name, or no session of it with that id", body = ErrorResponse),
+        (status = TOO_MANY_REQUESTS, description = "The service is at its limit of runs, sessions in use or event streams; send this again once one is done", body = ErrorResponse),
     ),
 )]
 async fn get_session(
@@ -91,6 +92,7 @@ async fn get_session(
         (status = ACCEPTED, description = "otto is working on it: follow the session's events"),
         (status = BAD_REQUEST, description = "The message is empty", body = ErrorResponse),
         (status = NOT_FOUND, description = "There is no app of that name, or no session of it with that id", body = ErrorResponse),
+        (status = TOO_MANY_REQUESTS, description = "The service is at its limit of runs, sessions in use or event streams; send this again once one is done", body = ErrorResponse),
         (status = CONFLICT, description = "The session, or another session of the app, is still working on a request", body = ErrorResponse),
         (status = UNPROCESSABLE_ENTITY, description = "The body does not fit the request model", body = ErrorResponse),
     ),
@@ -127,6 +129,7 @@ async fn send_message(
         (status = UNAUTHORIZED, description = "The request doesn't bear the service's token", body = ErrorResponse),
         (status = OK, description = "What the person and otto said, oldest first", body = TranscriptResponse),
         (status = NOT_FOUND, description = "There is no app of that name, or no session of it with that id", body = ErrorResponse),
+        (status = TOO_MANY_REQUESTS, description = "The service is at its limit of runs, sessions in use or event streams; send this again once one is done", body = ErrorResponse),
     ),
 )]
 async fn get_messages(
@@ -153,6 +156,7 @@ async fn get_messages(
         (status = UNAUTHORIZED, description = "The request doesn't bear the service's token", body = ErrorResponse),
         (status = NO_CONTENT, description = "The run under way, if any, is stopping: its end comes as run_cancelled"),
         (status = NOT_FOUND, description = "There is no app of that name, or no session of it with that id", body = ErrorResponse),
+        (status = TOO_MANY_REQUESTS, description = "The service is at its limit of runs, sessions in use or event streams; send this again once one is done", body = ErrorResponse),
     ),
 )]
 async fn cancel_run(
@@ -180,6 +184,7 @@ async fn cancel_run(
         (status = UNAUTHORIZED, description = "The request doesn't bear the service's token", body = ErrorResponse),
         (status = OK, description = "The session's events as server-sent events, from the current run's start (or after the event named), for as long as the client stays", content_type = "text/event-stream", body = SessionEventResponse),
         (status = NOT_FOUND, description = "There is no app of that name, or no session of it with that id", body = ErrorResponse),
+        (status = TOO_MANY_REQUESTS, description = "The service is at its limit of runs, sessions in use or event streams; send this again once one is done", body = ErrorResponse),
     ),
 )]
 async fn follow_events(

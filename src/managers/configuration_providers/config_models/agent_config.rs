@@ -7,4 +7,7 @@ pub struct AgentConfig {
     pub orchestrator_compact_tokens: Option<i64>,
     pub lane_compact_tokens: Option<i64>,
     pub idle_session_minutes: Option<i64>,
+    pub max_concurrent_runs: Option<i64>,
+    pub max_live_sessions: Option<i64>,
+    pub max_event_streams: Option<i64>,
 }

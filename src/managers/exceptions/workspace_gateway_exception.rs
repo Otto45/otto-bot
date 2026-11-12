@@ -3,6 +3,8 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkspaceGatewayException {
     InvalidWorkspace,
+    /// A folder that was to be made new is already there.
+    WorkspaceAlreadyExists,
     PathOutsideWorkspace,
     ProtectedFile,
     FileNotFound,
@@ -16,6 +18,7 @@ impl WorkspaceGatewayException {
     pub fn name(self) -> &'static str {
         match self {
             WorkspaceGatewayException::InvalidWorkspace => "InvalidWorkspaceException",
+            WorkspaceGatewayException::WorkspaceAlreadyExists => "WorkspaceAlreadyExistsException",
             WorkspaceGatewayException::PathOutsideWorkspace => "PathOutsideWorkspaceException",
             WorkspaceGatewayException::ProtectedFile => "ProtectedFileException",
             WorkspaceGatewayException::FileNotFound => "FileNotFoundException",

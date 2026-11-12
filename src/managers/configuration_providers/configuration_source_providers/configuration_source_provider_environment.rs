@@ -34,6 +34,19 @@ impl ConfigurationSourceProviderProtocol for ConfigurationSourceProviderEnvironm
                 "OTTO_BOT_IDLE_SESSION_MINUTES",
                 "30",
             )?),
+            // A run holds its app's and its session's lock: in Postgres, two connections of their own.
+            max_concurrent_runs: Some(ConfigurationSourceProviderEnvironment::get_integer(
+                "OTTO_BOT_MAX_CONCURRENT_RUNS",
+                "8",
+            )?),
+            max_live_sessions: Some(ConfigurationSourceProviderEnvironment::get_integer(
+                "OTTO_BOT_MAX_LIVE_SESSIONS",
+                "200",
+            )?),
+            max_event_streams: Some(ConfigurationSourceProviderEnvironment::get_integer(
+                "OTTO_BOT_MAX_EVENT_STREAMS",
+                "256",
+            )?),
             // gpt-6.1-sol takes up to 922,000 input tokens: this leaves room for one more turn of large reads.
             lane_compact_tokens: Some(ConfigurationSourceProviderEnvironment::get_integer(
                 "OTTO_BOT_LANE_COMPACT_TOKENS",

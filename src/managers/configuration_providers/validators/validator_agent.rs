@@ -28,6 +28,15 @@ impl ValidatorAgent {
         if config.idle_session_minutes.is_none() {
             missing.push("idle_session_minutes is missing".to_string());
         }
+        if config.max_concurrent_runs.is_none() {
+            missing.push("max_concurrent_runs is missing".to_string());
+        }
+        if config.max_live_sessions.is_none() {
+            missing.push("max_live_sessions is missing".to_string());
+        }
+        if config.max_event_streams.is_none() {
+            missing.push("max_event_streams is missing".to_string());
+        }
         if !missing.is_empty() {
             return Err(ValidatorAgent::to_exception(
                 ConfigurationProviderException::MissingConfiguration,
@@ -50,6 +59,9 @@ impl ValidatorAgent {
             ("orchestrator_compact_tokens", config.orchestrator_compact_tokens),
             ("lane_compact_tokens", config.lane_compact_tokens),
             ("idle_session_minutes", config.idle_session_minutes),
+            ("max_concurrent_runs", config.max_concurrent_runs),
+            ("max_live_sessions", config.max_live_sessions),
+            ("max_event_streams", config.max_event_streams),
         ] {
             if let Some(tokens) = tokens
                 && tokens <= 0

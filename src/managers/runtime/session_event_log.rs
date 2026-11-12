@@ -63,6 +63,10 @@ impl SessionEventLog {
         (missed, self.clients.subscribe())
     }
 
+    pub fn count_clients(&self) -> usize {
+        self.clients.receiver_count()
+    }
+
     pub fn has_clients(&self) -> bool {
         self.clients.receiver_count() > 0
     }

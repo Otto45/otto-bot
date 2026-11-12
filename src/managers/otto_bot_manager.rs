@@ -16,7 +16,9 @@ use crate::managers::engines::agent_run::agent_run_engine::AgentRunEngine;
 use crate::managers::engines::project_bootstrap::project_bootstrap_engine::ProjectBootstrapEngine;
 use crate::managers::exceptions::application_base_exception::{ApplicationBaseException, ApplicationResult};
 use crate::managers::exceptions::contextual_data::ContextualData;
+use crate::managers::exceptions::exception_kind::ExceptionKind;
 use crate::managers::exceptions::otto_bot_manager_exception::OttoBotManagerException;
+use crate::managers::exceptions::workspace_gateway_exception::WorkspaceGatewayException;
 use crate::managers::gateways::workspace::workspace_gateway::WorkspaceGateway;
 use crate::managers::logger::application_logger::ApplicationLogger;
 use crate::managers::logger::log_level::LogLevel;
@@ -70,6 +72,10 @@ pub struct OttoBotManager {
     // Set when the manager closes: the runs it then stops are left with no end on record, so whichever process next
     // serves their sessions reports them stopped.
     closing: Arc<AtomicBool>,
+    // What this process takes at once: runs under way, sessions kept in memory, and clients following events.
+    max_concurrent_runs: usize,
+    max_live_sessions: usize,
+    max_event_streams: usize,
 }
 
 impl OttoBotManager {
@@ -92,6 +98,11 @@ impl OttoBotManager {
             )),
             live_sessions,
             closing: Arc::new(AtomicBool::new(false)),
+            max_concurrent_runs: OttoBotManager::to_limit(
+                configuration_provider.get_agent_settings().max_concurrent_runs,
+            ),
+            max_live_sessions: OttoBotManager::to_limit(configuration_provider.get_agent_settings().max_live_sessions),
+            max_event_streams: OttoBotManager::to_limit(configuration_provider.get_agent_settings().max_event_streams),
             workspaces_directory: configuration_provider
                 .get_storage_settings()
                 .workspaces_directory
@@ -116,8 +127,29 @@ impl OttoBotManager {
                 ContextualData::new().with("app_name", app_name),
             ));
         }
-        self.start_project(stack_name, app_name, &self.workspaces_directory)
+        // Two requests for one name can both get here: making the folder lets one of them through.
+        self.project_bootstrap_engine
+            .start_project(
+                stack_name,
+                app_name,
+                &self.workspaces_directory,
+                true,
+                &self.data_facade,
+            )
             .await
+            .map_err(|exception: ApplicationBaseException| {
+                if exception.kind()
+                    == ExceptionKind::WorkspaceGateway(WorkspaceGatewayException::WorkspaceAlreadyExists)
+                {
+                    ApplicationBaseException::new(
+                        OttoBotManagerException::AppAlreadyExists,
+                        format!("An app named {kebab_name} already exists"),
+                        ContextualData::new().with("app_name", app_name),
+                    )
+                } else {
+                    exception
+                }
+            })
     }
 
     /// Starts a session in the app (named by its kebab-case name, as `start_app` returned it).
@@ -166,7 +198,7 @@ impl OttoBotManager {
         parent_directory: &Path,
     ) -> ApplicationResult<StartedProject> {
         self.project_bootstrap_engine
-            .start_project(stack_name, app_name, parent_directory, &self.data_facade)
+            .start_project(stack_name, app_name, parent_directory, false, &self.data_facade)
             .await
     }
 
@@ -179,6 +211,8 @@ impl OttoBotManager {
         let session: Session = self
             .session_processor
             .create_session(session_options, workspace_directory, Utc::now());
+        // Before the session is kept: one there is no room to serve is not started.
+        self.make_room().await?;
         self.data_facade.save_session(&session).await?;
 
         let session_id: String = session.id.clone();
@@ -207,6 +241,9 @@ impl OttoBotManager {
         let transcript_entries: Vec<TranscriptEntry> = self.data_facade.get_transcript(&session.id).await?;
         // A session not served here yet may have been left mid-run by a process that stopped.
         let is_served: bool = self.lock_live_sessions().contains_key(&session.id);
+        if !is_served {
+            self.make_room().await?;
+        }
         let run_was_interrupted: bool = !is_served && self.end_interrupted_run(&session).await?;
 
         {
@@ -338,6 +375,18 @@ impl OttoBotManager {
             .ok_or_else(|| OttoBotManager::to_session_not_found_exception(session_id))?;
         // A run of it may have started while the lock was taken (and ended, or it would hold the lock).
         OttoBotManager::check_not_running(live_session, session_id)?;
+        let running_count: usize = live_sessions
+            .values()
+            .filter(|live_session: &&LiveSession| live_session.is_running())
+            .count();
+        if running_count >= self.max_concurrent_runs {
+            return Err(OttoBotManager::to_at_capacity_exception(
+                "Too many requests are being worked on; send this again once one is done",
+            ));
+        }
+        let live_session: &mut LiveSession = live_sessions
+            .get_mut(session_id)
+            .ok_or_else(|| OttoBotManager::to_session_not_found_exception(session_id))?;
 
         // The last run's task may still be compacting: it is kept, to be stopped on close, and the new run waits for it.
         if let Some(last_run) = live_session.run.take()
@@ -386,6 +435,24 @@ impl OttoBotManager {
             .get_mut(session_id)
             .ok_or_else(|| OttoBotManager::to_session_not_found_exception(session_id))?;
         live_session.last_used = Instant::now();
+        let following_count: usize = live_sessions
+            .values()
+            .map(|live_session: &LiveSession| {
+                live_session
+                    .event_log
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .count_clients()
+            })
+            .sum();
+        if following_count >= self.max_event_streams {
+            return Err(OttoBotManager::to_at_capacity_exception(
+                "Too many clients are following sessions; follow this one once another has stopped",
+            ));
+        }
+        let live_session: &mut LiveSession = live_sessions
+            .get_mut(session_id)
+            .ok_or_else(|| OttoBotManager::to_session_not_found_exception(session_id))?;
         Ok(live_session
             .event_log
             .lock()
@@ -742,6 +809,43 @@ impl OttoBotManager {
                 );
             }
         }
+    }
+
+    // Makes room for one more session to be served: while as many as this process keeps are, the idle one unused
+    // longest is let go (it is resumed from the session store when next used); with none idle, the session is refused.
+    async fn make_room(&self) -> ApplicationResult<()> {
+        let let_go: Vec<LiveSession> = {
+            let mut live_sessions: MutexGuard<'_, HashMap<String, LiveSession>> = self.lock_live_sessions();
+            let mut let_go: Vec<LiveSession> = Vec::new();
+            while live_sessions.len() >= self.max_live_sessions {
+                let idle_longest: Option<String> = live_sessions
+                    .iter()
+                    .filter(|(_, live_session): &(&String, &LiveSession)| live_session.is_idle())
+                    .min_by_key(|(_, live_session): &(&String, &LiveSession)| live_session.last_used)
+                    .map(|(session_id, _): (&String, &LiveSession)| session_id.clone());
+                let Some(live_session) = idle_longest.and_then(|session_id: String| live_sessions.remove(&session_id))
+                else {
+                    return Err(OttoBotManager::to_at_capacity_exception(
+                        "Too many sessions are in use; use this one once another is done",
+                    ));
+                };
+                let_go.push(live_session);
+            }
+            let_go
+        };
+        for live_session in let_go {
+            self.agent_run_engine.release_session(&live_session.session.id).await;
+        }
+        Ok(())
+    }
+
+    fn to_at_capacity_exception(message: &str) -> ApplicationBaseException {
+        ApplicationBaseException::new(OttoBotManagerException::AtCapacity, message, ContextualData::new())
+    }
+
+    // A setting validated positive, as a count.
+    fn to_limit(setting: i64) -> usize {
+        usize::try_from(setting).unwrap_or(usize::MAX)
     }
 
     // A session runs one request at a time.

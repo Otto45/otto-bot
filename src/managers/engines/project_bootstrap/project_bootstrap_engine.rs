@@ -14,6 +14,7 @@ use crate::managers::logger::log_level::LogLevel;
 use crate::managers::models::app_name::AppName;
 use crate::managers::models::stack_pack::StackPack;
 use crate::managers::models::started_project::StartedProject;
+use crate::managers::models::template_file::TemplateFile;
 
 // Starts an app from a stack pack's template, with no model: the template's files are copied into a new folder, its
 // names (in file contents and paths) replaced with the app's, then the pack's formatters run over it, since a renamed
@@ -48,12 +49,15 @@ impl ProjectBootstrapEngine {
     }
 
     /// Makes `<parent_directory>/<the app's name in kebab case>` and copies the stack's template into it, renamed. The
-    /// folder must be new or empty, so nothing of someone's is overwritten.
+    /// folder must be new or empty, so nothing of someone's is overwritten; with `must_be_new` (an app started by name,
+    /// which two requests may ask for at once) it must not be there at all, and if the app can't be started the
+    /// folder made for it is removed, so its name is free again.
     pub async fn start_project(
         &self,
         stack_name: &str,
         app_name: &str,
         parent_directory: &Path,
+        must_be_new: bool,
         data_facade: &DataFacade,
     ) -> ApplicationResult<StartedProject> {
         let app_name: AppName = self.app_name_processor.to_app_name(app_name)?;
@@ -83,20 +87,33 @@ impl ProjectBootstrapEngine {
             ));
         };
 
-        let workspace_directory: PathBuf = self
-            .workspace_gateway
-            .create_workspace_directory(&parent_directory.join(&app_name.kebab))
-            .await?;
-        for template_file in &template_files {
-            let path: String =
-                self.app_name_processor
-                    .replace_names(&template_file.path, &stack_pack.name_replacements, &app_name);
-            let content: String =
-                self.app_name_processor
-                    .replace_names(&template_file.content, &stack_pack.name_replacements, &app_name);
+        let app_directory: PathBuf = parent_directory.join(&app_name.kebab);
+        let workspace_directory: PathBuf = if must_be_new {
             self.workspace_gateway
-                .write_file(&workspace_directory, &path, &content, true)
-                .await?;
+                .create_new_workspace_directory(&app_directory)
+                .await?
+        } else {
+            self.workspace_gateway
+                .create_workspace_directory(&app_directory)
+                .await?
+        };
+        let copied: ApplicationResult<()> = self
+            .copy_template(&workspace_directory, &template_files, stack_pack, &app_name)
+            .await;
+        if let Err(exception) = copied {
+            if must_be_new
+                && let Err(removal_exception) = self
+                    .workspace_gateway
+                    .remove_new_workspace_directory(&workspace_directory)
+                    .await
+            {
+                ApplicationLogger::error(
+                    "A new app's half-made folder could not be removed; its name stays taken",
+                    ContextualData::new().with("app_name", app_name.kebab.as_str()),
+                    Some(&removal_exception),
+                );
+            }
+            return Err(exception);
         }
 
         let formatted: bool = self.format(&workspace_directory, stack_pack).await;
@@ -107,6 +124,29 @@ impl ProjectBootstrapEngine {
             file_count: template_files.len(),
             formatted,
         })
+    }
+
+    // Writes the template's files into the app's folder, the pack's names in their paths and contents replaced with
+    // the app's.
+    async fn copy_template(
+        &self,
+        workspace_directory: &Path,
+        template_files: &[TemplateFile],
+        stack_pack: &StackPack,
+        app_name: &AppName,
+    ) -> ApplicationResult<()> {
+        for template_file in template_files {
+            let path: String =
+                self.app_name_processor
+                    .replace_names(&template_file.path, &stack_pack.name_replacements, app_name);
+            let content: String =
+                self.app_name_processor
+                    .replace_names(&template_file.content, &stack_pack.name_replacements, app_name);
+            self.workspace_gateway
+                .write_file(workspace_directory, &path, &content, true)
+                .await?;
+        }
+        Ok(())
     }
 
     // Runs the pack's formatters, in order, and says whether every one succeeded. One that fails or can't start (a

@@ -90,6 +90,7 @@ async fn list_app_sessions(
         (status = UNAUTHORIZED, description = "The request doesn't bear the service's token", body = ErrorResponse),
         (status = CREATED, description = "The session was started", body = SessionCreatedResponse),
         (status = NOT_FOUND, description = "There is no app of that name", body = ErrorResponse),
+        (status = TOO_MANY_REQUESTS, description = "The service is at its limit of runs, sessions in use or event streams; send this again once one is done", body = ErrorResponse),
         (status = UNPROCESSABLE_ENTITY, description = "The body does not fit the request model", body = ErrorResponse),
     ),
 )]

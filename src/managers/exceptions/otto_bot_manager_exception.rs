@@ -12,6 +12,9 @@ pub enum OttoBotManagerException {
     /// A request was submitted while another session of the same app (workspace) was running one: two runs would
     /// change the same files.
     AppBusy,
+    /// As many runs, sessions or clients following events as this process takes are already here: the request is
+    /// refused, and can be sent again once one has gone.
+    AtCapacity,
     /// The app's lock was lost while a run held it (the database connection holding it ended), so the run was
     /// stopped: another run could have started on the same files.
     AppLockLost,
@@ -25,6 +28,7 @@ impl OttoBotManagerException {
             OttoBotManagerException::AppNotFound => "AppNotFoundException",
             OttoBotManagerException::AppAlreadyExists => "AppAlreadyExistsException",
             OttoBotManagerException::AppBusy => "AppBusyException",
+            OttoBotManagerException::AtCapacity => "AtCapacityException",
             OttoBotManagerException::AppLockLost => "AppLockLostException",
         }
     }

@@ -17,4 +17,12 @@ pub struct AgentSettings {
     /// How long a session with no run and no client following it is kept in memory; it is resumed from the session
     /// store when it is next used.
     pub idle_session_minutes: i64,
+    /// How many runs may be under way at once in this process; a request beyond them is refused until one has ended.
+    /// Each run holds its locks (in Postgres, two connections of their own), so this bounds those too.
+    pub max_concurrent_runs: i64,
+    /// How many sessions are kept in memory at once; beyond them the one idle longest is let go to make room, and a
+    /// session is refused when none is idle.
+    pub max_live_sessions: i64,
+    /// How many clients may follow sessions' events at once.
+    pub max_event_streams: i64,
 }

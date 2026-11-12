@@ -690,6 +690,16 @@
               }
             },
             "description": "The body does not fit the request model"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The service is at its limit of runs, sessions in use or event streams; send this again once one is done"
           }
         }
       }
@@ -746,6 +756,16 @@
               }
             },
             "description": "There is no app of that name, or no session of it with that id"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The service is at its limit of runs, sessions in use or event streams; send this again once one is done"
           }
         }
       }
@@ -795,6 +815,16 @@
               }
             },
             "description": "There is no app of that name, or no session of it with that id"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The service is at its limit of runs, sessions in use or event streams; send this again once one is done"
           }
         }
       }
@@ -874,6 +904,16 @@
               }
             },
             "description": "There is no app of that name, or no session of it with that id"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The service is at its limit of runs, sessions in use or event streams; send this again once one is done"
           }
         }
       }
@@ -930,6 +970,16 @@
               }
             },
             "description": "There is no app of that name, or no session of it with that id"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The service is at its limit of runs, sessions in use or event streams; send this again once one is done"
           }
         }
       },
@@ -1017,6 +1067,16 @@
               }
             },
             "description": "The body does not fit the request model"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The service is at its limit of runs, sessions in use or event streams; send this again once one is done"
           }
         }
       }
